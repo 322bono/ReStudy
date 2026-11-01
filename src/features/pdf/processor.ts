@@ -3,6 +3,7 @@ import type { PDFDocumentProxy, PDFPageProxy } from "pdfjs-dist";
 import type { TextItem, TextStyle } from "pdfjs-dist/types/src/display/api";
 import type { PageViewport } from "pdfjs-dist/types/src/display/page_viewport";
 import type { Worker as OcrWorker, Page as OcrPage } from "tesseract.js";
+import { storagePageText } from "../../domain/pdf-text";
 
 /** Coordinates are fractions of the displayed, rotated PDF page, from top left. */
 export interface PageTextItem {
@@ -424,7 +425,7 @@ export async function preparePage(
         "확실한 문항 번호 경계를 찾지 못했습니다. 관리 화면에서 문항 영역을 지정하세요.",
       );
     onProgress?.(1, "페이지 원본과 추출 후보를 준비했어요.");
-    return {
+    return storagePageText({
       number: pageNumber,
       width: viewport.width,
       height: viewport.height,
@@ -434,7 +435,7 @@ export async function preparePage(
       source,
       image,
       warnings,
-    };
+    });
   } finally {
     signal.removeEventListener("abort", cancelRender);
     canvas.width = 0;

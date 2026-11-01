@@ -8,7 +8,7 @@ export async function cloudApi<T = any>(
     return (await (await import("./documents")).uploadMaterials(body)) as T;
   const part = path.split("/");
   if (part[0] === "materials" && part[2] === "retry") {
-    await (await import("./documents")).resumeMaterial(part[1], true);
+    await (await import("./documents")).resumeMaterial(part[1], body?.force === true);
     return { ok: true } as T;
   }
   if (part[0] === "materials" && part[2] === "pause") {

@@ -72,6 +72,13 @@ afterEach(async () => {
 });
 
 describe("browser PDF preprocessing", () => {
+  it("repairs malformed PDF Unicode while keeping Korean, formulas and valid emoji", async () => {
+    const { pdf } = fixture("13. 한글 x² 😀 잘못된 글자 \ud800 끝 \udc00 \u0000 확인");
+    const page = await preparePage(pdf, 1);
+    expect(page.text).toBe("13. 한글 x² 😀 잘못된 글자 � 끝 � � 확인");
+    expect(page.items[0].text).toBe(page.text);
+    expect(page.warnings).toContain("추출 텍스트의 깨진 문자를 대체했습니다. 해당 글자는 원본 이미지에서 확인하세요.");
+  });
   it("uses usable native text without OCR and renders the original without annotations", async () => {
     const { pdf, render } = fixture(
       "17. Find the solution to the following equation.",

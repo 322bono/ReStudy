@@ -11,6 +11,7 @@ import {
 } from "../features/pdf/processor";
 import { selectPages, tocPages } from "../domain/pages";
 import { cacheGet, cachePut } from "./cache";
+import { storagePageText } from "../domain/pdf-text";
 
 export const PDF_ENGINE_VERSION = "browser-pdf-2026-11-01-v1";
 const BUCKET = "study-files",
@@ -498,7 +499,7 @@ async function pageCheckpoint(
       .eq("number", page.number)
       .maybeSingle();
     if (error) throw failure("페이지 체크포인트를 확인하지 못했습니다.");
-    const { image: _, ...fields } = page;
+    const { image: _, ...fields } = storagePageText(page);
     const data = {
       ...old?.data,
       ...fields,
@@ -530,8 +531,10 @@ async function pageCheckpoint(
           .select("*")
           .single();
     if (saved.error?.code === "23505") continue;
-    if (saved.error)
-      throw failure("페이지의 원본·텍스트 체크포인트를 저장하지 못했습니다.");
+    if (saved.error) {
+      const code = /^[A-Z0-9]{5}$/.test(saved.error.code || "") ? ` (${saved.error.code})` : "";
+      throw failure(`${page.number}쪽의 원본·텍스트 체크포인트를 저장하지 못했습니다${code}. 저장된 페이지는 보관했습니다.`);
+    }
     if (saved.data) return saved.data;
   }
   throw failure(

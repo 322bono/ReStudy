@@ -3,6 +3,7 @@ import { readFileSync,readdirSync } from 'node:fs';
 import { afterEach, expect, test } from 'vitest';
 import {validateRestudyParts} from '../src/domain/restudy';
 import {compileRestudy} from '../src/domain/restudy-compile';
+import {storagePageText} from '../src/domain/pdf-text';
 
 let db:PGlite;
 const owner='10000000-0000-4000-8000-000000000001',other='20000000-0000-4000-8000-000000000002';
@@ -19,6 +20,30 @@ async function database(){
   return db;
 }
 afterEach(async()=>{await db?.close()});
+test('PDF text with broken surrogate and NUL can be saved as a real jsonb checkpoint',async()=>{
+ const c=await database();
+ const page={text:'한국사 \ud800 😀 \u0000',items:[{text:'\udc00 수식 x²',x:0.1}],warnings:[]};
+ await expect(c.query('select $1::jsonb',[JSON.stringify(page)])).rejects.toThrow();
+ const clean=storagePageText(page);
+ const saved=(await c.query<{data:any}>('select $1::jsonb data',[JSON.stringify(clean)])).rows[0].data;
+ expect(saved.text).toBe('한국사 � 😀 �');
+ expect(saved.items[0]).toEqual({text:'� 수식 x²',x:0.1});
+ expect(saved.warnings).toHaveLength(1);
+});
+test('authenticated crop RPC creates clean regions and preserves answers across revisions',async()=>{
+ const c=await database(),doc='31000000-0000-4000-8000-000000000003',qid='41000000-0000-4000-8000-000000000004';
+ await c.exec(`insert into documents(id,user_id,title,subject,kind)values('${doc}','${owner}','실제 RPC 검사','수학','문제집');insert into document_pages(user_id,document_id,number,data)values('${owner}','${doc}',1,'{"kind":"content"}');set role authenticated;set request.jwt.claim.sub='${owner}';`);
+ const region={part:0,page:1,image_path:`${owner}/${doc}/questions/${qid}/r1/0.png`,data:{page:1,x:0.1,y:0.1,w:0.7,h:0.3}};
+ const problem={id:qid,document_id:doc,number:47,page:1,data:{revision:'r1',confirmed:true,answer:'untrusted',explanation:'untrusted'}};
+ const first=(await c.query<{saved:any}>('select save_problem_regions($1,$2,null) saved',[problem,[region]])).rows[0].saved;
+ expect(first.data.revision).toBe('r1');expect(first.data.answer).toBeUndefined();
+ await c.exec(`update problems set data=data||'{"answer":"kept","explanation":"kept explanation"}' where id='${qid}'`);
+ const next={...problem,data:{...problem.data,revision:'r2'}};
+ const saved=(await c.query<{saved:any}>('select save_problem_regions($1,$2,$3) saved',[next,[{...region,image_path:region.image_path.replace('/r1/','/r2/')}],'r1'])).rows[0].saved;
+ expect(saved.data).toMatchObject({revision:'r2',answer:'kept',explanation:'kept explanation'});
+ await expect(c.query('select save_problem_regions($1,$2,$3)',[problem,[region],'r1'])).rejects.toThrow(/다른 화면/);
+ expect((await c.query('select * from problem_regions')).rows).toHaveLength(1);
+});
 test('RLS denies anonymous and other owner reads and credential reads',async()=>{
   const c=await database();
   await c.exec(`insert into public.documents(id,user_id,title,subject,kind,data)values('30000000-0000-4000-8000-000000000003','${owner}','private','수학','문제집','{}');
