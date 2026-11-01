@@ -7,7 +7,7 @@ import {storagePageText} from '../src/domain/pdf-text';
 
 let db:PGlite;
 const owner='10000000-0000-4000-8000-000000000001',other='20000000-0000-4000-8000-000000000002';
-async function database(){
+async function database(skipSlots=false){
   db=new PGlite();
   await db.exec(`create role anon;create role authenticated;create role service_role bypassrls;
     create schema auth;grant usage on schema auth to authenticated,service_role;create table auth.users(id uuid primary key,raw_user_meta_data jsonb default '{}');
@@ -15,11 +15,46 @@ async function database(){
     create schema storage;create table storage.buckets(id text primary key,name text,public boolean,file_size_limit bigint,allowed_mime_types text[]);
     create table storage.objects(id uuid primary key,bucket_id text,name text);alter table storage.objects enable row level security;
     create function storage.foldername(text) returns text[] language sql as $$select string_to_array($1,'/')$$;`);
-  for(const file of readdirSync('supabase/migrations').filter(f=>f.endsWith('.sql')).sort())await db.exec(readFileSync('supabase/migrations/'+file,'utf8'));
+  for(const file of readdirSync('supabase/migrations').filter(f=>f.endsWith('.sql')&&(!skipSlots||!f.includes('multiple_api_keys'))).sort())await db.exec(readFileSync('supabase/migrations/'+file,'utf8'));
   await db.exec(`insert into auth.users(id)values('${owner}'),('${other}');insert into profiles(id,user_id)values('${owner}','${owner}'),('${other}','${other}');`);
   return db;
 }
 afterEach(async()=>{await db?.close()});
+test('reindex retires only unused automatic candidates and keeps manual, confirmed and history IDs',async()=>{
+ const c=await database(),doc='32000000-0000-4000-8000-000000000003';
+ await c.query('insert into documents(id,user_id,title,subject,kind,data)values($1,$2,$3,$4,$5,$6)',[doc,owner,'인식 검사','역사','문제집',{pageCount:10,processingToken:'run'}]);
+ const ids=[1,2,3,4,5].map(n=>`42000000-0000-4000-8000-00000000000${n}`);
+ for(let n=0;n<ids.length;n++)await c.query('insert into problems(id,user_id,document_id,number,page,data)values($1,$2,$3,$4,1,$5)',[ids[n],owner,doc,n+1,{source:n===1?'manual':'ocr',confirmed:n===2}]);
+ await c.query('insert into wrong_answers(user_id,problem_id,data)values($1,$2,$3)',[owner,ids[3],{}]);
+ await c.query('insert into solve_sessions(user_id,data)values($1,$2)',[owner,{questionIds:[ids[4]]}]);
+ await c.exec(`set role authenticated;set request.jwt.claim.sub='${owner}'`);
+ await expect(c.query('select retire_unmatched_pdf_candidates($1,$2,$3,$4)',[doc,[],'stale','test'])).rejects.toThrow(/변경/);
+ await c.query('select retire_unmatched_pdf_candidates($1,$2,$3,$4)',[doc,[],'run','test']);
+ const rows=(await c.query<{id:string,data:any}>('select id,data from problems order by number')).rows;
+ expect(rows.filter(r=>r.data.autoRetired).map(r=>r.id)).toEqual([ids[0]]);expect(rows).toHaveLength(5);
+ await expect(c.query('select save_local_pdf_outline($1,$2,$3,null)',[owner,doc,{}])).rejects.toThrow();
+ await c.exec('reset role;set role service_role');
+ const entry={id:'local1',title:'함수',pdfPage:2,endPage:10,canonicalKey:'함수|2|10',level:1,sourcePage:1,bbox:[.1,.1,.5,.2]};
+ const apply=()=>c.query('select save_local_pdf_outline($1,$2,$3,$4)',[owner,doc,{schema_version:'re.pdf-outline.v1',entries:[entry]},'run']);
+ await apply();const chapter=(await c.query<{id:string}>('select id from document_chapters')).rows[0].id;
+ await c.query("update document_chapters set title='사용자 제목',data=data||'{\"userEdited\":true}' where id=$1",[chapter]);
+ await apply();expect((await c.query<{id:string,title:string}>('select id,title from document_chapters')).rows).toEqual([{id:chapter,title:'사용자 제목'}]);
+});
+test('key-slot migration preserves encrypted legacy keys and isolates model/quota state',async()=>{
+ const c=await database(true),key='51000000-0000-4000-8000-000000000005';
+ await c.query('insert into ai_credentials(id,user_id,provider,ciphertext,iv,key_version)values($1,$2,$3,$4,$5,1)',[key,owner,'gemini','preserved-cipher','preserved-iv']);
+ await c.query('insert into ai_providers(user_id,provider,data)values($1,$2,$3)',[owner,'gemini',{access:'free_confirmed',model:'gemini-3.8-flash',generation_verified:true}]);
+ await c.exec(readFileSync('supabase/migrations/20261101145241_multiple_api_keys.sql','utf8'));
+ const slot=(await c.query<{id:string,ciphertext:string,data:any}>('select * from ai_key_slots')).rows[0];
+ expect(slot).toMatchObject({id:key,ciphertext:'preserved-cipher',data:{access:'free_confirmed',selectedModels:['gemini-3.8-flash'],generation_verified:true,quotaGroup:'shared'}});
+ await expect(c.query('insert into ai_key_model_states(user_id,credential_id,model)values($1,$2,$3)',[other,key,'gemini-3.8-flash'])).rejects.toThrow();
+ await c.exec(`set role authenticated;set request.jwt.claim.sub='${owner}'`);
+ for(const table of ['ai_key_slots','ai_key_model_states','ai_quota_cooldowns'])await expect(c.query('select * from '+table)).rejects.toThrow();
+ await c.exec('reset role;set role service_role');
+ await c.query('select set_ai_quota_cooldown($1,$2,$3,$4,$5)',[owner,'gemini','shared','','2030-01-02T00:00:00Z']);
+ await c.query('select set_ai_quota_cooldown($1,$2,$3,$4,$5)',[owner,'gemini','shared','','2030-01-01T00:00:00Z']);
+ expect((await c.query<{until:string}>("select cooldown_until::text until from ai_quota_cooldowns")).rows[0].until).toContain('2030-01-02');
+});
 test('PDF text with broken surrogate and NUL can be saved as a real jsonb checkpoint',async()=>{
  const c=await database();
  const page={text:'한국사 \ud800 😀 \u0000',items:[{text:'\udc00 수식 x²',x:0.1}],warnings:[]};

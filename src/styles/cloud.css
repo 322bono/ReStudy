@@ -646,3 +646,19 @@
     font-size: 16px;
   }
 }
+.cloud-credential-list{display:grid;gap:16px;margin:16px 0}
+.cloud-credential{padding:16px;border:1px solid #e2e5ec;border-radius:12px;background:#fff;min-width:0}
+.cloud-credential-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;margin-bottom:12px}
+.cloud-credential-head h4{margin:0 0 8px;font-size:14px}
+.cloud-credential-facts{display:flex;flex-wrap:wrap;gap:6px 14px;color:#737b8d;font-size:12px;margin-bottom:14px}
+.cloud-key-models{margin-top:16px;border-top:1px solid #edf0f5;padding-top:12px}
+.cloud-key-models summary{cursor:pointer;font-size:13px;font-weight:600}
+.cloud-model-checklist{display:grid;gap:12px;margin:16px 0}
+.cloud-model-choice{display:flex;gap:10px;align-items:flex-start;cursor:pointer}
+.cloud-model-choice input{margin-top:3px;accent-color:#4f46e5}
+.cloud-model-choice span{display:grid;gap:4px;min-width:0}
+.cloud-model-choice strong{font-size:13px;font-weight:500}
+.cloud-model-choice code{font-size:11px;overflow-wrap:anywhere;color:#767d90}
+.cloud-model-choice small,.cloud-quota-group small{font-size:11px;color:#767d90}
+.cloud-model-reason{color:#a16207!important}
+.cloud-quota-group{margin-bottom:14px}

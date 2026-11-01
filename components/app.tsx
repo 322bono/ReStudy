@@ -32,7 +32,6 @@ import { ContentManager } from "./content-manager";
 const MaterialWorkspace = lazy(() => import("../src/pages/MaterialWorkspace"));
 const Bank = lazy(() => import("../src/pages/Bank"));
 const WrongWorkspace = lazy(() => import("../src/pages/WrongWorkspace"));
-import { prepareInitialContent } from "../src/services/content";
 type View = { name: string; id?: string; page?: number; manage?: boolean };
 const navigation = [
   { id: "home", title: "홈", icon: Home },
@@ -113,22 +112,6 @@ export default function RestudyApp({
     );
     return () => clearInterval(timer);
   }, [state?.materials, refresh, notify]);
-  const startedContent = useRef(new Set<string>());
-  useEffect(() => {
-    for (const material of state?.materials || []) {
-      if (
-        material.analysisMethod !== "auto" ||
-        material.initialContentJobId ||
-        !["ready", "needs_review"].includes(material.status) ||
-        startedContent.current.has(material.id)
-      )
-        continue;
-      startedContent.current.add(material.id);
-      void prepareInitialContent(material)
-        .catch((e) => notify(e.message))
-        .finally(() => void refresh().catch(() => {}));
-    }
-  }, [state?.materials, notify, refresh]);
   const navigate = (next: View) => {
     setView(next);
     const p = new URLSearchParams();

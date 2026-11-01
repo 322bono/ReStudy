@@ -226,7 +226,7 @@ export function UploadPreparation({
                 })
               }
             >
-              <option value="auto">AI 자동 분석</option>
+              <option value="auto">자체 OCR·문항 인식</option>
               <option value="external">외부 AI 결과 가져오기</option>
               <option value="later">나중에 분석</option>
             </select>
@@ -257,6 +257,7 @@ export function UploadPreparation({
           <p className="field-help">
             입력 범위는 PDF의 실제 페이지입니다. 원본 전체를 비공개로 저장하고,
             선택한 범위만 처리합니다.
+            OCR·목차·문항 인식에는 외부 AI API를 호출하지 않습니다.
           </p>
         </div>
       </div>

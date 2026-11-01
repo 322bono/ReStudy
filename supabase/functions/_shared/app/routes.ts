@@ -2,6 +2,7 @@ import {AppError} from '../context.ts';
 import {material,publicQuestion,put,row,rows,signed,state,value,type Ctx} from './repository.ts';
 import {importContent,validate} from './content.ts';
 import {exportData,restoreData} from './backup.ts';
+import{saveOutline,documentIndex}from'./pdf-index.ts';
 import {answerSolve,answerStudy,createBankStudy,createReview,createSolve,createStudy,publicStudy,repeatWeak,revealStudy,relatedOriginalIds} from '../../../../src/domain/learning.ts';
 
 const now=()=>new Date().toISOString(),uuid=()=>crypto.randomUUID();
@@ -58,6 +59,8 @@ export async function handle(ctx:Ctx,input:any):Promise<any>{
  }
  if(route==='materials'&&id){
   const r=await row(ctx,'documents',id);
+  if(action==='outline'&&method==='POST')return saveOutline(ctx,id,b);
+  if(action==='index'&&method==='GET')return documentIndex(ctx,id);
   if(method==='DELETE'){await put(ctx,'documents',id,{...r.data,archived:true},{title:r.title,subject:r.subject,kind:r.kind,status:r.status,content_hash:r.content_hash});return {archived:true};}
   if(action==='page-kind'){
    if(!['content','answers','uncertain'].includes(b.kind)||['processing','uploaded'].includes(r.status))throw new AppError('사전 처리 완료 후 페이지 종류를 변경하세요.');

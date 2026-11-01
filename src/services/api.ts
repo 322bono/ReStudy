@@ -7,8 +7,11 @@ export async function cloudApi<T = any>(
   if (path === "materials" && method === "POST")
     return (await (await import("./documents")).uploadMaterials(body)) as T;
   const part = path.split("/");
+  if(part[0]==='materials'&&part[2]==='reindex'){
+    await(await import('./documents')).resumeMaterial(part[1],false,{reindex:true});return{ok:true}as T;
+  }
   if (part[0] === "materials" && part[2] === "retry") {
-    await (await import("./documents")).resumeMaterial(part[1], body?.force === true);
+    await (await import("./documents")).resumeMaterial(part[1], body?.force === true,{retryPage:body?.page});
     return { ok: true } as T;
   }
   if (part[0] === "materials" && part[2] === "pause") {
@@ -80,13 +83,11 @@ export async function settingsTransport(action: string, payload: any = {}) {
       ...status,
       providers: (status.providers || []).map((p: any) => ({
         ...p,
-        models: (status.models || []).filter(
-          (m: any) => m.provider === p.provider,
-        ),
+        models: p.credentials ? [...new Map(p.credentials.flatMap((c:any)=>c.models||[]).map((m:any)=>[m.id,m])).values()] : (status.models || []).filter((m:any)=>m.provider===p.provider),
       })),
       mode: s.mode || "round_robin",
-      dailyLimit: s.daily_limit || 20,
-      maxRetries: s.max_attempts || 3,
+      dailyLimit: s.daily_limit ?? 20,
+      maxRetries: s.max_attempts ?? 3,
       allowPaid: s.allow_paid === true,
       modelRoles: s.modelRoles,
     };

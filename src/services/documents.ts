@@ -5,6 +5,8 @@ import {
   detectProblems,
   openPdf,
   preparePage,
+  prepareNumberMarkers,
+  NUMBER_LAYER_VERSION,
   renderRegions,
   type PreparedPage,
   type Region,
@@ -12,6 +14,8 @@ import {
 import { selectPages, tocPages } from "../domain/pages";
 import { cacheGet, cachePut } from "./cache";
 import { storagePageText } from "../domain/pdf-text";
+import {pageOcrIndex,extractLocalOutline}from'../domain/pdf-index';
+import {edgeCall}from'./supabase';
 
 export const PDF_ENGINE_VERSION = "browser-pdf-2026-11-01-v1";
 const BUCKET = "study-files",
@@ -26,6 +30,7 @@ type Job = {
   force: boolean;
   controller: AbortController;
   page?: number;
+  retryPage?: number;
 };
 const jobs = new Map<string, Job>();
 let workQueue: Promise<void> = Promise.resolve();
@@ -505,6 +510,7 @@ async function pageCheckpoint(
       ...fields,
       engineVersion: PDF_ENGINE_VERSION,
       checkpointComplete: true,
+      ocrIndex:pageOcrIndex(job.id,storagePageText(page)),
       ...(old?.data.manualKind
         ? { manualKind: true, kind: old.data.kind }
         : {}),
@@ -637,6 +643,7 @@ async function commitCrop(
         imagePaths: paths,
         revision,
         cropEngineVersion: PDF_ENGINE_VERSION,
+        index:{document_id:doc.id,pdf_page:fields.page,q_number:String(fields.number),chapter_id:fields.chapterId??old?.data.chapterId??null,regions:regions.map(r=>({page:r.page,bbox:[r.x,r.y,r.x+r.w,r.y+r.h]})),confidence:fields.confidence??0,needs_review:!fields.confirmed},
       },
     },
     p_regions: regions.map((r, part) => ({
@@ -719,8 +726,13 @@ async function runDocument(ctx: Context, job: Job): Promise<void> {
       await ensureJob(ctx, job);
       job.page = number;
       const old = previousPages.find((r) => r.number === number);
-      if (cachedPage(old, job.force)) {
+      if (cachedPage(old, job.force || job.retryPage===number)) {
         ownPath(ctx, job.id, old.image_path);
+        if(!old.data.ocrIndex||old.data.source==='ocr'&&old.data.numberLayerVersion!==NUMBER_LAYER_VERSION){
+          await patchDocument(ctx,job.id,{message:old.data.source==='ocr'?`PDF ${number}쪽 · 저장된 본문을 재사용하고 숫자 영역만 보완 인식합니다.`:`PDF ${number}쪽 · 저장된 페이지의 좌표 인덱스를 정리합니다.`},undefined,job);
+          const numberMarkers=old.data.source==='ocr'&&old.data.numberLayerVersion!==NUMBER_LAYER_VERSION?await prepareNumberMarkers(pdf,number):old.data.numberMarkers??[];
+          await pageCheckpoint(ctx,job,{...preparedFromRow(old),numberMarkers,numberLayerVersion:NUMBER_LAYER_VERSION},old.image_path);
+        }
         continue;
       }
       await patchDocument(
@@ -733,7 +745,12 @@ async function runDocument(ctx: Context, job: Job): Promise<void> {
         undefined,
         job,
       );
-      const prepared = await preparePage(pdf, number);
+      const cachedFields=!job.force&&job.retryPage!==number?await cacheGet<any>(ctx.user.id,`prepared:${job.id}:${number}:${PDF_ENGINE_VERSION}`):null;
+      const cachedImage=cachedFields?await cacheGet<Blob>(ctx.user.id,`prepared-image:${job.id}:${number}:${PDF_ENGINE_VERSION}`):null;
+      const prepared:PreparedPage=cachedFields?.numberLayerVersion===NUMBER_LAYER_VERSION&&cachedImage instanceof Blob?{...cachedFields,image:cachedImage}:await preparePage(pdf, number);
+      const {image:preparedImage,...preparedFields}=storagePageText(prepared);
+      await cachePut(ctx.user.id,`prepared:${job.id}:${number}:${PDF_ENGINE_VERSION}`,preparedFields);
+      await cachePut(ctx.user.id,`prepared-image:${job.id}:${number}:${PDF_ENGINE_VERSION}`,preparedImage);
       await ensureJob(ctx, job);
       const imagePath = `${ctx.user.id}/${job.id}/pages/${number}/${crypto.randomUUID()}.png`;
       await upload(ctx, imagePath, prepared.image);
@@ -761,6 +778,9 @@ async function runDocument(ctx: Context, job: Job): Promise<void> {
       throw failure(
         "선택 범위에 아직 저장되지 않은 페이지가 있습니다. 분석을 다시 시도해 주세요.",
       );
+    const localOutline=extractLocalOutline(prepared,starting.data.tocPages??[],pdf.numPages,starting.data.printedPageOffset);
+    await edgeCall('app',{path:`materials/${job.id}/outline`,method:'POST',body:{outline:localOutline,processingToken:job.token}});
+    const chapters=await list(ctx,'document_chapters','document_id',job.id);
     const candidates = detectProblems(prepared),
       warnings = prepared.flatMap((p) =>
         (p.warnings || []).map((w) => `${p.number}쪽: ${w}`),
@@ -789,6 +809,7 @@ async function runDocument(ctx: Context, job: Job): Promise<void> {
           candidate.page,
           occurrence,
         ));
+      used.add(id);
       const current = await one(ctx, "problems", id, true);
       if (current?.data.confirmed || current?.data.source === "manual")
         continue;
@@ -802,7 +823,7 @@ async function runDocument(ctx: Context, job: Job): Promise<void> {
           ? await list(ctx, "problem_regions", "problem_id", id)
           : [];
       if (
-        !job.force &&
+        !job.force && !regions.some(r=>r.page===job.retryPage) && current?.data.layoutVersion==='local-layout-2026-11-02-v2' &&
         current?.data.cropEngineVersion === PDF_ENGINE_VERSION &&
         JSON.stringify(current.data.regions) === JSON.stringify(regions) &&
         parts.length === regions.length &&
@@ -813,6 +834,7 @@ async function runDocument(ctx: Context, job: Job): Promise<void> {
         )
       )
         continue;
+      const chapter=chapters.filter(c=>candidate.page>=c.start_page&&candidate.page<=c.end_page).sort((a,b)=>(a.end_page-a.start_page)-(b.end_page-b.start_page))[0];
       const fields = {
         number: candidate.number,
         page: candidate.page,
@@ -823,6 +845,10 @@ async function runDocument(ctx: Context, job: Job): Promise<void> {
         source: candidate.source,
         confidence: candidate.confidence,
         sharedRegionCount: candidate.sharedRegionCount || 0,
+        autoRetired:false,
+        layoutVersion:'local-layout-2026-11-02-v2',
+        chapterId:current?.data.chapterId??chapter?.id??null,
+        index:{document_id:job.id,pdf_page:candidate.page,q_number:String(candidate.number),chapter_id:current?.data.chapterId??chapter?.id??null,regions:regions.map(r=>({page:r.page,bbox:[r.x,r.y,r.x+r.w,r.y+r.h]})),confidence:candidate.confidence,needs_review:true},
       };
       await commitCrop(ctx, starting, pdf, current, id, fields, regions, job);
       await patchDocument(
@@ -842,7 +868,10 @@ async function runDocument(ctx: Context, job: Job): Promise<void> {
       warnings.push(
         "자동으로 확정할 수 있는 문항 번호가 없습니다. 페이지 내용을 확인하고 필요한 문항 영역을 지정하세요.",
       );
-    const savedQuestions = await list(ctx, "problems", "document_id", job.id);
+    await ensureJob(ctx,job);
+    const retired=await ctx.db.rpc('retire_unmatched_pdf_candidates',{p_document:job.id,p_keep:[...used],p_token:job.token,p_layout_version:'local-layout-2026-11-02-v2'});
+    if(retired.error)throw failure('새 문항 인덱스를 저장하지 못했습니다. 기존 후보와 기록은 보관했습니다.');
+    const savedQuestions = (await list(ctx, "problems", "document_id", job.id)).filter(q=>!q.data.autoRetired);
     // Retain unmatched historical/manual questions, repairing missing PNGs from
     // their own saved geometry before declaring the document finished.
     for (const saved of savedQuestions) {
@@ -939,15 +968,16 @@ async function runDocument(ctx: Context, job: Job): Promise<void> {
   }
 }
 /** Returns after scheduling, rather than waiting for the OCR workload. */
-export async function resumeMaterial(id: string, force = false): Promise<void> {
+export async function resumeMaterial(id: string, force = false,options:{reindex?:boolean;retryPage?:number}={}): Promise<void> {
   const ctx = await context(),
     doc = (await one(ctx, "documents", id))!;
+  if(options.retryPage!==undefined&&(!Number.isInteger(options.retryPage)||options.retryPage<1||options.retryPage>doc.data.pageCount||![...(doc.data.selectedPages??[]),...(doc.data.tocPages??[])].includes(options.retryPage)))throw failure('분석 범위 안의 PDF 페이지를 선택하세요.');
   if (doc.data.archived) throw failure("보관된 자료는 먼저 복원해 주세요.");
   const key = `${ctx.user.id}:${id}`,
     pending = jobs.get(key);
   if (pending && !pending.controller.signal.aborted) return;
   if (
-    !force &&
+    !force && !options.reindex && !options.retryPage &&
     ["ready", "needs_review"].includes(doc.status) &&
     !doc.data.paused
   )
@@ -957,6 +987,7 @@ export async function resumeMaterial(id: string, force = false): Promise<void> {
     userId: ctx.user.id,
     token: crypto.randomUUID(),
     force,
+    retryPage:options.retryPage,
     controller: new AbortController(),
   };
   jobs.set(key, job);

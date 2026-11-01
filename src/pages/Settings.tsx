@@ -35,7 +35,28 @@ type Model = {
   supportsImages?: boolean;
   supportsJson?: boolean;
   maxInputTokens?: number;
+  maxOutputTokens?: number;
+  freeEligible?: boolean;
+  generationVerified?: boolean;
   paid?: boolean;
+};
+type CredentialState = {
+  id?: string;
+  legacy: boolean;
+  label: string;
+  configured: boolean;
+  enabled: boolean;
+  status: string;
+  access: "unknown" | "free_confirmed" | "paid";
+  quotaGroup: string;
+  connectionVerified: boolean;
+  generationVerified: boolean;
+  checkedAt?: string;
+  cooldownUntil?: string;
+  lastError?: string;
+  notice?: string;
+  models: Model[];
+  selectedModels: string[];
 };
 type ProviderState = {
   provider: Provider;
@@ -44,7 +65,10 @@ type ProviderState = {
   models: Model[];
   access: "unknown" | "free_confirmed" | "paid";
   lastError?: string;
+  notice?: string;
+  credentials: CredentialState[];
 };
+type KeyEditor = { provider: Provider; credentialId?: string; legacy?: boolean };
 type Preferences = {
   mode: Mode;
   dailyLimit: number;
@@ -129,6 +153,8 @@ function readModels(value: unknown): Model[] {
       first(model, "maxInputTokens", "max_input_tokens") ??
       first(capabilities, "maxInputTokens", "max_input_tokens");
     const paid = model.paid ?? capabilities.paid;
+    const output = first(model, "maxOutputTokens", "max_output_tokens") ?? first(capabilities, "maxOutputTokens", "max_output_tokens");
+    const free = first(model, "freeEligible", "free_eligible");
     return [
       {
         id,
@@ -137,10 +163,37 @@ function readModels(value: unknown): Model[] {
         ...(typeof images === "boolean" ? { supportsImages: images } : {}),
         ...(typeof json === "boolean" ? { supportsJson: json } : {}),
         ...(typeof limit === "number" ? { maxInputTokens: limit } : {}),
+        ...(typeof output === "number" ? { maxOutputTokens: output } : {}),
+        ...(typeof free === "boolean" ? { freeEligible: free } : {}),
+        generationVerified: model.generation_verified === true || model.generationVerified === true,
         ...(typeof paid === "boolean" ? { paid } : {}),
       },
     ];
   });
+}
+function readCredential(row: Row, index: number, fallbackModels: Model[], legacy = false): CredentialState {
+  const credentialId = legacy ? "" : text(row.id);
+  const selected = first(row, "selectedModels", "selected_models");
+  if (!legacy && !credentialId) throw new Error("저장된 키 식별 정보를 확인하지 못했습니다. 설정을 다시 불러와 주세요.");
+  return {
+    ...(credentialId ? { id: credentialId } : {}), legacy,
+    label: text(row.label).trim() || (legacy ? "기존 API 키" : `API 키 ${index + 1}`),
+    configured: row.configured !== false,
+    enabled: row.enabled !== false,
+    status: text(row.status),
+    access: row.access === "free_confirmed" || row.access === "paid" ? row.access : "unknown",
+    quotaGroup: text(row.quotaGroup || row.quota_group).trim() || "shared",
+    connectionVerified: row.connection_verified === true || row.connectionVerified === true,
+    generationVerified: row.generation_verified === true || row.generationVerified === true,
+    checkedAt: text(row.checked_at || row.checkedAt) || undefined,
+    cooldownUntil: text(row.cooldown_until || row.cooldownUntil) || undefined,
+    lastError: text(row.last_error || row.lastError) || undefined,
+    notice: text(row.notice) || undefined,
+    models: Array.isArray(row.models) ? readModels(row.models) : legacy ? fallbackModels : [],
+    selectedModels: Array.isArray(selected)
+      ? [...new Set(selected.filter((value): value is string => typeof value === "string"))]
+      : legacy && typeof row.model === "string" ? [row.model] : [],
+  };
 }
 function readSettings(value: unknown): SettingsData {
   const data = record(value);
@@ -174,44 +227,48 @@ function readSettings(value: unknown): SettingsData {
     modelRoles,
     providers: providers.map((provider) => {
       const row = rows.find((item) => item.provider === provider) || {};
+      const models = readModels(row.models);
+      const credentials = Array.isArray(row.credentials)
+        ? row.credentials.map((value, index) => readCredential(record(value), index, models))
+        : row.configured === true ? [readCredential(row, 0, models, true)] : [];
       return {
         provider,
-        configured: row.configured === true,
+        configured: credentials.some((credential) => credential.configured),
         status: text(row.status),
-        models: readModels(row.models),
+        models,
+        credentials,
         access:
           row.access === "free_confirmed" || row.access === "paid"
             ? row.access
             : "unknown",
         lastError: text(row.lastError || row.last_error) || undefined,
+        notice: text(row.notice) || undefined,
       };
     }),
     usage: Array.isArray(data.usage) ? data.usage.map(record) : [],
     jobs: Array.isArray(data.jobs) ? data.jobs.map(record) : [],
   };
 }
-function connectionStatus(provider: ProviderState): {
+function connectionStatus(credential: CredentialState): {
   label: string;
   tone: string;
 } {
-  if (!provider.configured) return { label: "등록되지 않음", tone: "neutral" };
-  if (
-    ["connected", "valid", "ok", "active", "available"].includes(
-      provider.status,
-    )
-  )
-    return { label: "연결됨", tone: "success" };
+  if (!credential.configured) return { label: "등록되지 않음", tone: "neutral" };
+  if (!credential.enabled) return { label: "사용 중지", tone: "neutral" };
   if (
     ["error", "invalid", "auth_error", "unauthorized", "failed"].includes(
-      provider.status,
+      credential.status,
     )
   )
     return { label: "연결 오류", tone: "error" };
   if (
-    ["cooldown", "rate_limited", "limited", "paused"].includes(provider.status)
+    ["cooldown", "rate_limited", "limited", "paused"].includes(credential.status) ||
+    !!credential.cooldownUntil && Date.parse(credential.cooldownUntil) > Date.now()
   )
     return { label: "일시 제한", tone: "warning" };
-  return { label: "연결 확인 필요", tone: "neutral" };
+  if (credential.generationVerified) return { label: "생성 확인됨", tone: "success" };
+  if (credential.connectionVerified) return { label: "연결 확인됨", tone: "success" };
+  return { label: "키 저장됨 · 확인 필요", tone: "neutral" };
 }
 function dateTime(value: unknown): string {
   const raw = text(value);
@@ -353,6 +410,55 @@ function downloadFile(value: unknown) {
   window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+type CredentialAction = (busyId: string, action: string, payload: Row, success?: string) => Promise<boolean>;
+function credentialPayload(provider: Provider, credential: CredentialState): Row {
+  return { provider, ...(credential.id ? { credentialId: credential.id } : {}) };
+}
+function modelAllowed(model: Model, allowPaid: boolean) {
+  return model.supportsText === true && model.supportsJson === true && (allowPaid || model.freeEligible === true);
+}
+function modelDetails(model: Model): string {
+  return [
+    model.supportsText !== undefined ? `텍스트 ${model.supportsText ? "지원" : "미지원"}` : "",
+    model.supportsImages !== undefined ? `이미지 ${model.supportsImages ? "지원" : "미지원"}` : "",
+    model.supportsJson !== undefined ? `JSON ${model.supportsJson ? "지원" : "미지원"}` : "",
+    model.maxInputTokens !== undefined ? `입력 상한 ${model.maxInputTokens.toLocaleString()} 토큰` : "",
+    model.maxOutputTokens !== undefined ? `출력 상한 ${model.maxOutputTokens.toLocaleString()} 토큰` : "",
+    model.freeEligible === true ? "무료 사용 후보" : model.freeEligible === false ? "무료 경로 미허용" : "무료 사용 여부 미확인",
+    model.generationVerified ? "이 모델의 생성 확인됨" : "이 모델의 생성 미확인",
+  ].filter(Boolean).join(" · ");
+}
+function CredentialCard({ provider, credential, allowPaid, busy, onAction, onReplace }: {
+  provider: Provider; credential: CredentialState; allowPaid: boolean; busy: string;
+  onAction: CredentialAction; onReplace: () => void;
+}) {
+  const fieldId = useId(), [deleting, setDeleting] = useState(false);
+  const [selected, setSelected] = useState(credential.selectedModels);
+  const [quotaGroup, setQuotaGroup] = useState(credential.quotaGroup);
+  const selectionKey = JSON.stringify(credential.selectedModels);
+  useEffect(() => { setSelected(JSON.parse(selectionKey)); setQuotaGroup(credential.quotaGroup); }, [credential.id, selectionKey, credential.quotaGroup]);
+  const state = connectionStatus(credential), payload = credentialPayload(provider, credential);
+  const actionId = `${provider}-${credential.id || "legacy"}`;
+  const dirty = JSON.stringify([...selected].sort()) !== JSON.stringify([...credential.selectedModels].sort()) || (quotaGroup.trim() || "shared") !== credential.quotaGroup;
+  const missing = selected.filter((id) => !credential.models.some((model) => model.id === id));
+  return <article className="cloud-credential" aria-labelledby={`${fieldId}-title`}>
+    <div className="cloud-credential-head"><div><h4 id={`${fieldId}-title`}>{credential.label}</h4><span className={`cloud-status ${state.tone}`}><i />{state.label}</span></div><label className="cloud-check" htmlFor={`${fieldId}-enabled`}><input id={`${fieldId}-enabled`} type="checkbox" checked={credential.enabled} disabled={!!busy} onChange={(event) => onAction(`toggle-${actionId}`, "credential.toggle", { ...payload, enabled: event.target.checked, quotaGroup: credential.quotaGroup }, "키 사용 설정을 저장했습니다.")} /><span>이 키 사용</span></label></div>
+    <div className="cloud-credential-facts"><span>{credential.access === "free_confirmed" ? "무료 사용 계정 · 사용자 확인" : credential.access === "paid" ? "유료 사용 계정" : "요금 상태 미확인"}</span><span>{credential.connectionVerified ? "연결 확인 이력 있음" : "연결 미확인"}</span><span>{credential.generationVerified ? "생성 호출 확인 이력 있음" : "생성 호출 미확인"}</span>{credential.checkedAt ? <span>최근 확인 {dateTime(credential.checkedAt)}</span> : null}{credential.cooldownUntil && Date.parse(credential.cooldownUntil) > Date.now() ? <span>다시 시도 가능 {dateTime(credential.cooldownUntil)}</span> : null}</div>
+    {credential.lastError ? <p className="cloud-provider-error">{credential.lastError}</p> : null}
+    {credential.notice ? <p className="cloud-key-help">{credential.notice}</p> : null}
+    <div className="cloud-actions"><Button size="sm" variant="secondary" disabled={!!busy} busy={busy === `check-${actionId}`} onClick={() => onAction(`check-${actionId}`, "credential.check", payload, "키 확인 결과를 불러왔습니다.")}>연결 확인</Button><Button size="sm" variant="secondary" disabled={!!busy} busy={busy === `discover-${actionId}`} onClick={() => onAction(`discover-${actionId}`, "credential.discover", payload, "이 키의 모델 목록을 갱신했습니다.")}>모델 목록 갱신</Button><Button size="sm" variant="ghost" disabled={!!busy} onClick={onReplace}>키 교체</Button><Button size="sm" variant="ghost" className="cloud-danger-text" disabled={!!busy} onClick={() => setDeleting(true)}>삭제</Button></div>
+    <details className="cloud-key-models"><summary>사용할 모델 · 선택 {selected.length}개</summary><p className="cloud-help">이 키에 대해 반환된 모델만 선택할 수 있습니다. 목록 조회와 생성 호출 확인은 별개이며, 잔여 할당량을 표시하지 않습니다.</p><div className="cloud-model-checklist">{credential.models.map((model) => {
+      const checked = selected.includes(model.id), allowed = modelAllowed(model, allowPaid);
+      const reason = model.supportsText !== true || model.supportsJson !== true ? "텍스트·JSON 지원 확인 필요" : !allowPaid && model.freeEligible !== true ? "현재 무료 경로에서 선택 불가" : "";
+      return <label key={model.id} className="cloud-model-choice" htmlFor={`${fieldId}-model-${model.id}`}><input id={`${fieldId}-model-${model.id}`} type="checkbox" checked={checked} disabled={!!busy || !checked && !allowed} onChange={(event) => setSelected((current) => event.target.checked ? [...new Set([...current, model.id])] : current.filter((id) => id !== model.id))} /><span><strong>{model.label}</strong>{model.label !== model.id ? <code>{model.id}</code> : null}<small>{modelDetails(model)}</small>{reason ? <small className="cloud-model-reason">{reason}</small> : null}</span></label>;
+    })}{missing.map((modelId) => <label key={modelId} className="cloud-model-choice" htmlFor={`${fieldId}-missing-${modelId}`}><input id={`${fieldId}-missing-${modelId}`} type="checkbox" checked disabled={!!busy} onChange={() => setSelected((current) => current.filter((id) => id !== modelId))} /><span><strong>{modelId}</strong><small>현재 목록에서 확인되지 않은 저장된 선택 · 선택 해제 가능</small></span></label>)}</div>{!credential.models.length ? <p className="cloud-help">이 키에서 확인한 모델 목록이 없습니다. 모델 목록을 갱신해 주세요.</p> : null}
+      <label className="cloud-field cloud-quota-group" htmlFor={`${fieldId}-group`}><span>한도 그룹</span><input id={`${fieldId}-group`} value={quotaGroup} maxLength={64} disabled={!!busy} placeholder="shared" onChange={(event) => setQuotaGroup(event.target.value)} /><small>같은 프로젝트·계정의 키는 같은 한도 그룹을 사용하세요.</small></label>
+      {!selected.length ? <p className="cloud-help">선택한 모델이 없으면 이 키는 생성 작업에서 제외됩니다.</p> : null}<Button size="sm" variant="secondary" disabled={!!busy || !dirty} busy={busy === `models-${actionId}`} onClick={() => onAction(`models-${actionId}`, "credential.toggle", { ...payload, enabled: credential.enabled, selectedModels: selected, quotaGroup: quotaGroup.trim() || "shared" }, "선택 모델과 한도 그룹을 저장했습니다.")}>선택 모델·한도 그룹 저장</Button>
+    </details>
+    {deleting ? <div className="cloud-delete-confirm"><p>‘{credential.label}’ 키만 삭제할까요?</p><div className="cloud-actions"><Button variant="danger" size="sm" disabled={!!busy} busy={busy === `delete-${actionId}`} onClick={async () => { if (await onAction(`delete-${actionId}`, "credential.delete", payload, "선택한 API 키를 삭제했습니다.")) setDeleting(false); }}>이 키 삭제</Button><Button variant="ghost" size="sm" disabled={!!busy} onClick={() => setDeleting(false)}>취소</Button></div></div> : null}
+  </article>;
+}
+
 export default function Settings({
   transport,
   onClose,
@@ -370,7 +476,9 @@ export default function Settings({
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
-  const [editing, setEditing] = useState<Provider | null>(null);
+  const [editing, setEditing] = useState<KeyEditor | null>(null);
+  const [keyLabel, setKeyLabel] = useState("");
+  const [keyQuotaGroup, setKeyQuotaGroup] = useState("shared");
   const [keys, setKeys] = useState<Record<Provider, string>>({
     nvidia: "",
     gemini: "",
@@ -486,6 +594,9 @@ export default function Settings({
           provider,
           key,
           access,
+          credentialId: editing?.credentialId,
+          label: keyLabel.trim() || undefined,
+          quotaGroup: keyQuotaGroup.trim() || "shared",
         });
         await reload();
       },
@@ -638,211 +749,22 @@ export default function Settings({
                   <p>등록한 키는 서버에서 암호화해 보관합니다.</p>
                 </div>
                 <div className="cloud-provider-grid">
-                  {settings.providers.map((provider) => {
-                    const state = connectionStatus(provider);
-                    return (
-                      <article
-                        className="cloud-provider"
-                        key={provider.provider}
-                      >
-                        <div className="cloud-provider-head">
-                          <h3>{providerNames[provider.provider]}</h3>
-                          <span className={`cloud-status ${state.tone}`}>
-                            <i />
-                            {state.label}
-                          </span>
-                        </div>
-                        {provider.configured ? (
-                          <p className="cloud-provider-access">
-                            {provider.access === "free_confirmed"
-                              ? "무료 사용 계정 · 사용자 확인"
-                              : provider.access === "paid"
-                                ? "유료 사용 계정"
-                                : "요금 상태 미확인"}
-                          </p>
-                        ) : null}
-                        {provider.lastError ? (
-                          <p className="cloud-provider-error">
-                            {provider.lastError}
-                          </p>
-                        ) : null}
-                        {editing === provider.provider ? (
-                          <form
-                            className="cloud-form cloud-key-form"
-                            onSubmit={(event) =>
-                              saveKey(event, provider.provider)
-                            }
-                          >
-                            <label
-                              className="cloud-field"
-                              htmlFor={`${id}-key-${provider.provider}`}
-                            >
-                              <span>새 API 키</span>
-                              <input
-                                id={`${id}-key-${provider.provider}`}
-                                type="password"
-                                autoComplete="off"
-                                spellCheck={false}
-                                autoCapitalize="none"
-                                value={keys[provider.provider]}
-                                onChange={(event) =>
-                                  setKeys((current) => ({
-                                    ...current,
-                                    [provider.provider]: event.target.value,
-                                  }))
-                                }
-                                disabled={!!busy}
-                                required
-                                autoFocus
-                              />
-                            </label>
-                            <label
-                              className="cloud-key-free"
-                              htmlFor={`${id}-free-${provider.provider}`}
-                            >
-                              <input
-                                id={`${id}-free-${provider.provider}`}
-                                type="checkbox"
-                                checked={freeKeys[provider.provider]}
-                                disabled={!!busy}
-                                onChange={(event) =>
-                                  setFreeKeys((current) => ({
-                                    ...current,
-                                    [provider.provider]: event.target.checked,
-                                  }))
-                                }
-                              />
-                              <span>
-                                이 키는 결제가 연결되지 않은 무료 사용 계정임을
-                                확인했어요.
-                              </span>
-                            </label>
-                            <p className="cloud-key-help">
-                              계정의 무료 사용 여부는 직접 확인해 주세요. 잔여
-                              사용량이나 과금 여부를 자동으로 확인하지 않습니다.
-                              확인하지 않은 키는 유료 호출 차단 시 대기합니다.
-                            </p>
-                            <div className="cloud-actions">
-                              <Button
-                                size="sm"
-                                type="submit"
-                                busy={busy === `key-${provider.provider}`}
-                                disabled={
-                                  !!busy || !keys[provider.provider].trim()
-                                }
-                              >
-                                저장
-                              </Button>
-                              <Button
-                                size="sm"
-                                type="button"
-                                variant="ghost"
-                                disabled={!!busy}
-                                onClick={() => {
-                                  setKeys((current) => ({
-                                    ...current,
-                                    [provider.provider]: "",
-                                  }));
-                                  setFreeKeys((current) => ({
-                                    ...current,
-                                    [provider.provider]: false,
-                                  }));
-                                  setEditing(null);
-                                }}
-                              >
-                                취소
-                              </Button>
-                            </div>
-                          </form>
-                        ) : (
-                          <div className="cloud-actions">
-                            <Button
-                              variant="secondary"
-                              size="sm"
-                              disabled={!!busy}
-                              onClick={() => {
-                                setKeys({ nvidia: "", gemini: "" });
-                                setFreeKeys({ nvidia: false, gemini: false });
-                                setEditing(provider.provider);
-                                setDeleting(null);
-                              }}
-                            >
-                              {provider.configured ? "키 변경" : "키 등록"}
-                            </Button>
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              disabled={!!busy || !provider.configured}
-                              busy={busy === `check-${provider.provider}`}
-                              onClick={() =>
-                                run(
-                                  `check-${provider.provider}`,
-                                  async () => {
-                                    await transportRef.current(
-                                      "credential.check",
-                                      { provider: provider.provider },
-                                    );
-                                    await reload();
-                                  },
-                                  "연결 확인 결과를 불러왔습니다.",
-                                )
-                              }
-                            >
-                              연결 확인
-                            </Button>
-                            {provider.configured ? (
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                className="cloud-danger-text"
-                                disabled={!!busy}
-                                onClick={() => setDeleting(provider.provider)}
-                              >
-                                키 삭제
-                              </Button>
-                            ) : null}
-                          </div>
-                        )}
-                        {deleting === provider.provider ? (
-                          <div className="cloud-delete-confirm">
-                            <p>저장된 API 키를 삭제할까요?</p>
-                            <div className="cloud-actions">
-                              <Button
-                                size="sm"
-                                variant="danger"
-                                disabled={!!busy}
-                                busy={busy === `delete-${provider.provider}`}
-                                onClick={() =>
-                                  run(
-                                    `delete-${provider.provider}`,
-                                    async () => {
-                                      await transportRef.current(
-                                        "credential.delete",
-                                        { provider: provider.provider },
-                                      );
-                                      setDeleting(null);
-                                      await reload();
-                                    },
-                                    "API 키를 삭제했습니다.",
-                                  )
-                                }
-                              >
-                                삭제
-                              </Button>
-                              <Button
-                                size="sm"
-                                variant="ghost"
-                                disabled={!!busy}
-                                onClick={() => setDeleting(null)}
-                              >
-                                취소
-                              </Button>
-                            </div>
-                          </div>
-                        ) : null}
-                      </article>
-                    );
-                  })}
+                  {settings.providers.map((provider) => <article className="cloud-provider" key={provider.provider}>
+                    <div className="cloud-provider-head"><h3>{providerNames[provider.provider]}</h3><span>{provider.credentials.length}개 키</span></div>
+                    <div className="cloud-credential-list">{provider.credentials.map(credential => <CredentialCard key={credential.id || "legacy"} provider={provider.provider} credential={credential} allowPaid={draft.allowPaid} busy={busy}
+                      onAction={(action, operation, payload, success) => run(action, async () => { try { await transportRef.current(operation, payload); } finally { await reload(); } }, success)}
+                      onReplace={() => { setEditing({provider:provider.provider,credentialId:credential.id,legacy:credential.legacy});setKeyLabel(credential.label);setKeyQuotaGroup(credential.quotaGroup);setKeys({nvidia:"",gemini:""});setFreeKeys({nvidia:false,gemini:false}); }} />)}</div>
+                    {editing?.provider === provider.provider ? <form className="cloud-form cloud-key-form" onSubmit={event => saveKey(event,provider.provider)}>
+                      <h4>{editing.credentialId ? "선택한 키 교체" : "API 키 추가"}</h4>
+                      <label className="cloud-field" htmlFor={`${id}-label-${provider.provider}`}><span>키 이름</span><input id={`${id}-label-${provider.provider}`} value={keyLabel} maxLength={60} disabled={!!busy} placeholder="예: 개인 무료 프로젝트" onChange={event=>setKeyLabel(event.target.value)} /></label>
+                      <label className="cloud-field" htmlFor={`${id}-key-${provider.provider}`}><span>새 API 키</span><input id={`${id}-key-${provider.provider}`} type="password" autoComplete="off" spellCheck={false} autoCapitalize="none" value={keys[provider.provider]} onChange={event=>setKeys(current=>({...current,[provider.provider]:event.target.value}))} disabled={!!busy} required autoFocus /></label>
+                      <label className="cloud-field" htmlFor={`${id}-group-${provider.provider}`}><span>한도 그룹</span><input id={`${id}-group-${provider.provider}`} value={keyQuotaGroup} maxLength={64} disabled={!!busy} onChange={event=>setKeyQuotaGroup(event.target.value)} /><small>같은 프로젝트·계정의 키는 shared 등 같은 그룹을 사용하세요.</small></label>
+                      <label className="cloud-key-free" htmlFor={`${id}-free-${provider.provider}`}><input id={`${id}-free-${provider.provider}`} type="checkbox" checked={freeKeys[provider.provider]} disabled={!!busy} onChange={event=>setFreeKeys(current=>({...current,[provider.provider]:event.target.checked}))} /><span>결제가 연결되지 않은 무료 사용 계정임을 확인했어요.</span></label>
+                      <p className="cloud-key-help">잔여 무료 할당량은 자동 확인하지 않습니다. NVIDIA 연결 확인은 짧은 생성 요청을 사용합니다.</p>
+                      <div className="cloud-actions"><Button type="submit" size="sm" busy={busy===`key-${provider.provider}`} disabled={!!busy || !keys[provider.provider].trim()}>확인 후 저장</Button><Button type="button" variant="ghost" size="sm" disabled={!!busy} onClick={()=>{setEditing(null);setKeys({nvidia:"",gemini:""});setFreeKeys({nvidia:false,gemini:false});}}>취소</Button></div>
+                    </form> : <Button variant="secondary" size="sm" disabled={!!busy} onClick={()=>{setEditing({provider:provider.provider});setKeyLabel("");setKeyQuotaGroup("shared");setKeys({nvidia:"",gemini:""});setFreeKeys({nvidia:false,gemini:false});}}>API 키 추가</Button>}
+                  </article>)}
+                  <p className="cloud-help">사용 가능한 키와 선택 모델을 순서대로 배분합니다. 같은 프로젝트·계정의 한도는 키를 추가해도 늘어나지 않으며, 제한되면 해당 한도 그룹은 대기합니다.</p>
                 </div>
               </section>
               <form className="cloud-preferences" onSubmit={savePreferences}>

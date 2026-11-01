@@ -11,7 +11,7 @@ export async function state(ctx:Ctx,withPages=false){
  const bank=tables.concept_questions.map((r:any)=>({...value(r),conceptId:r.concept_id,conceptIds:[...new Set([r.concept_id,...(r.data.conceptIds||[]),...tables.bank_question_concepts.filter((v:any)=>v.question_id===r.id).map((v:any)=>v.concept_id)])],chapterIds:[...new Set([r.data.chapterId,...tables.bank_question_origins.filter((v:any)=>v.question_id===r.id).map((v:any)=>v.chapter_id)].filter(Boolean))],purposes:[...new Set([r.data.purpose,...tables.bank_question_origins.filter((v:any)=>v.question_id===r.id).map((v:any)=>v.purpose)].filter(Boolean))],origins:tables.bank_question_origins.filter((v:any)=>v.question_id===r.id),active:r.review_status==='approved'&&r.data.active!==false&&r.data.archived!==true,reviewStatus:r.review_status}));
  const materials=tables.documents.map(material).filter((m:any)=>!m.archived);
  const active=new Set(materials.map((m:any)=>m.id));
- const questions=tables.problems.filter((r:any)=>active.has(r.document_id)).map((r:any)=>{
+ const questions=tables.problems.filter((r:any)=>active.has(r.document_id)&&r.data.autoRetired!==true).map((r:any)=>{
  const parts=tables.problem_regions.filter((p:any)=>p.problem_id===r.id).sort((a:any,b:any)=>a.part-b.part),ids=tables.problem_concepts.filter((m:any)=>m.problem_id===r.id).map((m:any)=>m.concept_id);
  return {...value(r),materialId:r.document_id,number:r.number,page:r.page,regions:parts.length?parts.map((p:any)=>p.data):r.data.regions||[],imagePaths:parts.map((p:any)=>p.image_path),conceptIds:ids,hasContent:ids.length>0&&ids.every((cid:string)=>bank.some((i:any)=>i.conceptIds.includes(cid)&&i.active&&i.modes?.some((m:string)=>['quiz','check'].includes(m))))};
  });

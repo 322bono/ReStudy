@@ -9,11 +9,13 @@ export function storagePageText<T extends {
   text: string;
   items: { text: string }[];
   warnings: string[];
+  words?: {text:string}[];
+  numberMarkers?: {text:string}[];
 }>(page: T): T {
   const text = repairPdfText(page.text);
   const items = page.items.map((item) => ({ ...item, text: repairPdfText(item.text) }));
   const repaired = text !== page.text || items.some((item, index) => item.text !== page.items[index].text);
   const warnings = page.warnings.map(repairPdfText);
   if (repaired) warnings.push("추출 텍스트의 깨진 문자를 대체했습니다. 해당 글자는 원본 이미지에서 확인하세요.");
-  return { ...page, text, items, warnings: [...new Set(warnings)] };
+  return { ...page, text, items, ...(page.words?{words:page.words.map(w=>({...w,text:repairPdfText(w.text)}))}:{}),...(page.numberMarkers?{numberMarkers:page.numberMarkers.map(w=>({...w,text:repairPdfText(w.text)}))}:{}),warnings: [...new Set(warnings)] };
 }

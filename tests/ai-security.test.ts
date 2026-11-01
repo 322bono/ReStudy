@@ -54,14 +54,15 @@ describe("generated content validation", () => {
 });
 
 function database() {
-  const tables: Record<string, any[]> = { profiles: [{ user_id: "owner-a", data: {} }], ai_credentials: [], ai_providers: [], ai_jobs: [], ai_usage_logs: [] };
+  const tables: Record<string, any[]> = { profiles: [{ user_id: "owner-a", data: {} }], ai_credentials: [], ai_providers: [], ai_key_slots:[],ai_key_model_states:[],ai_quota_cooldowns:[],ai_jobs: [], ai_usage_logs: [] };
   return { tables, from(table: string) {
     let filters: [string, any][] = []; let change: any; let operation = "select";
     const query: any = {
       select: () => query, eq: (key: string, value: any) => { filters.push([key, value]); return query; }, order: () => query, limit: () => query,
-      upsert: (value: any) => { change = value; operation = "upsert"; return query; }, delete: () => { operation = "delete"; return query; }, update: (value: any) => { change = value; operation = "update"; return query; },
+      insert:(value:any)=>{change=value;operation='insert';return query;},upsert: (value: any) => { change = value; operation = "upsert"; return query; }, delete: () => { operation = "delete"; return query; }, update: (value: any) => { change = value; operation = "update"; return query; },
       then(resolve: any, reject: any) { return Promise.resolve().then(() => {
         const rows = tables[table] ?? []; const matches = (row: any) => filters.every(([key, value]) => row[key] === value);
+        if(operation==='insert')rows.push(change);
         if (operation === "upsert") { const old = rows.find((row) => row.user_id === change.user_id && row.provider === change.provider); if (old) Object.assign(old, change); else rows.push(change); }
         if (operation === "delete") tables[table] = rows.filter((row) => !matches(row));
         if (operation === "update") rows.filter(matches).forEach((row) => Object.assign(row, change));
@@ -72,9 +73,28 @@ function database() {
   } };
 }
 describe("server-only credential operations", () => {
+  it("adds separate encrypted slots, preserves a failed replacement and allows empty model pools",async()=>{
+    const db=database(),ctx={user:{id:'owner-a'},db,admin:db};
+    const good=(async()=>new Response(JSON.stringify({models:[{name:'models/gemini-3.8-flash',supportedGenerationMethods:['generateContent']},{name:'models/gemini-3.6-flash',supportedGenerationMethods:['generateContent']}]})))as typeof fetch;
+    const first=await credentialAction({action:'save',provider:'gemini',key:'test-first',access:'free_confirmed',label:'첫 키'},ctx,master,good);
+    await credentialAction({action:'save',provider:'gemini',key:'test-second',access:'free_confirmed',label:'둘째 키'},ctx,master,good);
+    expect(db.tables.ai_key_slots).toHaveLength(2);
+    const old=db.tables.ai_key_slots[0].ciphertext;
+    db.tables.ai_key_slots[0].data.checked_at='2000-01-01T00:00:00Z';
+    await expect(credentialAction({action:'save',provider:'gemini',credentialId:first.credentialId,key:'failed-replacement'},ctx,master,(async()=>new Response('{}',{status:401}))as typeof fetch)).rejects.toThrow('auth_error');
+    expect(db.tables.ai_key_slots[0].ciphertext).toBe(old);
+    await credentialAction({action:'toggle',provider:'gemini',credentialId:first.credentialId,enabled:true,selectedModels:[]},ctx,master);
+    expect(db.tables.ai_key_slots[0].data.selectedModels).toEqual([]);
+    await expect(credentialAction({action:'delete',provider:'gemini',credentialId:'foreign-slot'},ctx,master)).rejects.toThrow('credential_not_found');
+    await expect(credentialAction({action:'delete',provider:'gemini'},ctx,master)).rejects.toThrow('credential_id_required');
+    const status=await credentialAction({action:'status'},ctx,master);
+    expect(status.providers[1].credentials).toHaveLength(2);
+    for(const secret of ['test-first','test-second','ciphertext','fingerprint','iv'])expect(JSON.stringify(status)).not.toContain(secret==='iv'?'"iv"':secret);
+    await expect(credentialAction({action:'save',provider:'gemini',key:'test-second'},ctx,master,good)).rejects.toThrow('credential_duplicate');
+  });
   it("returns only connection metadata and never stores the plaintext submitted key", async () => {
     const db = database(); const ctx = { user: { id: "owner-a" }, db, admin: db };
-    const transport = (async () => new Response(JSON.stringify({ name: "models/gemini-3.8-flash", supportedGenerationMethods: ["generateContent"] }))) as typeof fetch;
+    const transport = (async () => new Response(JSON.stringify({models:[{ name: "models/gemini-3.8-flash", supportedGenerationMethods: ["generateContent"] }]}))) as typeof fetch;
     const response = await credentialAction({ action: "save", provider: "gemini", key: "test-only-plaintext-secret", access: "free_confirmed" }, ctx, master, transport);
     expect(response).toMatchObject({ configured: true, generation_verified: false });
     expect(JSON.stringify(db.tables)).not.toContain("test-only-plaintext-secret");
@@ -92,6 +112,7 @@ describe("server-only credential operations", () => {
   it("deletes only the authenticated owner's provider key", async () => {
     const db = database(); const ctx = { user: { id: "owner-a" }, db, admin: db };
     db.tables.ai_credentials.push({ user_id: "owner-a", provider: "gemini" }, { user_id: "owner-b", provider: "gemini" });
+    db.tables.ai_key_slots.push({id:'slot-a',user_id:'owner-a',provider:'gemini',data:{legacy:true}},{id:'slot-b',user_id:'owner-b',provider:'gemini',data:{legacy:true}});
     await credentialAction({ action: "delete", provider: "gemini" }, ctx, master);
     expect(db.tables.ai_credentials).toEqual([{ user_id: "owner-b", provider: "gemini" }]);
   });
@@ -100,7 +121,7 @@ describe("server-only credential operations", () => {
     let probes = 0;
     const transport = (async (_url: any, init: any) => {
       if (init.method === "POST") { probes++; return new Response("secret auth failure", { status: 401 }); }
-      return new Response(JSON.stringify({ data: [{ id: "meta/llama-3.3-70b-instruct" }] }));
+      return new Response(JSON.stringify({ data: [{ id: "nvidia/nemotron-3-super-120b-a12b" }] }));
     }) as typeof fetch;
     await expect(credentialAction({ action: "save", provider: "nvidia", key: "test-only-key", access: "free_confirmed" }, ctx, master, transport)).rejects.toThrow("auth_error");
     expect(probes).toBe(1); expect(db.tables.ai_credentials).toEqual([]);

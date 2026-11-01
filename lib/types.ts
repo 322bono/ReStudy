@@ -16,6 +16,9 @@ export type Material = {
   pageCount: number;
   status: "uploaded" | "processing" | "ready" | "needs_review" | "error";
   progress: number;
+  completedPages?: number;
+  failedPage?: number | null;
+  localOutline?: any;
   error?: string;
   warnings?: string[];
   message?: string;

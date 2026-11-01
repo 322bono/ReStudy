@@ -29,6 +29,26 @@ const page = (
 });
 
 describe("evidence-based question crops", () => {
+  it("uses large standalone workbook markers above stems and ignores numbered source passages",()=>{
+    const result=detectProblems([page(56,[
+      line('270',.089,.105,.051,.015),line('(가)에 들어갈 내용으로 가장 적절한 것은?',.089,.129,.3,.010),
+      line('271',.089,.503,.05,.015),line('다음 자료에 대한 설명으로 옳은 것은?',.089,.528,.3,.010),
+      line('1. 한국의 독립을 위하여 임시 민주 정부를 수립한다.',.525,.190,.36,.011),
+      line('2. 임시 정부 수립을 위하여 위원회를 설치한다.',.525,.206,.36,.011),
+      line('3. 협정을 작성하기 위하여 공동 심의를 받아야 한다.',.525,.238,.36,.011),
+      line('272',.512,.321,.05,.015),line('위 자료의 회의 명칭을 쓰시오.',.512,.346,.3,.010),
+      line('56 Ⅱ. 대한민국의 발전',.089,.924,.3,.010),
+    ])]);
+    expect(result.map(q=>q.number)).toEqual([270,271,272]);
+    expect(result[2].regions[0].x).toBeGreaterThan(.4);
+  });
+  it("rejects chapter enumerations and page numbers beside footer text",()=>{
+    expect(detectProblems([page(11,[line('1. 정부의 수립',.09,.1,.3,.018),line('1948년 정부가 수립되었다.',.09,.14),line('2. 경제의 성장',.09,.4,.3,.018),line('74',.1,.925,.03,.01),line('대한민국의 발전',.14,.925,.3,.01)])])).toEqual([]);
+  });
+  it("handles OCR badges and leading-zero or circled questions without promoting circled choices",()=>{
+    const result=detectProblems([page(1,[line('263%',.08,.10,.08,.019),line('밑줄 친 위원회에 대한 설명으로 옳은 것은?',.08,.13,.35,.01),line('① 서로 다른 입력이다.',.1,.2,.35,.01),line('② 치역과 공역이 같다.',.1,.23,.35,.01),line('01',.55,.1,.05,.02),line('다음 방정식의 해를 구하시오.',.55,.13,.35,.01),line('② 다음 중 옳은 것은?',.55,.5,.35,.02)])]);
+    expect(result.map(q=>q.number)).toEqual([263,1,2]);
+  });
   it("reads columns top-to-bottom and preserves the entire figure band", () => {
     const result = detectProblems([
       page(1, [
@@ -169,7 +189,7 @@ describe("evidence-based question crops", () => {
       ]),
       page(2, [
         line("22. 둘째 문제", 0.07, 0.1),
-        line("24. 관계없는 문제", 0.07, 0.6),
+        line("24. 별개의 답을 구하시오.", 0.07, 0.6),
       ]),
     ]);
     expect(result[1].regions[0].page).toBe(1);
@@ -211,8 +231,8 @@ describe("evidence-based question crops", () => {
 
   it("preserves duplicate numbers in distinct pages and yields normalized regions", () => {
     const result = detectProblems([
-      page(1, [line("1. A", 0.07, 0.1)]),
-      page(2, [line("1. B", 0.07, 0.1)]),
+      page(1, [line("1. A의 값을 구하시오.", 0.07, 0.1)]),
+      page(2, [line("1. B의 값을 구하시오.", 0.07, 0.1)]),
     ]);
     expect(result.map((q) => [q.page, q.number])).toEqual([
       [1, 1],

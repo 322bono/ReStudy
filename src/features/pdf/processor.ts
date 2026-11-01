@@ -13,6 +13,8 @@ export interface PageTextItem {
   width: number;
   height: number;
   confidence?: number;
+  fontName?: string;
+  fontSize?: number;
 }
 export interface PreparedPage {
   number: number;
@@ -24,6 +26,9 @@ export interface PreparedPage {
   source: "text" | "ocr";
   image: Blob;
   warnings: string[];
+  words?: PageTextItem[];
+  numberMarkers?: PageTextItem[];
+  numberLayerVersion?: string;
 }
 export interface Region {
   page: number;
@@ -150,7 +155,7 @@ function nativeItem(
   const x1 = clamp(Math.max(...corners.map((p) => p[0])) / viewport.width);
   const y1 = clamp(Math.max(...corners.map((p) => p[1])) / viewport.height);
   if (x1 <= x || y1 <= y) return;
-  return { text: item.str, x, y, width: x1 - x, height: y1 - y };
+  return { text: item.str, x, y, width: x1 - x, height: y1 - y,fontName:item.fontName,fontSize:fontHeight/viewport.height };
 }
 
 /** PDF.js 6 records each painted image as three normalized parallelogram corners. */
@@ -309,18 +314,21 @@ async function recognize(
   canvas: HTMLCanvasElement,
   onProgress: PageProgress | undefined,
   signal: AbortSignal,
-): Promise<{ items: PageTextItem[]; text: string }> {
+  numeric = false,
+): Promise<{ items: PageTextItem[]; words:PageTextItem[];text: string }> {
   const run = ocrQueue.then(async () => {
     if (signal.aborted) throw aborted();
     ocrProgress = onProgress;
     try {
       const current = await worker(signal);
+      await current.setParameters({tessedit_pageseg_mode:(numeric?'11':'3') as import('tesseract.js').PSM,tessedit_char_whitelist:numeric?'0123456789':''});
       const result = await abortable(
         current.recognize(canvas, {}, { text: true, blocks: true }),
         signal,
       );
       return {
         items: ocrItems(result.data, canvas.width, canvas.height),
+        words: result.data.blocks?.flatMap(b=>b.paragraphs.flatMap(p=>p.lines.flatMap(l=>(l.words??[]).filter(w=>w.text.trim()).map(w=>({text:w.text,x:clamp(w.bbox.x0/canvas.width),y:clamp(w.bbox.y0/canvas.height),width:clamp(w.bbox.x1/canvas.width)-clamp(w.bbox.x0/canvas.width),height:clamp(w.bbox.y1/canvas.height)-clamp(w.bbox.y0/canvas.height),confidence:clamp(w.confidence/100)})))))??[],
         text: result.data.text.trim(),
       };
     } finally {
@@ -329,6 +337,23 @@ async function recognize(
   });
   ocrQueue = run.catch(() => undefined);
   return abortable(run, signal);
+}
+
+export const NUMBER_LAYER_VERSION='color-digits-2026-11-02-v1';
+async function numberLayer(canvas:HTMLCanvasElement,signal:AbortSignal):Promise<PageTextItem[]>{
+  const context=canvas.getContext('2d')!,pixels=context.getImageData(0,0,canvas.width,canvas.height);let ink=0;
+  for(let i=0;i<pixels.data.length;i+=4){const r=pixels.data[i],g=pixels.data[i+1],b=pixels.data[i+2],hi=Math.max(r,g,b),lo=Math.min(r,g,b),colored=hi-lo>45&&(hi-lo)/Math.max(1,hi)>.25&&lo<170;const v=colored?0:255;if(colored)ink++;pixels.data[i]=pixels.data[i+1]=pixels.data[i+2]=v;pixels.data[i+3]=255;
+    if(i>0&&i%(canvas.width*4*96)===0){await new Promise(resolve=>setTimeout(resolve,0));if(signal.aborted)throw aborted();}}
+  if(ink<6)return[];
+  context.putImageData(pixels,0,0);
+  const recognized=await recognize(canvas,undefined,signal,true);
+  return recognized.items.filter(i=>/^\d{1,4}$/.test(i.text.trim())&&Number(i.text)>0&&(i.confidence??0)>=.55).map(i=>({...i,text:i.text.trim()}));
+}
+/** A cached scan can repair only its colored number layer without repeating body OCR. */
+export async function prepareNumberMarkers(pdf:PDFDocumentProxy,pageNumber:number):Promise<PageTextItem[]>{
+  validatePage(pdf,pageNumber);const signal=ocrController.signal,page=await pdf.getPage(pageNumber),view=page.getViewport({scale:pageScale(page,3)}),canvas=makeCanvas(view.width,view.height),render=page.render({canvas,viewport:view,annotationMode:0,background:'white'});
+  const cancel=()=>render.cancel();signal.addEventListener('abort',cancel,{once:true});
+  try{await abortable(render.promise,signal);return await numberLayer(canvas,signal);}finally{signal.removeEventListener('abort',cancel);canvas.width=canvas.height=0;}
 }
 
 /** Stops in-flight/queued OCR; the next page starts a fresh local worker. */
@@ -381,7 +406,7 @@ export async function preparePage(
       0,
     );
     const scan = imageCoverage(page.imageCoordinates) > 0.5 && count < 220;
-    let source: PreparedPage["source"] = "text";
+    let source: PreparedPage["source"] = "text",words:PageTextItem[]=[];
     const warnings: string[] = [];
     let text = [...items]
       .sort(order)
@@ -393,6 +418,7 @@ export async function preparePage(
       try {
         const recognized = await recognize(canvas, onProgress, signal);
         items = recognized.items;
+        words = recognized.words;
         text = recognized.text;
       } catch (error) {
         if (
@@ -410,7 +436,8 @@ export async function preparePage(
         "OCR 후보입니다. 문제 번호·수식·지문을 원본 이미지와 비교해 확인하세요.",
       );
     }
-    const lines = textLines(items);
+    const numberMarkers=source==='ocr'?await numberLayer(canvas,signal):[];
+    const lines = textLines([...items,...numberMarkers]);
     const fallback =
       items.reduce((sum, i) => sum + i.text.trim().length, 0) < 25
         ? "uncertain"
@@ -435,6 +462,7 @@ export async function preparePage(
       source,
       image,
       warnings,
+      words,numberMarkers,numberLayerVersion:NUMBER_LAYER_VERSION,
     });
   } finally {
     signal.removeEventListener("abort", cancelRender);
@@ -511,7 +539,7 @@ const NUMBER =
 const BARE = /^\s*(\d{1,4})\s*$/;
 const NUMERIC_CELL = /^\s*\d+[.)．]?\s*$/;
 const RANGE =
-  /^(?:\s*[\[【(]|\s*(?:Questions?|문항)\s+)(\d{1,4})\s*[~～\-–—]\s*(\d{1,4})\s*[\]】)]?/i;
+  /^(?:\s*[\[［【(（|｜]|\s*(?:Questions?|문항)\s+)(\d{1,4})\s*[~～\-–—]\s*(\d{1,4})\s*[\]］】)）|｜]?/i;
 const ANSWERS =
   /^\s*(?:정답\s*(?:(?:과|및|[·ㆍ/])\s*해설|해설)?|빠른\s*정답|해답|해설(?:지)?|정답표|Answers?(?:\s*(?:key|sheet))?|Solutions?(?:\s+(?:and\s+)?(?:answers?|explanations?))?)(?:\s*[:：-].*|\s*\d+|\s*)$/i;
 const ANSWER_ENTRY =
@@ -616,48 +644,45 @@ interface Layout {
   kind: PreparedPage["kind"];
 }
 
+const QUESTION_INTENT = /[?？]|(?:구하|고르|쓰|적으|답하|서술하|계산하|찾으|선택하|설명하|비교하|확인하|판단하|읽으|보|연결하)(?:시오|세요|라)|(?:첫|다음|둘째|새로운|왼쪽|오른쪽|번째)\s*문제|\b(?:find|solve|calculate|choose|select|determine|explain|what|which|how|why|fill|complete|write|read|answer)\b/i;
+const EXPLICIT_MARKER = /^\s*(?:문제|문항|Question|Q)\s*(\d{1,4})(?:[.:．)]|\s|$)\s*(.*)$/i;
+function marker(line:PageTextItem): {number:number;tail:string;bare:boolean;explicit:boolean}|undefined {
+  const explicit=EXPLICIT_MARKER.exec(line.text),normal=NUMBER.exec(line.text);
+  const circle=/^\s*([①-⑳])\s*(.*)$/.exec(line.text);
+  const separated=/^\s*(\d{1,4})(?:\s+(.+)|([^\d\s.]{1,5}))?\s*$/.exec(line.text);
+  const m=explicit||normal||separated;
+  if(circle)return{number:circle[1].charCodeAt(0)-'①'.charCodeAt(0)+1,tail:circle[2],bare:false,explicit:false};
+  if(!m||+m[1]<1)return;
+  return{number:+m[1],tail:m[2]||'',bare:!!separated&&!explicit&&!normal||NUMERIC_CELL.test(line.text),explicit:!!explicit};
+}
 function findAnchors(lines: PageTextItem[]): Anchor[] {
   const candidates: Anchor[] = [];
   for (const line of lines) {
     if (RANGE.test(line.text)) continue;
-    const labelled = NUMBER.exec(line.text),
-      bare = BARE.exec(line.text),
-      match = labelled || bare;
-    if (!match || +match[1] < 1) continue;
-    const numberOnly = NUMERIC_CELL.test(line.text);
-    const bodyEvidence = lines.some(
-      (other) =>
-        other !== line &&
-        other.x >= right(line) - 0.001 &&
-        other.x - right(line) < 0.09 &&
-        Math.abs(other.y - line.y) < Math.max(0.004, line.height * 0.7) &&
-        /[A-Za-z가-힣]/.test(other.text) &&
-        other.text.length >= 4,
-    );
-    // Separate numeric tokens occur in both genuine columns and table cells.
-    // Nearby prose corroborates a question; alignment alone never does.
-    if (numberOnly && !bodyEvidence) continue;
-    candidates.push({
-      number: +match[1],
-      line,
-      bare: numberOnly || (!!bare && !labelled),
-      column: 0,
-    });
+    const parsed=marker(line);if(!parsed)continue;
+    if(parsed.bare&&(line.y<.035||line.y>.91))continue;
+    const aligned=lines.filter(other=>other!==line&&other.x>=line.x-.025&&other.x<=line.x+.09&&other.y>line.y+line.height*.55&&other.y-line.y<Math.max(.055,line.height*3.2)).sort(order);
+    const stop=aligned.findIndex(other=>!!marker(other));
+    const below=(stop<0?aligned:aligned.slice(0,stop)).slice(0,4);
+    const beside=lines.filter(other=>other!==line&&other.x>=right(line)-.001&&other.x-right(line)<.09&&Math.abs(other.y-line.y)<Math.max(.004,line.height*.7));
+    const context=[parsed.tail,...beside.map(l=>l.text),...below.map(l=>l.text)].join(' ');
+    const firstProse=below.find(l=>/[A-Za-z가-힣]/.test(l.text)&&l.text.length>=4);
+    const prominent=parsed.bare&&parsed.number>=10&&firstProse&&line.height>=firstProse.height*1.18&&Math.abs(firstProse.x-line.x)<.035;
+    if(!parsed.explicit&&!QUESTION_INTENT.test(context)&&!prominent)continue;
+    // Numeric fragments need an actual nearby stem, never alignment alone.
+    if(parsed.bare&&!beside.length&&!firstProse)continue;
+    candidates.push({number:parsed.number,line,bare:parsed.bare,column:0});
   }
-  return candidates.filter(
-    (a) =>
-      !(
-        a.number <= 5 &&
-        /^\s*\d+[).．]/.test(a.line.text) &&
-        candidates.some(
-          (outer) =>
-            outer !== a &&
-            outer.line.y < a.line.y - 0.006 &&
-            a.line.x - outer.line.x > 0.012 &&
-            a.line.x - outer.line.x < 0.18,
-        )
-      ),
-  );
+  // An observed marker may survive bad stem OCR when two nearby question
+  // numbers corroborate its style/column. Never synthesize a missing number.
+  const proven=[...candidates];
+  for(const line of lines){const p=marker(line);if(!p?.bare||line.y<.035||line.y>.91||candidates.some(a=>a.line===line))continue;
+    const neighbours=proven.filter(a=>a.number!==p.number&&Math.abs(a.number-p.number)<=2);
+    if(new Set(neighbours.map(a=>a.number)).size>=2&&neighbours.some(a=>Math.abs(a.line.x-line.x)<.03&&line.height>=a.line.height*.75&&line.height<=a.line.height*1.6))candidates.push({number:p.number,line,bare:true,column:0});
+  }
+  const unique:Anchor[]=[];
+  for(const candidate of candidates.sort((a,b)=>(b.line.confidence??1)-(a.line.confidence??1)))if(!unique.some(a=>a.number===candidate.number&&Math.abs(a.line.x-candidate.line.x)<.025&&Math.abs(a.line.y-candidate.line.y)<Math.max(.009,Math.min(a.line.height,candidate.line.height)*.8)))unique.push(candidate);
+  return unique.filter(a=>!(a.number<=10&&unique.some(outer=>outer!==a&&outer.line.y<a.line.y-.006&&a.line.x-outer.line.x>.012&&a.line.x-outer.line.x<.18)));
 }
 
 function columns(layout: Layout): void {
@@ -696,6 +721,8 @@ function area(
   fullWidth = false,
 ): { region: Region; text: string } {
   const [left, rightEdge] = fullWidth ? [0, 1] : layout.columns[column];
+  const footer=layout.lines.find(l=>l.y>.9&&(BARE.test(l.text)||/^\d{1,4}\s+[^\d]/.test(l.text)||/\s\d{1,4}$/.test(l.text)));
+  if(footer&&footer.y>top+.025)end=Math.min(end,footer.y-.004);
   const y = clamp(top - 0.007),
     y1 = clamp(Math.max(y + 0.01, end - 0.004));
   // Full column bands preserve diagrams, equations and tables omitted by OCR.
@@ -817,7 +844,7 @@ export function detectProblems(pages: PreparedPage[]): ProblemCandidate[] {
   const questions: ProblemCandidate[] = [];
   let previous: Layout | undefined;
   for (const page of [...pages].sort((a, b) => a.number - b.number)) {
-    const lines = textLines(page.items);
+    const lines = textLines([...page.items,...(page.numberMarkers??[])]);
     const adjacent = previous && previous.page.number === page.number - 1;
     const layout: Layout = {
       page,

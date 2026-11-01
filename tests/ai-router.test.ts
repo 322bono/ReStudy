@@ -13,6 +13,29 @@ function context(rotationIndex = 0, providers = states(), transport?: typeof fet
   return { rotationIndex, providers, mode: "round_robin" as const, allowPaid: false, getKey: async () => "test-only-key", now: () => 1000000, sleep: async () => {}, updateProvider: async (_p: string, data: unknown) => { events.push(data); }, log: async (data: unknown) => { events.push(data); }, fetch: transport ?? (async (url: string | URL | Request) => new Response(JSON.stringify(String(url).includes("nvidia") ? { choices: [{ message: { content: JSON.stringify(output) }, finish_reason: "stop" }], usage: { total_tokens: 20 } } : { candidates: [{ content: { parts: [{ text: JSON.stringify(output) }] }, finishReason: "STOP" }], usageMetadata: { totalTokenCount: 20 } }), { status: 200 })) as typeof fetch, events };
 }
 describe("persistent rotation routing", () => {
+  it("rotates keys and models and isolates an inaccessible model", async () => {
+    const p=states()[0];
+    const slots=[{...p,credentialId:'key-a',quotaGroup:'shared',selectedModels:['nvidia/nemotron-3-super-120b-a12b','openai/gpt-oss-20b']},{...p,credentialId:'key-b',quotaGroup:'other',selectedModels:['nvidia/nemotron-3-super-120b-a12b']}];
+    const seen:string[]=[];const good=context().fetch;
+    const ctx=context(0,slots,(async(...args:Parameters<typeof fetch>)=>{const body=JSON.parse(String(args[1]?.body));seen.push(body.model);return seen.length===1?new Response('{}',{status:404}):good(...args);})as typeof fetch);
+    expect(await runTask(input,ctx)).toMatchObject({status:'succeeded',model:'openai/gpt-oss-20b'});
+    expect(seen).toEqual(['nvidia/nemotron-3-super-120b-a12b','openai/gpt-oss-20b']);
+  });
+  it("does not hop across keys sharing an exhausted project quota", async () => {
+    const p=states()[0];const seen:string[]=[];
+    const slots=['a','b'].map(credentialId=>({...p,credentialId,quotaGroup:'shared',selectedModels:['nvidia/nemotron-3-super-120b-a12b','openai/gpt-oss-20b']}));
+    const ctx=context(0,slots,(async(_u,init)=>{seen.push(JSON.parse(String(init?.body)).model);return new Response('{}',{status:429});})as typeof fetch);
+    expect(await runTask(input,ctx)).toMatchObject({status:'paused'});expect(seen).toHaveLength(1);
+  });
+  it("treats an explicitly empty model selection as disabled", async () => {
+    const ctx=context(0,[{...states()[0],credentialId:'a',selectedModels:[]}]);
+    expect(await runTask(input,ctx)).toMatchObject({status:'paused',reason:'no_available_provider'});
+  });
+  it("uses another model when upstream explicitly identifies a per-model quota",async()=>{
+    const seen:string[]=[],good=context().fetch,p=states()[1];
+    const ctx=context(0,[{...p,credentialId:'a',selectedModels:['gemini-3.8-flash','gemini-3.6-flash']}],(async(...args:Parameters<typeof fetch>)=>{seen.push(String(args[0]));return seen.length===1?new Response(JSON.stringify({error:{details:[{violations:[{quotaDimensions:{model:'gemini-3.8-flash'}}]}]}}),{status:429}):good(...args);})as typeof fetch);
+    expect(await runTask(input,ctx)).toMatchObject({status:'succeeded',model:'gemini-3.6-flash'});expect(seen).toHaveLength(2);
+  });
   it("uses the durable rotation index to alternate providers across new runtimes", async () => {
     expect(await runTask(input, context(0))).toMatchObject({ status: "succeeded", provider: "nvidia" });
     expect(await runTask(input, context(1))).toMatchObject({ status: "succeeded", provider: "gemini" });

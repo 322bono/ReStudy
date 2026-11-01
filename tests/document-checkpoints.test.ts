@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const mocked = vi.hoisted(() => ({ db: null as any, user: "11111111-1111-4111-8111-111111111111", openPdf: vi.fn(), preparePage: vi.fn(), renderRegions: vi.fn(), detectProblems: vi.fn(), closeOcr: vi.fn() }));
-vi.mock("../src/services/supabase", () => ({ getSupabase: () => mocked.db, currentUser: async () => ({ id: mocked.user }) }));
-vi.mock("../src/features/pdf/processor", () => ({ openPdf: mocked.openPdf, preparePage: mocked.preparePage, renderRegions: mocked.renderRegions, detectProblems: mocked.detectProblems, closeOcr: mocked.closeOcr }));
+const mocked = vi.hoisted(() => ({ db: null as any, user: "11111111-1111-4111-8111-111111111111",edgeCall:vi.fn(),openPdf: vi.fn(), preparePage: vi.fn(),prepareNumberMarkers:vi.fn(),renderRegions: vi.fn(), detectProblems: vi.fn(), closeOcr: vi.fn() }));
+vi.mock("../src/services/supabase", () => ({ getSupabase: () => mocked.db,edgeCall:mocked.edgeCall,currentUser: async () => ({ id: mocked.user }) }));
+vi.mock("../src/features/pdf/processor", () => ({ openPdf: mocked.openPdf, preparePage: mocked.preparePage,prepareNumberMarkers:mocked.prepareNumberMarkers,NUMBER_LAYER_VERSION:'test-number-layer',renderRegions: mocked.renderRegions, detectProblems: mocked.detectProblems, closeOcr: mocked.closeOcr }));
 import { PDF_ENGINE_VERSION, pauseMaterial, resumeMaterial, resumePending, saveQuestion, uploadMaterials } from "../src/services/documents";
 
 type Row = Record<string, any>;
@@ -59,6 +59,7 @@ function database() {
       download: async (path: string) => ({ error: files.has(path) ? null : { message: "missing" }, data: files.get(path) }),
     }) },
     rpc: vi.fn(async (name: string, args: any) => {
+      if(name==='retire_unmatched_pdf_candidates'){for(const q of tables.problems)if(q.document_id===args.p_document&&!args.p_keep.includes(q.id)&&!q.data.confirmed&&q.data.source!=='manual')q.data.autoRetired=true;return{data:{retired:0},error:null};}
       expect(name).toBe("save_problem_regions");
       const p = args.p_problem, old = tables.problems.find((r) => r.id === p.id);
       if (old && (old.data.revision ?? null) !== args.p_expected_revision) return { data: null, error: { message: "revision conflict" } };
@@ -92,6 +93,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocked.openPdf.mockResolvedValue({ numPages: 2, loadingTask: { destroy: vi.fn(async () => {}) } });
   mocked.preparePage.mockImplementation(async (_pdf, n) => prepared(n));
+  mocked.prepareNumberMarkers.mockResolvedValue([]);
+  mocked.edgeCall.mockResolvedValue({saved:0});
   mocked.renderRegions.mockResolvedValue([new Blob(["crop"], { type: "image/png" })]);
   mocked.detectProblems.mockReturnValue([{ number: 17, page: 1, unit: "", text: "원본", regions: [region], confidence: 0.7, confirmed: false, source: "text", sharedRegionCount: 0 }]);
   mocked.closeOcr.mockResolvedValue(undefined);
@@ -173,14 +176,14 @@ describe("private browser document checkpoints", () => {
     expect(mocked.db.tables.problems[0].data).toMatchObject({ answer: "3", explanation: "기존 해설", conceptIds: ["kept"], source: "manual", confirmed: true });
     expect(mocked.db.files.has(oldPath)).toBe(true);
     expect(mocked.db.tables.problem_regions[0].image_path).not.toBe(oldPath);
-    expect(mocked.db.rpc).toHaveBeenCalledTimes(1);
+    expect(mocked.db.rpc.mock.calls.filter(([name])=>name==="save_problem_regions")).toHaveLength(1);
   });
 
   it("rejects answer pages and invalid start pages before rendering a manual crop", async () => {
     seedDoc("needs_review"); seedPage(1, { kind: "answers", manualKind: true });
     await expect(saveQuestion(undefined, { materialId: DOC, number: 17, page: 1, regions: [region] })).rejects.toThrow();
     await expect(saveQuestion(undefined, { materialId: DOC, number: 17, page: 2, regions: [region] })).rejects.toThrow();
-    expect(mocked.renderRegions).not.toHaveBeenCalled(); expect(mocked.db.rpc).not.toHaveBeenCalled();
+    expect(mocked.renderRegions).not.toHaveBeenCalled(); expect(mocked.db.rpc.mock.calls.filter(([name])=>name==="save_problem_regions")).toHaveLength(0);
   });
 
   it("auto-resume leaves deliberately paused materials alone", async () => {
@@ -198,7 +201,7 @@ describe("private browser document checkpoints", () => {
     expect(mocked.preparePage).toHaveBeenCalledTimes(2);
     expect(mocked.db.tables.document_pages).toHaveLength(2);
     expect(mocked.db.tables.problems).toHaveLength(1);
-    expect(mocked.db.rpc).toHaveBeenCalledTimes(1);
+    expect(mocked.db.rpc.mock.calls.filter(([name])=>name==="save_problem_regions")).toHaveLength(1);
   });
 
   it("stops browser work on sign-out without deleting resumable checkpoints", async () => {
@@ -220,7 +223,7 @@ describe("private browser document checkpoints", () => {
     mocked.renderRegions.mockResolvedValue([new Blob(["part1"]), new Blob(["part2"])]);
     mocked.db.failUploads((path: string) => path.endsWith("/1.png"));
     await expect(saveQuestion(Q, { materialId: DOC, number: 17, page: 1, regions: [region, { ...region, page: 2 }] })).rejects.toThrow();
-    expect(mocked.db.rpc).not.toHaveBeenCalled();
+    expect(mocked.db.rpc.mock.calls.filter(([name])=>name==="save_problem_regions")).toHaveLength(0);
     expect(mocked.db.tables.problems[0].data.revision).toBe("old");
     expect(mocked.db.files.has(oldPath)).toBe(true);
   });
@@ -236,6 +239,6 @@ describe("private browser document checkpoints", () => {
     mocked.db.tables.problem_regions.push({ problem_id: Q, user_id: mocked.user, part: 0, page: 1, image_path: `${mocked.user}/${DOC}/manual-new.png`, data: region });
     finishRender([new Blob(["automatic-old"])]); await finished();
     expect(mocked.db.tables.problems[0].data.revision).toBe("manual-new");
-    expect(mocked.db.rpc).not.toHaveBeenCalled();
+    expect(mocked.db.rpc.mock.calls.filter(([name])=>name==="save_problem_regions")).toHaveLength(0);
   });
 });

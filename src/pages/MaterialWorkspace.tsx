@@ -1,4 +1,5 @@
 import ContentReview from "../components/ContentReview";
+import LocalOutlineEditor from'../components/LocalOutlineEditor';
 import { useEffect, useState, useRef } from "react";
 import { api } from "../../lib/client";
 import { Button, Empty } from "../../components/ui";
@@ -7,7 +8,11 @@ import {
   downloadSelectedPdf,
   updateMaterialRange,
 } from "../services/documents";
-import { formatPages, parseRestudy } from "../domain/restudy";
+import {
+  createExternalPrompt,
+  formatPages,
+  parseRestudy,
+} from "../domain/restudy";
 import type { AppState, Material } from "../../lib/types";
 const labels: Record<string, string> = {
   draft: "작업 준비됨",
@@ -57,6 +62,9 @@ export default function MaterialWorkspace({
     [questionCount, setQuestionCount] = useState(100),
     [conceptCount, setConceptCount] = useState(5),
     [practiceCount, setPracticeCount] = useState(5),
+    [similarCount, setSimilarCount] = useState(5),
+    [originalScope, setOriginalScope] = useState<"all" | "picked">("all"),
+    [originalIds, setOriginalIds] = useState<string[]>([]),
     [chapter, setChapter] = useState(""),
     [types, setTypes] = useState(["mcq", "ox", "short", "blank"]),
     [typeCounts, setTypeCounts] = useState<Record<string, string>>({}),
@@ -77,6 +85,36 @@ export default function MaterialWorkspace({
           chapters.some((ch) => ch.id === cid),
         ),
     );
+  const selectedChapter = chapters.find((c) => c.id === chapter),
+    selectedPages = (
+      doc?.selectedPages ||
+      Array.from({ length: doc?.pageCount || 0 }, (_, i) => i + 1)
+    ).filter(
+      (p) =>
+        !selectedChapter ||
+        (p >= selectedChapter.startPage && p <= selectedChapter.endPage),
+    ),
+    scopedOriginals = state.questions
+      .filter((q) => q.materialId === id && selectedPages.includes(q.page))
+      .sort((a, b) => a.page - b.page || a.number - b.number),
+    targetOriginals =
+      originalScope === "picked"
+        ? scopedOriginals.filter((q) => originalIds.includes(q.id))
+        : scopedOriginals,
+    hasSavedImages = (q: (typeof state.questions)[number]) =>
+      q.confirmed &&
+      Array.isArray((q as any).imagePaths) &&
+      (q as any).imagePaths.length > 0,
+    apiProblemReady =
+      targetOriginals.length > 0 &&
+      targetOriginals.length <= 100 &&
+      targetOriginals.every(hasSavedImages),
+    resumeProblemReady =
+      job?.taskType !== "problem" ||
+      (job.targetQuestions?.length > 0 &&
+        job.targetQuestions.every((t: any) =>
+          state.questions.some((q) => q.id === t.id && hasSavedImages(q)),
+        ));
   async function load(selectedId?: string) {
     const [d, list] = await Promise.all([
       api(`materials/${id}`),
@@ -113,6 +151,19 @@ export default function MaterialWorkspace({
       alive = false;
     };
   }, [id]);
+  useEffect(() => {
+    if (!job) return;
+    if (part > job.totalParts) {
+      setPart(1);
+      return;
+    }
+    try {
+      setPrompt(createExternalPrompt(job, part));
+    } catch (error) {
+      setPrompt("");
+      onError((error as Error).message);
+    }
+  }, [job, part]);
   const act = async (name: string, fn: () => Promise<void>) => {
     if (busy) return;
     setBusy(name);
@@ -129,27 +180,45 @@ export default function MaterialWorkspace({
   };
   async function create(method: "external" | "api") {
     if (!doc) return;
-    const selectedChapter = chapters.find((c) => c.id === chapter),
-      selectedPages = selectedChapter
-        ? (
-            doc.selectedPages ||
-            Array.from({ length: doc.pageCount }, (_, i) => i + 1)
-          ).filter(
-            (p) =>
-              p >= selectedChapter.startPage && p <= selectedChapter.endPage,
-          )
-        : doc.selectedPages;
+    if (
+      task === "problem" &&
+      originalScope === "picked" &&
+      !targetOriginals.length
+    )
+      throw new Error(
+        "분석할 원본 문제를 선택하세요. 인덱스 없이 분석하려면 선택 범위 전체를 이용하세요.",
+      );
+    if (task === "problem" && method === "api" && !apiProblemReady)
+      throw new Error(
+        "API 분석에는 확인된 원본 이미지가 있는 문제를 1~100개 선택하세요. 인덱스가 없으면 원본 PDF를 외부 AI에 첨부하세요.",
+      );
+    const totalQuestions =
+      task === "problem"
+        ? conceptCount + practiceCount + similarCount
+        : questionCount;
     const created = await standard("create", {
       documentId: id,
       method,
       taskType: task,
       selectedPages,
       tocPages: doc.tocPages || [],
-      questionCount,
+      questionCount: totalQuestions,
       conceptQuestionCount: conceptCount,
       practiceQuestionCount: practiceCount,
+      ...(task === "problem"
+        ? {
+            purposeCounts: {
+              concept: conceptCount,
+              practice: practiceCount,
+              similar: similarCount,
+            },
+            ...(originalScope === "picked" || method === "api"
+              ? { questionIds: targetOriginals.map((q) => q.id) }
+              : {}),
+          }
+        : {}),
       questionTypes: types,
-      ...(Object.values(typeCounts).some((v) => v !== "")
+      ...(task !== "toc" && Object.values(typeCounts).some((v) => v !== "")
         ? {
             questionTypeCounts: Object.fromEntries(
               types.map((kind) => [kind, Number(typeCounts[kind] || 0)]),
@@ -237,7 +306,7 @@ export default function MaterialWorkspace({
           </p>
         </div>
         <div className="row">
-          <Button variant="secondary" onClick={() => onViewer(1)}>
+          <Button variant="secondary" onClick={() => onViewer(doc.selectedPages?.[0]??1)}>
             PDF 열기
           </Button>
           <Button onClick={() => onBank({ materialIds: [id] })}>
@@ -245,6 +314,13 @@ export default function MaterialWorkspace({
           </Button>
         </div>
       </div>
+      <details className="panel" style={{padding:16,marginBottom:16}}>
+        <summary>PDF 인식 · {state.questions.filter(q=>q.materialId===id).length}문항 · 검토 {state.questions.filter(q=>q.materialId===id&&!q.confirmed).length}개</summary>
+        <p className="field-help">{doc.message || '저장된 원본과 인식 결과를 사용합니다.'}</p>
+        {['uploaded','processing'].includes(doc.status)&&<progress aria-label="PDF 분석 진행률" value={doc.progress||0} max={100}/>}
+        {doc.error&&<p className="error" role="alert">{doc.error}</p>}
+        <div className="row"><Button variant="secondary" busy={!!busy} onClick={()=>act('문항 다시 인식',async()=>{await api(`materials/${id}/reindex`,'POST');setMessage('저장된 본문을 재사용해 문항을 다시 인식합니다.');})}>문항 다시 인식</Button><Button variant="ghost" onClick={()=>onViewer(doc.selectedPages?.[0]??1,true)}>크롭 검토·수정</Button>{doc.failedPage&&<Button variant="secondary" busy={!!busy} onClick={()=>act('실패 페이지 재시도',async()=>{await api(`materials/${id}/retry`,'POST',{page:doc.failedPage});})}>PDF {doc.failedPage}쪽만 재시도</Button>}</div>
+      </details>
       <div className="tabs content-tabs">
         <button
           className={tab === "concepts" ? "active" : ""}
@@ -272,6 +348,7 @@ export default function MaterialWorkspace({
       )}
       {tab === "concepts" && (
         <>
+          <LocalOutlineEditor outline={doc.localOutline} pageCount={doc.pageCount} sourcePage={doc.tocPages?.[0]??doc.selectedPages?.[0]??1} busy={!!busy} onSave={outline=>act('자체 목차 저장',async()=>{await api(`materials/${id}/outline`,'POST',{outline,manual:true});})}/>
           <div className="section-heading">
             <h2>
               단원 {chapters.length}개 · 개념 {concepts.length}개
@@ -289,7 +366,7 @@ export default function MaterialWorkspace({
           {!chapters.length && (
             <Empty
               title="아직 준비된 단원이 없습니다"
-              description="목차·개념을 먼저 준비하거나 외부 분석 결과를 가져오세요."
+              description="처리 범위에서 목차 페이지를 지정하고 문항 다시 인식을 실행하거나, 목차를 직접 입력하세요."
             />
           )}
           {chapters.map((ch) => (
@@ -424,6 +501,11 @@ export default function MaterialWorkspace({
       )}
       {tab === "external" && (
         <>
+          <p className="notice">
+            아래 프롬프트를 복사해 PDF와 함께 외부 AI에 붙여넣고, 출력된 결과
+            JSON을 입력하세요. 문제별 개념 연결과 개념 퀴즈·연습·유사문제는
+            결과의 분류에 맞춰 함께 저장합니다.
+          </p>
           <section className="panel content-job-setup">
             <h2>준비할 콘텐츠</h2>
             <div className="form-grid">
@@ -433,13 +515,17 @@ export default function MaterialWorkspace({
                   <option value="toc">목차·단원 구조 먼저</option>
                   <option value="initial">단원 기본 개념·퀴즈·연습문제</option>
                   <option value="bank">추가 문제 은행</option>
+                  <option value="problem">문제별 개념 연결·퀴즈·은행</option>
                 </select>
               </label>
               <label>
                 단원
                 <select
                   value={chapter}
-                  onChange={(e) => setChapter(e.target.value)}
+                  onChange={(e) => {
+                    setChapter(e.target.value);
+                    setOriginalIds([]);
+                  }}
                 >
                   <option value="">선택 범위 전체</option>
                   {chapters.map((c) => (
@@ -449,7 +535,7 @@ export default function MaterialWorkspace({
                   ))}
                 </select>
               </label>
-              {task === "initial" ? (
+              {task === "initial" || task === "problem" ? (
                 <>
                   <label>
                     개념 퀴즈 수
@@ -471,6 +557,18 @@ export default function MaterialWorkspace({
                       onChange={(e) => setPracticeCount(+e.target.value)}
                     />
                   </label>
+                  {task === "problem" && (
+                    <label>
+                      유사문제 수
+                      <input
+                        type="number"
+                        min={0}
+                        max={1000}
+                        value={similarCount}
+                        onChange={(e) => setSimilarCount(+e.target.value)}
+                      />
+                    </label>
+                  )}
                 </>
               ) : task === "bank" ? (
                 <label>
@@ -485,6 +583,83 @@ export default function MaterialWorkspace({
                 </label>
               ) : null}
             </div>
+            {task === "problem" && (
+              <fieldset className="editor-fieldset">
+                <legend>개념을 연결할 원본 문제</legend>
+                <label className="cloud-check">
+                  <input
+                    type="radio"
+                    name="original-scope"
+                    checked={originalScope === "all"}
+                    onChange={() => setOriginalScope("all")}
+                  />
+                  선택 PDF 범위의 원본 전체 · 인식된 문제{" "}
+                  {scopedOriginals.length}개
+                </label>
+                <label className="cloud-check">
+                  <input
+                    type="radio"
+                    name="original-scope"
+                    checked={originalScope === "picked"}
+                    onChange={() => setOriginalScope("picked")}
+                  />
+                  인식된 번호에서 직접 선택 ·{" "}
+                  {
+                    scopedOriginals.filter((q) => originalIds.includes(q.id))
+                      .length
+                  }
+                  개
+                </label>
+                {originalScope === "picked" &&
+                  scopedOriginals.map((q) => (
+                    <label className="cloud-check" key={q.id}>
+                      <input
+                        type="checkbox"
+                        checked={originalIds.includes(q.id)}
+                        disabled={
+                          !originalIds.includes(q.id) &&
+                          originalIds.length >= 100
+                        }
+                        onChange={(e) =>
+                          setOriginalIds((current) =>
+                            e.target.checked
+                              ? [...current, q.id]
+                              : current.filter((v) => v !== q.id),
+                          )
+                        }
+                      />
+                      {q.number}번 · PDF {q.page}쪽{" "}
+                      {hasSavedImages(q)
+                        ? "· 원본 이미지 준비됨"
+                        : "· 영역 확인 필요"}
+                    </label>
+                  ))}
+                <p className="field-help">
+                  전체 범위의 외부 분석은 아직 인식되지 않은 문제도 PDF의 실제
+                  번호·쪽수로 가져올 수 있습니다. 원본 영역이 없는 연결은
+                  보관하며, 인덱스 확인 후 원본과 연결합니다. 직접 선택과 API
+                  분석은 한 작업당 100개까지입니다.
+                </p>
+                {originalScope === "picked" && !scopedOriginals.length && (
+                  <p>
+                    인식된 번호가 없습니다. 선택 범위 전체로 외부 분석하거나
+                    원본 영역을 먼저 확인하세요.
+                  </p>
+                )}
+                <p>
+                  생성할 은행 문항 합계{" "}
+                  {conceptCount + practiceCount + similarCount}개 · 원본 분석
+                  개수와 별도로 계산합니다.
+                </p>
+                {!apiProblemReady && (
+                  <p className="field-help">
+                    API 분석은 선택한 모든 문제의 깨끗한 원본 이미지가 저장된 뒤
+                    사용할 수 있습니다. 현재는 PDF를 첨부하는 외부 분석을 이용할
+                    수 있습니다.
+                  </p>
+                )}
+              </fieldset>
+            )}
             {task !== "toc" && (
               <>
                 <fieldset className="inline-options">
@@ -575,12 +750,18 @@ export default function MaterialWorkspace({
               <Button
                 variant="secondary"
                 busy={!!busy}
+                disabled={
+                  task === "problem" &&
+                  originalScope === "picked" &&
+                  !targetOriginals.length
+                }
                 onClick={() => act("외부 작업 준비", () => create("external"))}
               >
                 외부 작업 준비
               </Button>
               <Button
                 busy={!!busy}
+                disabled={task === "problem" && !apiProblemReady}
                 onClick={() => act("API 분석", () => create("api"))}
               >
                 API로 준비
@@ -609,7 +790,9 @@ export default function MaterialWorkspace({
                       ? "목차"
                       : j.taskType === "initial"
                         ? "기본 콘텐츠"
-                        : "문제 은행"}{" "}
+                        : j.taskType === "problem"
+                          ? "문제별 개념 연결·퀴즈·은행"
+                          : "문제 은행"}{" "}
                     · {j.questionCount}문제 · {labels[j.status] || j.status}
                   </option>
                 ))}
@@ -627,7 +810,11 @@ export default function MaterialWorkspace({
                 </small>
               </div>
               <div className="external-step">
-                <h3>1. 아래 프롬프트를 복사하세요.</h3>
+                <h3>1. 현재 작업의 프롬프트를 복사하세요.</h3>
+                <p>
+                  실제 문서·작업 ID, 선택 범위와 전체 JSON 형식이 포함되어
+                  있습니다. 분할마다 해당 프롬프트를 사용하세요.
+                </p>
                 <div className="row">
                   <label>
                     현재 분할
@@ -647,14 +834,14 @@ export default function MaterialWorkspace({
                   </label>
                   <Button
                     variant="secondary"
+                    busy={!!busy}
                     onClick={() =>
                       act("프롬프트 복사", async () => {
-                        const r = await standard("prompt", {
-                          jobId: job.id,
-                          part,
-                        });
-                        setPrompt(r.prompt);
-                        await navigator.clipboard.writeText(r.prompt);
+                        if (!prompt)
+                          throw new Error(
+                            "프롬프트를 준비하지 못했습니다. 작업을 다시 열어 주세요.",
+                          );
+                        await navigator.clipboard.writeText(prompt);
                         setMessage("프롬프트를 복사했습니다.");
                       })
                     }
@@ -664,27 +851,58 @@ export default function MaterialWorkspace({
                   <Button
                     variant="ghost"
                     busy={!!busy}
+                    disabled={!resumeProblemReady}
                     onClick={() => act("API 작업 재개", () => run(job))}
                   >
                     API로 이어서 준비
                   </Button>
                 </div>
-                {prompt && (
-                  <details>
-                    <summary>복사할 내용 보기</summary>
-                    <textarea
-                      className="json-preview"
-                      readOnly
-                      value={prompt}
-                      rows={8}
-                    />
-                  </details>
+                <label>
+                  외부 AI에 전달할 프롬프트
+                  <textarea
+                    aria-label="외부 AI 프롬프트"
+                    className="json-preview"
+                    readOnly
+                    value={prompt}
+                    rows={12}
+                    onFocus={(e) => e.target.select()}
+                  />
+                </label>
+                {!resumeProblemReady && (
+                  <p className="field-help">
+                    이 작업은 저장된 원본 이미지 대상이 없어 API로 이어갈 수
+                    없습니다. PDF와 프롬프트를 외부 AI에 함께 입력하세요.
+                  </p>
                 )}
               </div>
               <div className="external-step">
-                <h3>2. 같은 문제집 PDF를 외부 AI에 첨부하세요.</h3>
-                <p>ChatGPT 등에 PDF와 복사한 프롬프트를 함께 입력하세요.</p>
+                <h3>2. 원본 PDF와 프롬프트를 외부 AI에 함께 입력하세요.</h3>
+                <p>
+                  처음 등록한 원본 PDF 전체를 첨부하는 방법을 권장합니다. 선택
+                  범위만 첨부하면 프롬프트의 첨부본→원본 PDF 쪽수 대응표를 함께
+                  전달하세요. 책에 인쇄된 쪽수와 PDF 실제 쪽수는 구별합니다.
+                </p>
                 <div className="row">
+                  <Button
+                    variant="secondary"
+                    busy={!!busy}
+                    onClick={() =>
+                      act("원본 PDF 내보내기", async () => {
+                        await downloadSelectedPdf(
+                          id,
+                          Array.from(
+                            { length: job.pageCount },
+                            (_, i) => i + 1,
+                          ),
+                        );
+                        setMessage(
+                          "원본 전체 PDF를 저장했습니다. 외부 AI에 프롬프트와 함께 첨부하세요.",
+                        );
+                      })
+                    }
+                  >
+                    원본 전체 PDF 내보내기
+                  </Button>
                   <Button
                     variant="secondary"
                     onClick={() =>
@@ -711,7 +929,12 @@ export default function MaterialWorkspace({
                 </div>
               </div>
               <div className="external-step">
-                <h3>3. 출력된 값을 그대로 붙여넣으세요.</h3>
+                <h3>3. 결과 JSON을 붙여넣고 검사·검토·등록하세요.</h3>
+                <p>
+                  JSON 전체 또는 바깥쪽 JSON 코드 블록을 그대로 입력하세요.
+                  분할을 하나씩 등록하면 원본별 연결, 개념 퀴즈, 연습·유사문제를
+                  같은 형식으로 병합합니다.
+                </p>
                 <textarea
                   aria-label="분석 결과 붙여넣기"
                   placeholder="restudy.v1 JSON 또는 JSON 코드 블록"

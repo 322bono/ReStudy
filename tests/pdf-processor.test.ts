@@ -54,7 +54,7 @@ function fixture(nativeText: string, imageCoordinates: number[] = []) {
   const canvas = () => ({
     width: 0,
     height: 0,
-    getContext: () => ({ drawImage: vi.fn() }),
+    getContext: () => ({ drawImage: vi.fn(),getImageData:()=>({data:new Uint8ClampedArray(4)}),putImageData:vi.fn() }),
     toBlob: (callback: (blob: Blob) => void) =>
       callback(new Blob(["PNG"], { type: "image/png" })),
   });
