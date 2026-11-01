@@ -17,7 +17,7 @@ npm test
 npm run typecheck
 ```
 
-현재 Supabase 프로젝트는 `tfjsrdfnrybepxpdfqfz`(Restudy), 비공개 GitHub 저장소는 `322bono/ReStudy`입니다. 서버 초기 설정과 배포는 [클라우드 운영 안내](docs/cloud-setup.md)를 따릅니다. Python 백엔드는 이전 로컬 버전 보존용이며 새 화면의 실행에 필요하지 않습니다.
+현재 Supabase 프로젝트는 `tfjsrdfnrybepxpdfqfz`(Restudy), GitHub 소스 저장소는 `322bono/ReStudy`입니다. 서버 초기 설정과 배포는 [클라우드 운영 안내](docs/cloud-setup.md)를 따릅니다. Python 백엔드는 이전 로컬 버전 보존용이며 새 화면의 실행에 필요하지 않습니다.
 
 ## 학습 흐름
 
@@ -42,4 +42,3 @@ npm run typecheck
 - 실제 제공자 호출은 사용자가 API 키를 등록한 뒤 검증해야 합니다. 키가 없는 상태를 연결 성공으로 표시하지 않습니다.
 
 최신 명세: [2026-11-01](docs/2026-11-01-ai-cloud-spec.md). 검사 결과와 미검증 범위: [클라우드 검증 기록](docs/cloud-verification.md).
-

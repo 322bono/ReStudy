@@ -1,0 +1,83 @@
+import { PGlite } from '@electric-sql/pglite';
+import { readFileSync,readdirSync } from 'node:fs';
+import { afterEach, expect, test } from 'vitest';
+import {validateRestudyParts} from '../src/domain/restudy';
+import {compileRestudy} from '../src/domain/restudy-compile';
+
+let db:PGlite;
+const owner='10000000-0000-4000-8000-000000000001',other='20000000-0000-4000-8000-000000000002';
+async function database(){
+  db=new PGlite();
+  await db.exec(`create role anon;create role authenticated;create role service_role bypassrls;
+    create schema auth;grant usage on schema auth to authenticated,service_role;create table auth.users(id uuid primary key,raw_user_meta_data jsonb default '{}');
+    create function auth.uid() returns uuid language sql stable as $$ select nullif(current_setting('request.jwt.claim.sub',true),'')::uuid $$;
+    create schema storage;create table storage.buckets(id text primary key,name text,public boolean,file_size_limit bigint,allowed_mime_types text[]);
+    create table storage.objects(id uuid primary key,bucket_id text,name text);alter table storage.objects enable row level security;
+    create function storage.foldername(text) returns text[] language sql as $$select string_to_array($1,'/')$$;`);
+  for(const file of readdirSync('supabase/migrations').filter(f=>f.endsWith('.sql')).sort())await db.exec(readFileSync('supabase/migrations/'+file,'utf8'));
+  await db.exec(`insert into auth.users(id)values('${owner}'),('${other}');insert into profiles(id,user_id)values('${owner}','${owner}'),('${other}','${other}');`);
+  return db;
+}
+afterEach(async()=>{await db?.close()});
+test('RLS denies anonymous and other owner reads and credential reads',async()=>{
+  const c=await database();
+  await c.exec(`insert into public.documents(id,user_id,title,subject,kind,data)values('30000000-0000-4000-8000-000000000003','${owner}','private','수학','문제집','{}');
+    set role authenticated;set request.jwt.claim.sub='${other}';`);
+  expect((await c.query('select * from public.documents')).rows).toHaveLength(0);
+  await expect(c.query('select * from public.ai_credentials')).rejects.toThrow();
+  await c.exec(`set request.jwt.claim.sub='${owner}'`);
+  expect((await c.query('select * from public.documents')).rows).toHaveLength(1);
+  await expect(c.exec(`update public.documents set user_id='${other}'`)).rejects.toThrow();
+  await c.exec('reset role;set role anon');
+  await expect(c.query('select * from public.documents')).rejects.toThrow();
+});
+test('same-owner foreign keys reject cross-owner concept mappings',async()=>{
+  const c=await database();
+  await c.exec(`insert into documents(id,user_id,title,subject,kind)values('30000000-0000-4000-8000-000000000003','${owner}','private','수학','문제집');
+    insert into problems(id,user_id,document_id,number,page)values('40000000-0000-4000-8000-000000000004','${owner}','30000000-0000-4000-8000-000000000003',47,1);
+    insert into concepts(id,user_id,subject,major,minor,name,canonical_key)values('foreign','${other}','수학','함수','','대응','foreign');`);
+  await expect(c.exec(`insert into problem_concepts(user_id,problem_id,concept_id)values('${owner}','40000000-0000-4000-8000-000000000004','foreign')`)).rejects.toThrow();
+});
+test('job claim is exclusive and stale completion cannot overwrite it',async()=>{
+  const c=await database(), id='50000000-0000-4000-8000-000000000005';
+  await c.exec(`insert into ai_jobs(id,user_id,kind,cache_key)values('${id}','${owner}','generate','test');`);
+  const first=await c.query<{claim:any}>(`select claim_ai_job('${owner}','${id}',5,3) claim`);
+  expect(first.rows[0].claim.job.lease_token).toBeTruthy();
+  expect((await c.query<{claim:any}>(`select claim_ai_job('${owner}','${id}',5,3) claim`)).rows[0].claim).toBeNull();
+  expect((await c.query<{ok:boolean}>(`select finish_ai_job('${owner}','${id}','60000000-0000-4000-8000-000000000006','completed','{}',now()) ok`)).rows[0].ok).toBe(false);
+});
+test('standard import is atomic, idempotent and never overwrites edited questions',async()=>{
+ const c=await database(),doc='30000000-0000-4000-8000-000000000003',jobId='70000000-0000-4000-8000-000000000007';
+ await c.exec(`insert into documents(id,user_id,title,subject,kind,data)values('${doc}','${owner}','교재','수학','문제집','{"pageCount":3}');
+ insert into content_jobs(id,user_id,document_id,data)values('${jobId}','${owner}','${doc}','{"totalParts":1,"questionCount":1}');`);
+ const job={id:jobId,documentId:doc,pageCount:3,selectedPages:[1,2,3],tocPages:[],subject:'수학',title:'교재',questionCount:1,totalParts:1,partSize:20,taskType:'bank',questionTypes:['mcq'],difficultyDistribution:{medium:100},targetQuestions:[]};
+ const pkg={schema_version:'restudy.v1',document_id:doc,job_id:jobId,part:1,total_parts:1,chapters:[{id:'ch1',title:'함수',start_page:1,end_page:3}],concepts:[{id:'c1',chapter_id:'ch1',name:'정의역',summary:'입력의 집합',formulas:[],memorize:[],pitfalls:[]}],problem_analyses:[{q_number:'47',pdf_page:2,chapter_id:'ch1',concept_ids:['c1'],key_point:'입력 집합을 확인',memorize:['정의역'],mistakes:[]}],questions:[{id:'q1',chapter_id:'ch1',concept_ids:['c1'],kind:'mcq',purpose:'concept',level:'easy',source_problem:null,prompt:'정의역에 대한 설명은?',options:['입력','출력','치역','공역'],answer:'A',accepted_answers:[],explanation:'입력의 집합이다.',option_explanations:{A:'입력의 집합',B:'출력과 구별',C:'치역과 구별',D:'공역과 구별'},source_pages:[2]}],flashcards:[{id:'f1',concept_id:'c1',front:'정의역은?',back:'입력의 집합'}],similarities:[]};
+ const compiled=await compileRestudy(validateRestudyParts([pkg],job),job);
+ const apply=(count:number,reviewed=true)=>c.query(`select commit_restudy_part($1,$2,$3,$4,$5,$6,$7)result`,[owner,jobId,pkg,'abc',count,compiled,reviewed]);
+ await apply(0,false);expect((await c.query('select * from concept_questions')).rows).toHaveLength(2);
+ await apply(1,true);expect((await c.query(`select * from concept_questions where review_status='approved'`)).rows).toHaveLength(2);
+ const original='40000000-0000-4000-8000-000000000004';
+ await c.exec(`insert into problems(id,user_id,document_id,number,page)values('${original}','${owner}','${doc}',47,2)`);
+ expect((await c.query('select * from problem_concepts')).rows).toHaveLength(1);
+ expect((await c.query<{id:string}>('select problem_id id from imported_problem_analyses')).rows[0].id).toBe(original);
+ await c.exec(`update concept_questions set data=data||'{"prompt":"사용자 수정"}' where type='객관식'`);
+ await apply(1);expect((await c.query('select * from concept_questions')).rows).toHaveLength(2);
+ expect((await c.query<{prompt:string}>(`select data->>'prompt'prompt from concept_questions where type='객관식'`)).rows[0].prompt).toBe('사용자 수정');
+ expect((await c.query('select * from question_options')).rows).toHaveLength(4);
+ expect((await c.query('select * from bank_question_concepts')).rows).toHaveLength(2);
+ await c.exec(`update concepts set data=data||'{"evidence":"toc_only","definition":"목차 임시"}'`);
+ await apply(1);
+ expect((await c.query<{definition:string}>(`select data->>'definition' definition from concepts`)).rows[0].definition).toBe('입력의 집합');
+ await c.exec(`update concepts set data=data||'{"userEdited":true,"definition":"직접 정리"}'`);
+ await apply(1);
+ expect((await c.query<{definition:string}>(`select data->>'definition' definition from concepts`)).rows[0].definition).toBe('직접 정리');
+ await c.exec(`update concept_questions set review_status='archived',data=data||'{"active":false,"archived":true}' where type='객관식'`);
+ await apply(1,true);
+ expect((await c.query<{status:string}>(`select review_status status from concept_questions where type='객관식'`)).rows[0].status).toBe('archived');
+ const concept=(await c.query<{id:string}>(`select id from concepts`)).rows[0],child='80000000-0000-4000-8000-000000000008',lease='90000000-0000-4000-8000-000000000009';
+ await c.query(`insert into ai_jobs(id,user_id,kind,cache_key,status,lease_token,lease_until,data)values($1,$2,'restudy_v1','guard','running',$3,now()+interval '1 minute',$4)`,[child,owner,lease,{standardJobId:jobId,source_versions:[{table:'concepts',id:concept.id,updated_at:'2000-01-01T00:00:00Z'}]}]);
+ expect((await c.query<{result:any}>(`select commit_restudy_part($1,$2,$3,'abc',1,$4,true,$5,$6) result`,[owner,jobId,pkg,compiled,child,lease])).rows[0].result).toBeNull();
+ expect((await c.query<{status:string}>(`select status from ai_jobs where id=$1`,[child])).rows[0].status).toBe('paused');
+ await expect(c.query(`select commit_restudy_part($1,$2,$3,$4,$5,$6,true)`,[other,jobId,pkg,'abc',1,compiled])).rejects.toThrow();
+});
+

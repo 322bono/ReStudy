@@ -1,0 +1,50 @@
+name: Verify and build RE Study
+on:
+  push:
+    branches: [main, codex/ai-cloud-study]
+  workflow_dispatch:
+    inputs:
+      deploy:
+        description: Publish to the existing GitHub Pages configuration
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: pages-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run typecheck
+      - run: npm run build
+        env:
+          VITE_BASE_PATH: /ReStudy/
+          VITE_SUPABASE_URL: https://tfjsrdfnrybepxpdfqfz.supabase.co
+          VITE_SUPABASE_PUBLISHABLE_KEY: sb_publishable_xXSAMYEqW2ypi4vN_NSdXg_y8WYT0zI
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: dist
+  deploy:
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || inputs.deploy)
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/configure-pages@v5
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4

@@ -1,0 +1,200 @@
+import { lazy, Suspense, useEffect, useState, type FormEvent } from "react";
+const RestudyApp = lazy(() => import("../components/app"));
+import Login from "./pages/Login";
+const Settings = lazy(() => import("./pages/Settings"));
+import { Button } from "../components/ui";
+import {
+  configured,
+  edgeCall,
+  getSupabase,
+  login,
+  logout,
+} from "./services/supabase";
+import { clearAssetCache, settingsTransport } from "./services/api";
+
+import { clearOwnerCache } from "./services/cache";
+import "./styles/study-content.css";
+
+function Bootstrap({ onReady }: { onReady: () => void }) {
+  const [username, setUsername] = useState(""),
+    [password, setPassword] = useState(""),
+    [confirm, setConfirm] = useState(""),
+    [busy, setBusy] = useState(false),
+    [error, setError] = useState("");
+  const token =
+    new URLSearchParams(location.hash.split("?")[1] || "").get("token") || "";
+  async function submit(e: FormEvent) {
+    e.preventDefault();
+    if (busy) return;
+    if (password !== confirm) {
+      setError("비밀번호가 일치하지 않습니다.");
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      await edgeCall("auth-helpers", {
+        action: "bootstrap",
+        token,
+        username,
+        password,
+      });
+      await login(username, password, true);
+      location.hash = "";
+      onReady();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setPassword("");
+      setConfirm("");
+      setBusy(false);
+    }
+  }
+  return (
+    <main className="cloud-login">
+      <form className="cloud-login-card" onSubmit={submit}>
+        <h1>RE:STUDY</h1>
+        <p>개인 계정 만들기</p>
+        <label>
+          아이디
+          <input
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+            autoComplete="username"
+            pattern="[a-zA-Z0-9_-]{3,32}"
+            required
+          />
+        </label>
+        <label>
+          비밀번호
+          <input
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            autoComplete="new-password"
+            minLength={12}
+            required
+          />
+        </label>
+        <label>
+          비밀번호 확인
+          <input
+            type="password"
+            value={confirm}
+            onChange={(e) => setConfirm(e.target.value)}
+            autoComplete="new-password"
+            minLength={12}
+            required
+          />
+        </label>
+        <small>영문 아이디 3~32자 · 비밀번호 12자 이상</small>
+        {error && (
+          <p role="alert" className="error">
+            {error}
+          </p>
+        )}
+        <Button type="submit" busy={busy}>
+          계정 만들기
+        </Button>
+      </form>
+    </main>
+  );
+}
+export default function App() {
+  const [user, setUser] = useState<string | null | undefined>(),
+    [settings, setSettings] = useState(location.hash.startsWith("#settings")),
+    [error, setError] = useState("");
+  useEffect(() => {
+    if (!configured) {
+      setUser(null);
+      return;
+    }
+    let alive = true;
+    const client = getSupabase();
+    client.auth.getSession().then(({ data }) => {
+      if (alive) setUser(data.session?.user.id || null);
+    });
+    const {
+      data: { subscription },
+    } = client.auth.onAuthStateChange((_event, session) => {
+      clearAssetCache();
+      if (alive) setUser(session?.user.id || null);
+    });
+    return () => {
+      alive = false;
+      subscription.unsubscribe();
+    };
+  }, []);
+  useEffect(() => {
+    if (user)
+      import("./services/documents")
+        .then((m) => m.resumePending())
+        .catch((e) => setError(e.message));
+  }, [user]);
+  if (!configured)
+    return (
+      <main className="cloud-login">
+        <div className="cloud-login-card">
+          <h1>RE:STUDY</h1>
+          <p>Supabase 연결 설정이 필요합니다.</p>
+          <p>실행 안내의 공개 연결 주소와 키를 설정한 뒤 다시 시작하세요.</p>
+        </div>
+      </main>
+    );
+  if (location.hash.startsWith("#setup"))
+    return <Bootstrap onReady={() => setSettings(false)} />;
+  if (user === undefined)
+    return <main className="app-loading">학습 공간을 여는 중…</main>;
+  if (!user)
+    return (
+      <Login
+        error={error}
+        onSubmit={async (username, password, remember) => {
+          setError("");
+          await login(username, password, remember);
+        }}
+      />
+    );
+  const signOut = async () => {
+    await logout();
+    if (user) await clearOwnerCache(user);
+    clearAssetCache();
+    setSettings(false);
+    location.hash = "";
+    setUser(null);
+  };
+  if (settings)
+    return (
+      <Suspense fallback={<main className="app-loading">설정을 여는 중…</main>}>
+        <Settings
+          onClose={() => {
+            setSettings(false);
+            location.hash = "";
+          }}
+          onLogout={signOut}
+          transport={async (action, payload) => {
+            const result = await settingsTransport(action, payload);
+            if (action === "account.password" && result.signInAgain) {
+              await getSupabase().auth.signOut({ scope: "local" });
+              setUser(null);
+              setSettings(false);
+            }
+            return result;
+          }}
+        />
+      </Suspense>
+    );
+  return (
+    <Suspense
+      fallback={<main className="app-loading">학습 공간을 여는 중…</main>}
+    >
+      <RestudyApp
+        key={user}
+        onSettings={() => {
+          location.hash = "settings";
+          setSettings(true);
+        }}
+      />
+    </Suspense>
+  );
+}

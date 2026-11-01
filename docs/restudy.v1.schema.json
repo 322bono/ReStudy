@@ -1,0 +1,618 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "restudy.v1"
+    },
+    "document_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 150
+    },
+    "job_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 150
+    },
+    "part": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 100
+    },
+    "total_parts": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 100
+    },
+    "chapters": {
+      "maxItems": 500,
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 150
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 12000
+          },
+          "start_page": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "end_page": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "start_page",
+          "end_page"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "concepts": {
+      "maxItems": 1000,
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 150
+          },
+          "chapter_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 150
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 12000
+          },
+          "summary": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 12000
+          },
+          "formulas": {
+            "maxItems": 200,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 12000
+            }
+          },
+          "memorize": {
+            "maxItems": 200,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 12000
+            }
+          },
+          "pitfalls": {
+            "maxItems": 200,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 12000
+            }
+          }
+        },
+        "required": [
+          "id",
+          "chapter_id",
+          "name",
+          "summary",
+          "formulas",
+          "memorize",
+          "pitfalls"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "problem_analyses": {
+      "maxItems": 1000,
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "q_number": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 150
+          },
+          "pdf_page": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "chapter_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 150
+          },
+          "concept_ids": {
+            "minItems": 1,
+            "maxItems": 50,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 150
+            }
+          },
+          "key_point": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 12000
+          },
+          "memorize": {
+            "maxItems": 200,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 12000
+            }
+          },
+          "mistakes": {
+            "maxItems": 200,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 12000
+            }
+          }
+        },
+        "required": [
+          "q_number",
+          "pdf_page",
+          "chapter_id",
+          "concept_ids",
+          "key_point",
+          "memorize",
+          "mistakes"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "questions": {
+      "maxItems": 1000,
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 150
+          },
+          "chapter_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 150
+          },
+          "concept_ids": {
+            "minItems": 1,
+            "maxItems": 50,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 150
+            }
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "mcq",
+              "ox",
+              "short",
+              "blank"
+            ]
+          },
+          "purpose": {
+            "type": "string",
+            "enum": [
+              "concept",
+              "practice",
+              "similar"
+            ]
+          },
+          "level": {
+            "type": "string",
+            "enum": [
+              "easy",
+              "medium",
+              "hard"
+            ]
+          },
+          "source_problem": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "q_number": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 150
+                  },
+                  "chapter_id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 150
+                  },
+                  "pdf_page": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 9007199254740991
+                  }
+                },
+                "required": [
+                  "q_number",
+                  "chapter_id",
+                  "pdf_page"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "prompt": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 12000
+          },
+          "options": {
+            "maxItems": 5,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 12000
+            }
+          },
+          "answer": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 12000
+          },
+          "accepted_answers": {
+            "maxItems": 200,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 12000
+            }
+          },
+          "explanation": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 12000
+          },
+          "option_explanations": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {
+              "type": "string",
+              "maxLength": 12000
+            }
+          },
+          "source_pages": {
+            "minItems": 1,
+            "maxItems": 100,
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            }
+          }
+        },
+        "required": [
+          "id",
+          "chapter_id",
+          "concept_ids",
+          "kind",
+          "purpose",
+          "level",
+          "source_problem",
+          "prompt",
+          "options",
+          "answer",
+          "accepted_answers",
+          "explanation",
+          "option_explanations",
+          "source_pages"
+        ],
+        "additionalProperties": false,
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "kind": {
+                  "const": "mcq"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "options": {
+                  "minItems": 4,
+                  "maxItems": 5,
+                  "uniqueItems": true
+                },
+                "answer": {
+                  "enum": [
+                    "A",
+                    "B",
+                    "C",
+                    "D",
+                    "E"
+                  ]
+                },
+                "option_explanations": {
+                  "required": [
+                    "A",
+                    "B",
+                    "C",
+                    "D"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "kind": {
+                  "const": "mcq"
+                },
+                "options": {
+                  "maxItems": 4
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "answer": {
+                  "enum": [
+                    "A",
+                    "B",
+                    "C",
+                    "D"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "kind": {
+                  "const": "mcq"
+                },
+                "options": {
+                  "minItems": 5
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "option_explanations": {
+                  "required": [
+                    "E"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "kind": {
+                  "enum": [
+                    "ox",
+                    "short",
+                    "blank"
+                  ]
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "options": {
+                  "maxItems": 0
+                },
+                "option_explanations": {
+                  "maxProperties": 0
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "kind": {
+                  "const": "ox"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "answer": {
+                  "enum": [
+                    "O",
+                    "X"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "purpose": {
+                  "const": "similar"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "source_problem": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    "flashcards": {
+      "maxItems": 1000,
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 150
+          },
+          "concept_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 150
+          },
+          "front": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 12000
+          },
+          "back": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 12000
+          }
+        },
+        "required": [
+          "id",
+          "concept_id",
+          "front",
+          "back"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "similarities": {
+      "maxItems": 1000,
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "a": {
+            "type": "object",
+            "properties": {
+              "q_number": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 150
+              },
+              "chapter_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 150
+              },
+              "pdf_page": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              }
+            },
+            "required": [
+              "q_number",
+              "chapter_id",
+              "pdf_page"
+            ],
+            "additionalProperties": false
+          },
+          "b": {
+            "type": "object",
+            "properties": {
+              "q_number": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 150
+              },
+              "chapter_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 150
+              },
+              "pdf_page": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              }
+            },
+            "required": [
+              "q_number",
+              "chapter_id",
+              "pdf_page"
+            ],
+            "additionalProperties": false
+          },
+          "score": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 12000
+          }
+        },
+        "required": [
+          "a",
+          "b",
+          "score",
+          "reason"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "schema_version",
+    "document_id",
+    "job_id",
+    "part",
+    "total_parts",
+    "chapters",
+    "concepts",
+    "problem_analyses",
+    "questions",
+    "flashcards",
+    "similarities"
+  ],
+  "additionalProperties": false
+}

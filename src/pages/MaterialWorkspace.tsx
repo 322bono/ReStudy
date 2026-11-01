@@ -1,0 +1,911 @@
+import ContentReview from "../components/ContentReview";
+import { useEffect, useState, useRef } from "react";
+import { api } from "../../lib/client";
+import { Button, Empty } from "../../components/ui";
+import { edgeCall } from "../services/supabase";
+import {
+  downloadSelectedPdf,
+  updateMaterialRange,
+} from "../services/documents";
+import { formatPages, parseRestudy } from "../domain/restudy";
+import type { AppState, Material } from "../../lib/types";
+const labels: Record<string, string> = {
+  draft: "작업 준비됨",
+  pending_refs: "다른 분할의 참조 대기",
+  partial: "일부 분할 등록",
+  needs_more: "추가 문항 필요",
+  ready: "학습 가능",
+  review_needed: "내용 검토 필요",
+  completed: "완료",
+  paused: "보류 · 직접 재개",
+  waiting: "대기",
+  running: "처리 중",
+  failed: "확인 필요",
+  retry_wait: "재시도 대기",
+};
+const standard = (action: string, body: any = {}) =>
+  edgeCall("content-jobs", { action, ...body });
+export default function MaterialWorkspace({
+  id,
+  state,
+  onBack,
+  onViewer,
+  onBank,
+  onError,
+  onRefresh,
+}: {
+  id: string;
+  state: AppState;
+  onBack: () => void;
+  onViewer: (page?: number, manage?: boolean) => void;
+  onBank: (scope: any) => void;
+  onError: (message: string) => void;
+  onRefresh: () => Promise<void>;
+}) {
+  const [tab, setTab] = useState<"concepts" | "external" | "scope">("concepts"),
+    [doc, setDoc] = useState<Material>(),
+    [jobs, setJobs] = useState<any[]>([]),
+    [job, setJob] = useState<any>(),
+    [busy, setBusy] = useState(""),
+    [raw, setRaw] = useState(""),
+    [preview, setPreview] = useState<any>(),
+    [reviewed, setReviewed] = useState(false),
+    [prompt, setPrompt] = useState(""),
+    [part, setPart] = useState(1),
+    [message, setMessage] = useState(""),
+    [task, setTask] = useState("bank"),
+    [questionCount, setQuestionCount] = useState(100),
+    [conceptCount, setConceptCount] = useState(5),
+    [practiceCount, setPracticeCount] = useState(5),
+    [chapter, setChapter] = useState(""),
+    [types, setTypes] = useState(["mcq", "ox", "short", "blank"]),
+    [typeCounts, setTypeCounts] = useState<Record<string, string>>({}),
+    [ratio, setRatio] = useState({ easy: 20, medium: 50, hard: 30 }),
+    [ranges, setRanges] = useState({
+      analysisRange: "",
+      excludedPages: "",
+      tocRange: "",
+      analysisMethod: "auto",
+      printedPageOffset: "",
+    });
+  const currentJob = useRef<string | undefined>(undefined);
+  const chapters = (state.chapters || []).filter((c) => c.materialId === id),
+    concepts = state.concepts.filter(
+      (c: any) =>
+        c.sources?.some((s: any) => s.materialId === id) ||
+        c.chapterIds?.some((cid: string) =>
+          chapters.some((ch) => ch.id === cid),
+        ),
+    );
+  async function load(selectedId?: string) {
+    const [d, list] = await Promise.all([
+      api(`materials/${id}`),
+      standard("list", { documentId: id }),
+    ]);
+    setDoc(d.material);
+    setJobs(list.jobs);
+    const found = selectedId || currentJob.current;
+    if (found) setJob(await standard("get", { jobId: found }));
+    else if (list.jobs[0])
+      setJob(await standard("get", { jobId: list.jobs[0].id }));
+    return d.material as Material;
+  }
+  useEffect(() => {
+    let alive = true;
+    load()
+      .then((d) => {
+        if (!alive) return;
+        setRanges({
+          analysisRange: d.analysisRange || "",
+          excludedPages: d.excludedPages || "",
+          tocRange: d.tocRange || "",
+          analysisMethod: d.analysisMethod || "auto",
+          printedPageOffset:
+            d.printedPageOffset === undefined || d.printedPageOffset === null
+              ? ""
+              : String(d.printedPageOffset),
+        });
+        setTab(d.analysisMethod === "external" ? "external" : "concepts");
+        setTask(chapters.length ? "bank" : "toc");
+      })
+      .catch((e) => onError(e.message));
+    return () => {
+      alive = false;
+    };
+  }, [id]);
+  const act = async (name: string, fn: () => Promise<void>) => {
+    if (busy) return;
+    setBusy(name);
+    setMessage("");
+    try {
+      await fn();
+      await load();
+      await onRefresh();
+    } catch (e) {
+      onError((e as Error).message);
+    } finally {
+      setBusy("");
+    }
+  };
+  async function create(method: "external" | "api") {
+    if (!doc) return;
+    const selectedChapter = chapters.find((c) => c.id === chapter),
+      selectedPages = selectedChapter
+        ? (
+            doc.selectedPages ||
+            Array.from({ length: doc.pageCount }, (_, i) => i + 1)
+          ).filter(
+            (p) =>
+              p >= selectedChapter.startPage && p <= selectedChapter.endPage,
+          )
+        : doc.selectedPages;
+    const created = await standard("create", {
+      documentId: id,
+      method,
+      taskType: task,
+      selectedPages,
+      tocPages: doc.tocPages || [],
+      questionCount,
+      conceptQuestionCount: conceptCount,
+      practiceQuestionCount: practiceCount,
+      questionTypes: types,
+      ...(Object.values(typeCounts).some((v) => v !== "")
+        ? {
+            questionTypeCounts: Object.fromEntries(
+              types.map((kind) => [kind, Number(typeCounts[kind] || 0)]),
+            ),
+          }
+        : {}),
+      difficultyDistribution: ratio,
+      ...(chapter ? { chapterIds: [chapter] } : {}),
+    });
+    currentJob.current = created.id;
+    setJob(created);
+    setJobs((current) => [created, ...current]);
+    setPart(1);
+    setRaw("");
+    setPreview(undefined);
+    setPrompt("");
+    setTab("external");
+    setMessage(`${created.totalParts}개 분할 작업을 준비했습니다.`);
+    if (method === "api") await run(created);
+  }
+  async function run(current = job) {
+    if (!current) return;
+    let requested = false;
+    for (let next = 1; next <= current.totalParts; next++) {
+      if (current.parts?.some((p: any) => p.part === next && p.applied))
+        continue;
+      const result = await edgeCall("ai-request", {
+        action: "run_standard",
+        standardJobId: current.id,
+        part: next,
+      });
+      requested = true;
+      await load(current.id);
+      await onRefresh();
+      if (result.result?.status !== "completed") {
+        setMessage(
+          "남은 작업을 보관했습니다. AI 연결·한도를 확인하거나 외부 JSON을 가져올 수 있습니다.",
+        );
+        return;
+      }
+    }
+    setMessage(
+      requested
+        ? "API 결과를 저장했습니다. 내용을 검토한 뒤 학습에 사용하세요."
+        : "등록된 결과를 재사용합니다.",
+    );
+  }
+  async function inspect() {
+    if (!job) return;
+    const parsed = parseRestudy(raw);
+    const result = await standard("preview", { jobId: job.id, raw: parsed });
+    setPreview(result);
+    setReviewed(false);
+  }
+  async function importData() {
+    if (!job || !preview?.valid) return;
+    const result = await standard("import", {
+      jobId: job.id,
+      raw: parseRestudy(raw),
+      previewHash: preview.hash,
+      reviewed,
+    });
+    setJob(result.job);
+    setMessage(
+      `${result.receivedParts}/${job.totalParts} 분할 보관 · ${result.questions}문항 등록${result.ready ? "" : " · 참조 대기"}`,
+    );
+    setRaw("");
+    setPreview(undefined);
+    setReviewed(false);
+    await load(job.id);
+    await onRefresh();
+  }
+  if (!doc) return <div className="loading">자료를 여는 중…</div>;
+  return (
+    <>
+      <div className="page-heading">
+        <div>
+          <button className="text-button" onClick={onBack}>
+            내 자료로
+          </button>
+          <h1>{doc.title}</h1>
+          <p>
+            {doc.subject} · 원본 PDF {doc.pageCount}쪽 · 분석 범위{" "}
+            {formatPages(doc.selectedPages || []) || "전체"}
+          </p>
+        </div>
+        <div className="row">
+          <Button variant="secondary" onClick={() => onViewer(1)}>
+            PDF 열기
+          </Button>
+          <Button onClick={() => onBank({ materialIds: [id] })}>
+            문제 은행
+          </Button>
+        </div>
+      </div>
+      <div className="tabs content-tabs">
+        <button
+          className={tab === "concepts" ? "active" : ""}
+          onClick={() => setTab("concepts")}
+        >
+          목차·개념
+        </button>
+        <button
+          className={tab === "external" ? "active" : ""}
+          onClick={() => setTab("external")}
+        >
+          콘텐츠 준비·가져오기
+        </button>
+        <button
+          className={tab === "scope" ? "active" : ""}
+          onClick={() => setTab("scope")}
+        >
+          처리 범위
+        </button>
+      </div>
+      {message && (
+        <p className="notice" role="status">
+          {message}
+        </p>
+      )}
+      {tab === "concepts" && (
+        <>
+          <div className="section-heading">
+            <h2>
+              단원 {chapters.length}개 · 개념 {concepts.length}개
+            </h2>
+            <Button
+              variant="secondary"
+              onClick={() => {
+                setTask(chapters.length ? "initial" : "toc");
+                setTab("external");
+              }}
+            >
+              {chapters.length ? "기본 퀴즈·연습문제 준비" : "목차부터 준비"}
+            </Button>
+          </div>
+          {!chapters.length && (
+            <Empty
+              title="아직 준비된 단원이 없습니다"
+              description="목차·개념을 먼저 준비하거나 외부 분석 결과를 가져오세요."
+            />
+          )}
+          {chapters.map((ch) => (
+            <details className="panel chapter-panel" key={ch.id} open>
+              <summary>
+                {ch.title}{" "}
+                <small>
+                  PDF {ch.startPage}–{ch.endPage}쪽
+                </small>
+              </summary>
+              <div className="row">
+                <button
+                  className="text-button"
+                  onClick={() => onViewer(ch.startPage)}
+                >
+                  출처 보기
+                </button>
+                <button
+                  className="text-button"
+                  onClick={() =>
+                    onBank({ materialIds: [id], chapterIds: [ch.id] })
+                  }
+                >
+                  이 단원 문제 은행
+                </button>
+                <button
+                  className="text-button"
+                  onClick={() => {
+                    setChapter(ch.id);
+                    setTask("initial");
+                    setTab("external");
+                  }}
+                >
+                  기본 콘텐츠 추가
+                </button>
+              </div>
+              {concepts
+                .filter(
+                  (c: any) =>
+                    c.chapterIds?.includes(ch.id) || c.chapterId === ch.id,
+                )
+                .map((c: any) => (
+                  <article className="concept-reading" key={c.id}>
+                    <h3>{c.name}</h3>
+                    {c.evidence === "toc_only" && (
+                      <small className="review-label">
+                        목차 기준 · 본문 추가 확인 필요
+                      </small>
+                    )}
+                    <p>{c.definition}</p>
+                    {!!c.formulas?.length && (
+                      <>
+                        <strong>공식·조건</strong>
+                        <ul>
+                          {c.formulas.map((v: string, i: number) => (
+                            <li key={i}>{v}</li>
+                          ))}
+                        </ul>
+                      </>
+                    )}
+                    {!!c.memorize?.length && (
+                      <>
+                        <strong>암기사항</strong>
+                        <ul>
+                          {c.memorize.map((v: string, i: number) => (
+                            <li key={i}>{v}</li>
+                          ))}
+                        </ul>
+                      </>
+                    )}
+                    {!!c.pitfalls?.length && (
+                      <details>
+                        <summary>주의할 점</summary>
+                        <ul>
+                          {c.pitfalls.map((v: string, i: number) => (
+                            <li key={i}>{v}</li>
+                          ))}
+                        </ul>
+                      </details>
+                    )}
+                    <div className="row">
+                      <button
+                        className="text-button"
+                        onClick={() =>
+                          onBank({
+                            materialIds: [id],
+                            conceptIds: [c.id],
+                            purposes: ["concept"],
+                          })
+                        }
+                      >
+                        개념 퀴즈
+                      </button>
+                      <button
+                        className="text-button"
+                        onClick={() =>
+                          onBank({
+                            materialIds: [id],
+                            conceptIds: [c.id],
+                            mode: "memory",
+                          })
+                        }
+                      >
+                        암기하기
+                      </button>
+                      <button
+                        className="text-button"
+                        onClick={() =>
+                          onBank({ materialIds: [id], conceptIds: [c.id] })
+                        }
+                      >
+                        연습문제
+                      </button>
+                    </div>
+                  </article>
+                ))}
+              <details>
+                <summary>목차 이름·범위 수정</summary>
+                <ChapterEditor
+                  chapter={ch}
+                  busy={!!busy}
+                  onSave={(b) =>
+                    act("목차 저장", async () => {
+                      await api(`chapters/${ch.id}`, "PATCH", b);
+                    })
+                  }
+                />
+              </details>
+            </details>
+          ))}
+        </>
+      )}
+      {tab === "external" && (
+        <>
+          <section className="panel content-job-setup">
+            <h2>준비할 콘텐츠</h2>
+            <div className="form-grid">
+              <label>
+                작업
+                <select value={task} onChange={(e) => setTask(e.target.value)}>
+                  <option value="toc">목차·단원 구조 먼저</option>
+                  <option value="initial">단원 기본 개념·퀴즈·연습문제</option>
+                  <option value="bank">추가 문제 은행</option>
+                </select>
+              </label>
+              <label>
+                단원
+                <select
+                  value={chapter}
+                  onChange={(e) => setChapter(e.target.value)}
+                >
+                  <option value="">선택 범위 전체</option>
+                  {chapters.map((c) => (
+                    <option value={c.id} key={c.id}>
+                      {c.title}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {task === "initial" ? (
+                <>
+                  <label>
+                    개념 퀴즈 수
+                    <input
+                      type="number"
+                      min={0}
+                      max={100}
+                      value={conceptCount}
+                      onChange={(e) => setConceptCount(+e.target.value)}
+                    />
+                  </label>
+                  <label>
+                    기본 연습문제 수
+                    <input
+                      type="number"
+                      min={0}
+                      max={100}
+                      value={practiceCount}
+                      onChange={(e) => setPracticeCount(+e.target.value)}
+                    />
+                  </label>
+                </>
+              ) : task === "bank" ? (
+                <label>
+                  전체 문제 수
+                  <input
+                    type="number"
+                    min={1}
+                    max={1000}
+                    value={questionCount}
+                    onChange={(e) => setQuestionCount(+e.target.value)}
+                  />
+                </label>
+              ) : null}
+            </div>
+            {task !== "toc" && (
+              <>
+                <fieldset className="inline-options">
+                  <legend>문제 형식</legend>
+                  {Object.entries({
+                    mcq: "객관식",
+                    ox: "OX",
+                    short: "단답형",
+                    blank: "빈칸",
+                  }).map(([key, label]) => (
+                    <label key={key}>
+                      <input
+                        type="checkbox"
+                        checked={types.includes(key)}
+                        onChange={() =>
+                          setTypes((current) =>
+                            current.includes(key)
+                              ? current.filter((v) => v !== key)
+                              : [...current, key],
+                          )
+                        }
+                      />
+                      {label}
+                    </label>
+                  ))}
+                </fieldset>
+                <details>
+                  <summary>형식별 개수 지정</summary>
+                  <div className="form-grid">
+                    {types.map((kind) => (
+                      <label key={kind}>
+                        {
+                          {
+                            mcq: "객관식",
+                            ox: "OX",
+                            short: "단답형",
+                            blank: "빈칸",
+                          }[kind]
+                        }{" "}
+                        개수
+                        <input
+                          type="number"
+                          min={0}
+                          placeholder="자동"
+                          value={typeCounts[kind] || ""}
+                          onChange={(e) =>
+                            setTypeCounts((current) => ({
+                              ...current,
+                              [kind]: e.target.value,
+                            }))
+                          }
+                        />
+                      </label>
+                    ))}
+                  </div>
+                  <p className="field-help">
+                    지정할 때는 전체 문제 수와 합을 맞추세요.
+                  </p>
+                </details>
+                <div className="form-grid">
+                  {Object.entries({ easy: "하", medium: "중", hard: "상" }).map(
+                    ([key, label]) => (
+                      <label key={key}>
+                        {label} 비율 (%)
+                        <input
+                          type="number"
+                          min={0}
+                          max={100}
+                          value={ratio[key as keyof typeof ratio]}
+                          onChange={(e) =>
+                            setRatio((current) => ({
+                              ...current,
+                              [key]: +e.target.value,
+                            }))
+                          }
+                        />
+                      </label>
+                    ),
+                  )}
+                </div>
+              </>
+            )}
+            <p className="field-help">
+              문제 은행 100문제는 20문제씩 5개 분할로 준비합니다. 처음에는
+              목차를 확인한 뒤 각 단원의 기본 콘텐츠를 준비하세요.
+            </p>
+            <div className="row">
+              <Button
+                variant="secondary"
+                busy={!!busy}
+                onClick={() => act("외부 작업 준비", () => create("external"))}
+              >
+                외부 작업 준비
+              </Button>
+              <Button
+                busy={!!busy}
+                onClick={() => act("API 분석", () => create("api"))}
+              >
+                API로 준비
+              </Button>
+            </div>
+          </section>
+          {!!jobs.length && (
+            <label className="cloud-field">
+              이어갈 작업
+              <select
+                value={job?.id || ""}
+                onChange={(e) =>
+                  act("작업 열기", async () => {
+                    currentJob.current = e.target.value;
+                    setJob(await standard("get", { jobId: e.target.value }));
+                    setPrompt("");
+                    setRaw("");
+                    setPreview(undefined);
+                    setPart(1);
+                  })
+                }
+              >
+                {jobs.map((j) => (
+                  <option key={j.id} value={j.id}>
+                    {j.taskType === "toc"
+                      ? "목차"
+                      : j.taskType === "initial"
+                        ? "기본 콘텐츠"
+                        : "문제 은행"}{" "}
+                    · {j.questionCount}문제 · {labels[j.status] || j.status}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+          {job && (
+            <section className="panel external-import">
+              <div className="section-heading">
+                <h2>외부 결과 가져오기</h2>
+                <small>
+                  {job.receivedParts || 0}/{job.totalParts} 분할 · 등록{" "}
+                  {job.importedQuestions || 0}문항 ·{" "}
+                  {labels[job.status] || job.status}
+                </small>
+              </div>
+              <div className="external-step">
+                <h3>1. 아래 프롬프트를 복사하세요.</h3>
+                <div className="row">
+                  <label>
+                    현재 분할
+                    <select
+                      value={part}
+                      onChange={(e) => {
+                        setPart(+e.target.value);
+                        setPrompt("");
+                      }}
+                    >
+                      {Array.from({ length: job.totalParts }, (_, i) => (
+                        <option key={i} value={i + 1}>
+                          {i + 1} / {job.totalParts}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <Button
+                    variant="secondary"
+                    onClick={() =>
+                      act("프롬프트 복사", async () => {
+                        const r = await standard("prompt", {
+                          jobId: job.id,
+                          part,
+                        });
+                        setPrompt(r.prompt);
+                        await navigator.clipboard.writeText(r.prompt);
+                        setMessage("프롬프트를 복사했습니다.");
+                      })
+                    }
+                  >
+                    프롬프트 복사
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    busy={!!busy}
+                    onClick={() => act("API 작업 재개", () => run(job))}
+                  >
+                    API로 이어서 준비
+                  </Button>
+                </div>
+                {prompt && (
+                  <details>
+                    <summary>복사할 내용 보기</summary>
+                    <textarea
+                      className="json-preview"
+                      readOnly
+                      value={prompt}
+                      rows={8}
+                    />
+                  </details>
+                )}
+              </div>
+              <div className="external-step">
+                <h3>2. 같은 문제집 PDF를 외부 AI에 첨부하세요.</h3>
+                <p>ChatGPT 등에 PDF와 복사한 프롬프트를 함께 입력하세요.</p>
+                <div className="row">
+                  <Button
+                    variant="secondary"
+                    onClick={() =>
+                      act("범위 PDF 내보내기", async () => {
+                        await downloadSelectedPdf(id, job.selectedPages);
+                        setMessage("선택 범위 PDF를 저장했습니다.");
+                      })
+                    }
+                  >
+                    분석 범위 PDF 내보내기
+                  </Button>
+                  {job.tocPages.length > 0 && (
+                    <Button
+                      variant="ghost"
+                      onClick={() =>
+                        act("목차 PDF 내보내기", async () => {
+                          await downloadSelectedPdf(id, job.tocPages);
+                        })
+                      }
+                    >
+                      목차 PDF 내보내기
+                    </Button>
+                  )}
+                </div>
+              </div>
+              <div className="external-step">
+                <h3>3. 출력된 값을 그대로 붙여넣으세요.</h3>
+                <textarea
+                  aria-label="분석 결과 붙여넣기"
+                  placeholder="restudy.v1 JSON 또는 JSON 코드 블록"
+                  rows={10}
+                  value={raw}
+                  onChange={(e) => {
+                    setRaw(e.target.value);
+                    setPreview(undefined);
+                    setReviewed(false);
+                  }}
+                />
+                <div className="row">
+                  <Button
+                    variant="secondary"
+                    disabled={!raw.trim()}
+                    busy={!!busy}
+                    onClick={() => act("JSON 검사", inspect)}
+                  >
+                    검사·미리보기
+                  </Button>
+                </div>
+                {preview && (
+                  <div className="json-import-preview">
+                    <p>
+                      {preview.counts.questions}문항 · 개념{" "}
+                      {preview.counts.concepts}개 · {preview.counts.parts}/
+                      {preview.counts.totalParts}분할
+                    </p>
+                    {preview.errors.map((v: string, i: number) => (
+                      <p className="error" role="alert" key={i}>
+                        {v}
+                      </p>
+                    ))}
+                    {preview.warnings.map((v: string, i: number) => (
+                      <p className="notice" key={i}>
+                        {v}
+                      </p>
+                    ))}
+                    {preview.valid && (
+                      <>
+                        <ContentReview content={preview.review} />
+                        <label className="cloud-check">
+                          <input
+                            type="checkbox"
+                            checked={reviewed}
+                            disabled={!preview.ready}
+                            onChange={(e) => setReviewed(e.target.checked)}
+                          />
+                          현재 병합된 {preview.counts.questions}문항의
+                          내용·정답·해설을 모두 검토했습니다.
+                        </label>
+                        <Button
+                          busy={!!busy}
+                          onClick={() => act("분할 등록", importData)}
+                        >
+                          {!preview.ready
+                            ? "분할 보관 · 참조 대기"
+                            : reviewed
+                              ? "검토 완료로 등록·학습에 사용"
+                              : "검토 대기로 등록"}
+                        </Button>
+                      </>
+                    )}
+                  </div>
+                )}
+              </div>
+              <p className="field-help">
+                붙여넣기·검사·등록 과정은 AI API를 호출하지 않습니다. 등록한
+                데이터는 일반 학습과 오답 복습에서 함께 사용합니다.
+              </p>
+            </section>
+          )}
+        </>
+      )}
+      {tab === "scope" && (
+        <section className="panel scope-editor">
+          <h2>분석할 페이지</h2>
+          <p className="field-help">
+            원본 전체는 보존됩니다. 범위를 바꾸면 저장된 페이지와 문항을
+            유지하고 추가 페이지부터 처리합니다.
+          </p>
+          <div className="form-grid">
+            {[
+              ["analysisRange", "분석 범위"],
+              ["excludedPages", "제외할 페이지"],
+              ["tocRange", "목차 페이지"],
+            ].map(([key, label]) => (
+              <label key={key}>
+                {label}
+                <input
+                  placeholder={
+                    key === "analysisRange"
+                      ? "전체 · 예: 15-48, 62-90"
+                      : "예: 3-6"
+                  }
+                  value={(ranges as any)[key]}
+                  onChange={(e) =>
+                    setRanges((current) => ({
+                      ...current,
+                      [key]: e.target.value,
+                    }))
+                  }
+                />
+              </label>
+            ))}
+            <label>
+              PDF 쪽수와 책 쪽수 차이
+              <input
+                type="number"
+                placeholder="미지정"
+                value={ranges.printedPageOffset}
+                onChange={(e) =>
+                  setRanges((current) => ({
+                    ...current,
+                    printedPageOffset: e.target.value,
+                  }))
+                }
+              />
+            </label>
+          </div>
+          <p>
+            PDF {doc.pageCount}쪽 · {doc.message}
+          </p>
+          <div className="row">
+            <Button
+              busy={!!busy}
+              onClick={() =>
+                act("범위 저장", async () => {
+                  await updateMaterialRange(id, {
+                    ...ranges,
+                    printedPageOffset:
+                      ranges.printedPageOffset === ""
+                        ? null
+                        : Number(ranges.printedPageOffset),
+                  });
+                  setMessage(
+                    "새 범위를 저장했습니다. 추가 페이지부터 처리합니다.",
+                  );
+                })
+              }
+            >
+              범위 저장·추가 페이지 처리
+            </Button>
+            <Button variant="secondary" onClick={() => onViewer(1, true)}>
+              원본 영역 관리
+            </Button>
+          </div>
+        </section>
+      )}
+    </>
+  );
+}
+function ChapterEditor({
+  chapter,
+  busy,
+  onSave,
+}: {
+  chapter: any;
+  busy: boolean;
+  onSave: (body: any) => void;
+}) {
+  const [title, setTitle] = useState(chapter.title),
+    [start, setStart] = useState(chapter.startPage),
+    [end, setEnd] = useState(chapter.endPage);
+  return (
+    <div className="form-grid chapter-editor">
+      <label>
+        단원 이름
+        <input value={title} onChange={(e) => setTitle(e.target.value)} />
+      </label>
+      <label>
+        시작 PDF 페이지
+        <input
+          type="number"
+          min={1}
+          value={start}
+          onChange={(e) => setStart(+e.target.value)}
+        />
+      </label>
+      <label>
+        끝 PDF 페이지
+        <input
+          type="number"
+          min={start}
+          value={end}
+          onChange={(e) => setEnd(+e.target.value)}
+        />
+      </label>
+      <Button
+        busy={busy}
+        onClick={() => onSave({ title, startPage: start, endPage: end })}
+      >
+        목차 저장
+      </Button>
+    </div>
+  );
+}

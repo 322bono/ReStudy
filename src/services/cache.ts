@@ -1,0 +1,112 @@
+type Entry = {
+  key: string;
+  owner: string;
+  value: unknown;
+  bytes: number;
+  usedAt: number;
+};
+const LIMIT = 150 * 1024 * 1024;
+let pending: Promise<IDBDatabase> | undefined;
+function database() {
+  if (typeof indexedDB === "undefined")
+    return Promise.reject(new Error("IndexedDB unavailable"));
+  return (pending ||= new Promise((resolve, reject) => {
+    const request = indexedDB.open("restudy-private-cache-v1", 1);
+    request.onupgradeneeded = () => {
+      const store = request.result.createObjectStore("entries", {
+        keyPath: "key",
+      });
+      store.createIndex("owner", "owner");
+      store.createIndex("usedAt", "usedAt");
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => {
+      pending = undefined;
+      reject(request.error);
+    };
+  }));
+}
+const key = (owner: string, name: string) => `${owner}:${name}`;
+export async function cacheGet<T>(
+  owner: string,
+  name: string,
+): Promise<T | null> {
+  try {
+    const db = await database();
+    return await new Promise((resolve, reject) => {
+      const tx = db.transaction("entries", "readwrite"),
+        store = tx.objectStore("entries"),
+        request = store.get(key(owner, name));
+      let result: T | null = null;
+      request.onsuccess = () => {
+        const entry = request.result as Entry | undefined;
+        if (entry?.owner === owner) {
+          result = entry.value as T;
+          store.put({ ...entry, usedAt: Date.now() });
+        }
+      };
+      tx.oncomplete = () => resolve(result);
+      tx.onerror = () => reject(tx.error);
+    });
+  } catch {
+    return null;
+  }
+}
+export async function cachePut(owner: string, name: string, value: unknown) {
+  try {
+    const db = await database(),
+      bytes =
+        value instanceof Blob
+          ? value.size
+          : new TextEncoder().encode(JSON.stringify(value)).length;
+    if (bytes > 50 * 1024 * 1024) return;
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction("entries", "readwrite"),
+        store = tx.objectStore("entries");
+      store.put({
+        key: key(owner, name),
+        owner,
+        value,
+        bytes,
+        usedAt: Date.now(),
+      } satisfies Entry);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+    const entries = await new Promise<Entry[]>((resolve, reject) => {
+      const req = db.transaction("entries").objectStore("entries").getAll();
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+    let total = entries.reduce((n, e) => n + e.bytes, 0);
+    if (total > LIMIT) {
+      const tx = db.transaction("entries", "readwrite");
+      for (const entry of entries.sort((a, b) => a.usedAt - b.usedAt)) {
+        if (total <= LIMIT) break;
+        tx.objectStore("entries").delete(entry.key);
+        total -= entry.bytes;
+      }
+    }
+  } catch {
+    /* Cache denial never discards the durable cloud data. */
+  }
+}
+export async function clearOwnerCache(owner: string) {
+  try {
+    const db = await database();
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction("entries", "readwrite"),
+        store = tx.objectStore("entries"),
+        req = store.index("owner").openCursor(IDBKeyRange.only(owner));
+      req.onsuccess = () => {
+        const cursor = req.result;
+        if (cursor) {
+          cursor.delete();
+          cursor.continue();
+        }
+      };
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  } catch {}
+}
