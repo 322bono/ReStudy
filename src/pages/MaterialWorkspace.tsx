@@ -82,6 +82,8 @@ export default function MaterialWorkspace({
       printedPageOffset: "",
     });
   const currentJob = useRef<string | undefined>(undefined);
+  const stopApi=useRef(false);
+  useEffect(()=>()=>{stopApi.current=true;},[]);
   useEffect(()=>{if(!apiRunning)return;let stopped=false;const timer=setInterval(()=>{setApiElapsed(Math.floor((Date.now()-apiStartedAt)/1000));if(currentJob.current)void standard('get',{jobId:currentJob.current}).then(value=>{if(!stopped&&currentJob.current===value.id)setJob(value);}).catch(()=>{});},2000);return()=>{stopped=true;clearInterval(timer);};},[apiRunning,apiStartedAt]);
   const chapters = (state.chapters || []).filter((c) => c.materialId === id),
     concepts = state.concepts.filter(
@@ -101,7 +103,7 @@ export default function MaterialWorkspace({
         (p >= selectedChapter.startPage && p <= selectedChapter.endPage),
     ),
     scopedOriginals = state.questions
-      .filter((q) => q.materialId === id && selectedPages.includes(q.page))
+      .filter((q) => q.materialId === id && !q.mergedInto && selectedPages.includes(q.page))
       .sort((a, b) => a.page - b.page || a.number - b.number),
     targetOriginals =
       originalScope === "picked"
@@ -251,10 +253,12 @@ export default function MaterialWorkspace({
   async function run(current = job) {
     if (!current) return;
     setApiError('');setApiRunning(true);setApiStartedAt(Date.now());setApiElapsed(0);
+    stopApi.current=false;
     try{
     if(current.method!=='api'||current.partSize>5){current=await standard('api_continuation',{jobId:current.id});currentJob.current=current.id;setJob(current);setJobs(all=>[current,...all.filter(j=>j.id!==current.id)]);}
     let requested = false;
     for (let next = 1; next <= current.totalParts; next++) {
+      if(stopApi.current){setMessage('완료된 분할을 보관하고 API 준비를 멈췄습니다. 이어서 준비하면 남은 분할부터 진행합니다.');return;}
       if (current.parts?.some((p: any) => p.part === next && p.applied))
         continue;
       const result = await edgeCall("ai-request", {
@@ -328,7 +332,7 @@ export default function MaterialWorkspace({
         </div>
       </div>
       <details className="panel" style={{padding:16,marginBottom:16}}>
-        <summary>PDF 인식 · {state.questions.filter(q=>q.materialId===id).length}문항 · 검토 {state.questions.filter(q=>q.materialId===id&&!q.confirmed).length}개</summary>
+        <summary>PDF 인식 · {state.questions.filter(q=>q.materialId===id&&!q.mergedInto).length}문항 · 검토 {state.questions.filter(q=>q.materialId===id&&!q.mergedInto&&!q.confirmed).length}개</summary>
         <p className="field-help">{doc.message || '저장된 원본과 인식 결과를 사용합니다.'}</p>
         {['uploaded','processing'].includes(doc.status)&&<progress aria-label="PDF 분석 진행률" value={doc.progress||0} max={100}/>}
         {doc.error&&<p className="error" role="alert">{doc.error}</p>}
@@ -359,7 +363,7 @@ export default function MaterialWorkspace({
           {message}
         </p>
       )}
-      {(apiRunning||apiError||job?.apiJobs?.length||job?.apiStatus?.state==='paused')&&<section className="panel" aria-live="polite" style={{padding:16,marginBottom:16}}><h2>API 준비 결과</h2><p role={apiError?'alert':'status'} className={apiError?'error':''}>{apiError||job?.apiStatus?.message||'API 요청을 시작하고 있습니다.'}</p><p>저장된 결과 {job?.apiStatus?.completed??0}/{job?.totalParts??0}분할 · 문항 {job?.importedQuestions??0}개{apiRunning?` · 경과 ${apiElapsed}초`:''}</p>{apiRunning&&<progress aria-label="API 분할 진행률" max={job?.totalParts||1} value={job?.apiStatus?.completed||0}/>}<details><summary>최근 시도와 오류</summary>{(job?.apiAttempts??[]).map((a:any,i:number)=><p key={i}>{a.provider} · {a.model} · {Math.round((a.duration_ms??0)/1000)}초 · {a.success?'유효한 응답 수신':aiFailureText(a.error)}</p>)}{!job?.apiAttempts?.length&&<p>아직 모델 호출 이력이 없습니다. 원본·요청 범위를 확인하거나 첫 응답을 기다리는 단계입니다.</p>}</details></section>}
+      {(apiRunning||apiError||job?.apiJobs?.length||job?.apiStatus?.state==='paused')&&<section className="panel" aria-live="polite" style={{padding:16,marginBottom:16}}><h2>API 준비 결과</h2><p role={apiError?'alert':'status'} className={apiError?'error':''}>{apiError||job?.apiStatus?.message||'API 요청을 시작하고 있습니다.'}</p><p>저장된 결과 {job?.apiStatus?.completed??0}/{job?.totalParts??0}분할 · 문항 {job?.importedQuestions??0}개{apiRunning?` · 경과 ${apiElapsed}초`:''}</p>{apiRunning&&<progress aria-label="API 분할 진행률" max={job?.totalParts||1} value={job?.apiStatus?.completed||0}/>}{apiRunning&&<Button variant="secondary" onClick={()=>{stopApi.current=true;setMessage("현재 요청이 끝나면 완료된 결과를 보관하고 멈춥니다.");}}>현재 분할 후 멈추기</Button>}<details><summary>최근 시도와 오류</summary>{(job?.apiAttempts??[]).map((a:any,i:number)=><p key={i}>{a.provider} · {a.model} · {Math.round((a.duration_ms??0)/1000)}초 · {a.success?'유효한 응답 수신':aiFailureText(a.error)}</p>)}{!job?.apiAttempts?.length&&<p>아직 모델 호출 이력이 없습니다. 원본·요청 범위를 확인하거나 첫 응답을 기다리는 단계입니다.</p>}</details></section>}
       {tab === "concepts" && (
         <>
           <LocalOutlineEditor outline={doc.localOutline} pageCount={doc.pageCount} sourcePage={doc.tocPages?.[0]??doc.selectedPages?.[0]??1} busy={!!busy} onSave={outline=>act('자체 목차 저장',async()=>{await api(`materials/${id}/outline`,'POST',{outline,manual:true});})}/>

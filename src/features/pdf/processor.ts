@@ -681,7 +681,9 @@ function findAnchors(lines: PageTextItem[]): Anchor[] {
     if(new Set(neighbours.map(a=>a.number)).size>=2&&neighbours.some(a=>Math.abs(a.line.x-line.x)<.03&&line.height>=a.line.height*.75&&line.height<=a.line.height*1.6))candidates.push({number:p.number,line,bare:true,column:0});
   }
   const unique:Anchor[]=[];
-  for(const candidate of candidates.sort((a,b)=>(b.line.confidence??1)-(a.line.confidence??1)))if(!unique.some(a=>a.number===candidate.number&&Math.abs(a.line.x-candidate.line.x)<.025&&Math.abs(a.line.y-candidate.line.y)<Math.max(.009,Math.min(a.line.height,candidate.line.height)*.8)))unique.push(candidate);
+  const overlaps=(a:Anchor,b:Anchor)=>Math.abs(a.line.x-b.line.x)<.025&&Math.abs(a.line.y-b.line.y)<Math.max(.009,Math.min(a.line.height,b.line.height)*.8);
+  const support=(a:Anchor)=>new Set(candidates.filter(b=>!overlaps(a,b)&&b.number!==a.number&&Math.abs(b.number-a.number)<=5).map(b=>b.number)).size;
+  for(const candidate of candidates.sort((a,b)=>support(b)-support(a)||(b.line.confidence??1)-(a.line.confidence??1)))if(!unique.some(a=>overlaps(a,candidate)))unique.push(candidate);
   return unique.filter(a=>!(a.number<=10&&unique.some(outer=>outer!==a&&outer.line.y<a.line.y-.006&&a.line.x-outer.line.x>.012&&a.line.x-outer.line.x<.18)));
 }
 
@@ -749,6 +751,7 @@ function area(
 function detectPage(layout: Layout): ProblemCandidate[] {
   if (layout.kind === "answers") return [];
   layout.anchors = findAnchors(layout.lines);
+  layout.lines=layout.lines.filter(line=>{const parsed=marker(line);return !parsed||!layout.anchors.some(a=>a.number!==parsed.number&&Math.abs(a.line.x-line.x)<.025&&Math.abs(a.line.y-line.y)<Math.max(.009,Math.min(a.line.height,line.height)*.8));});
   columns(layout);
   for (const line of layout.lines) {
     const match = RANGE.exec(line.text);

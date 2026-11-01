@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocked = vi.hoisted(() => ({ db: null as any, user: "11111111-1111-4111-8111-111111111111",edgeCall:vi.fn(),openPdf: vi.fn(), preparePage: vi.fn(),prepareNumberMarkers:vi.fn(),renderRegions: vi.fn(), detectProblems: vi.fn(), closeOcr: vi.fn() }));
 vi.mock("../src/services/supabase", () => ({ getSupabase: () => mocked.db,edgeCall:mocked.edgeCall,currentUser: async () => ({ id: mocked.user }) }));
 vi.mock("../src/features/pdf/processor", () => ({ openPdf: mocked.openPdf, preparePage: mocked.preparePage,prepareNumberMarkers:mocked.prepareNumberMarkers,NUMBER_LAYER_VERSION:'test-number-layer',renderRegions: mocked.renderRegions, detectProblems: mocked.detectProblems, closeOcr: mocked.closeOcr }));
-import { PDF_ENGINE_VERSION, pauseMaterial, resumeMaterial, resumePending, saveQuestion, uploadMaterials } from "../src/services/documents";
+import { PDF_ENGINE_VERSION, PDF_LAYOUT_VERSION, pauseMaterial, resumeMaterial, resumePending, saveQuestion, uploadMaterials } from "../src/services/documents";
 
 type Row = Record<string, any>;
 function database() {
@@ -102,6 +102,18 @@ beforeEach(() => {
 const finished = () => vi.waitFor(() => expect(["needs_review", "ready", "error"]).toContain(mocked.db.tables.documents[0].status));
 
 describe("private browser document checkpoints", () => {
+  it("refreshes layout metadata while preserving saved PNGs, IDs and answer history", async () => {
+    seedDoc();seedPage(1);seedPage(2);
+    const path=`${mocked.user}/${DOC}/original-crop.png`;
+    mocked.db.tables.problems.push({id:Q,user_id:mocked.user,document_id:DOC,number:17,page:1,updated_at:'old',data:{regions:[region],source:'text',confirmed:false,text:'old OCR',revision:'old',answer:'3',cropEngineVersion:PDF_ENGINE_VERSION,layoutVersion:'old-layout'}});
+    mocked.db.tables.problem_regions.push({id:crypto.randomUUID(),user_id:mocked.user,problem_id:Q,part:0,page:1,image_path:path,data:region});
+    await resumeMaterial(DOC);await finished();
+    expect(mocked.db.tables.documents[0].status).toBe('needs_review');
+    expect(mocked.renderRegions).not.toHaveBeenCalled();expect(mocked.db.uploads).toHaveLength(0);
+    expect(mocked.db.tables.problems[0]).toMatchObject({id:Q,data:{text:'원본',answer:'3',layoutVersion:PDF_LAYOUT_VERSION}});
+    expect(mocked.db.tables.problem_regions[0].image_path).toBe(path);
+    expect(mocked.db.tables.problems[0].data.revision).not.toBe('old');
+  });
   it("preflights every file before any DB or storage persistence", async () => {
     const form = new FormData(); form.set("subject", "수학"); form.set("kind", "문제집");
     form.append("files", new File(["%PDF-1.4 valid"], "valid.pdf", { type: "application/pdf" }));

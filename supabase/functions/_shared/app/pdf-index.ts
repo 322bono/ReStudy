@@ -15,6 +15,6 @@ export async function saveOutline(ctx:Ctx,id:string,body:any){
  if(error)throw new AppError('목차 저장 중 원본이나 분석 상태가 변경됐습니다. 다시 불러와 주세요.',409);return data;
 }
 export async function documentIndex(ctx:Ctx,id:string){
- const doc=await row(ctx,'documents',id),pages=(await rows(ctx,'document_pages')).filter((p:any)=>p.document_id===id),problems=(await rows(ctx,'problems')).filter((p:any)=>p.document_id===id&&!p.data.autoRetired),regions=await rows(ctx,'problem_regions');
+ const doc=await row(ctx,'documents',id),pages=(await rows(ctx,'document_pages')).filter((p:any)=>p.document_id===id),problems=(await rows(ctx,'problems')).filter((p:any)=>p.document_id===id&&!p.data.autoRetired&&!p.data.mergedInto),regions=await rows(ctx,'problem_regions');
  return{schema_version:'re.pdf-index.v1',document_id:id,outline:doc.data.localOutline??null,pages:pages.map((p:any)=>({...p.data.ocrIndex,document_id:id,pdf_page:p.number,problems:problems.filter((q:any)=>q.page===p.number).map((q:any)=>({id:q.id,q_number:String(q.number),chapter_id:q.data.chapterId??null,regions:regions.filter((r:any)=>r.problem_id===q.id).map((r:any)=>({page:r.page,bbox:[r.data.x,r.data.y,r.data.x+r.data.w,r.data.y+r.data.h]})),confidence:q.data.confidence??0,needs_review:!q.data.confirmed}))}))};
 }

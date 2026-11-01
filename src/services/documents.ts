@@ -16,8 +16,10 @@ import { cacheGet, cachePut } from "./cache";
 import { storagePageText } from "../domain/pdf-text";
 import {pageOcrIndex,extractLocalOutline}from'../domain/pdf-index';
 import {edgeCall}from'./supabase';
+import{mergeRegions,splitRegions}from'../domain/problem-regions';
 
 export const PDF_ENGINE_VERSION = "browser-pdf-2026-11-01-v1";
+export const PDF_LAYOUT_VERSION = "local-layout-2026-11-02-v3";
 const BUCKET = "study-files",
   MAX_BYTES = 50 * 1024 * 1024,
   MAX_PAGES = 500;
@@ -607,6 +609,7 @@ async function commitCrop(
   fields: Row,
   regions: Region[],
   job?: Job,
+  stageOnly=false,
 ): Promise<Row> {
   const revision = crypto.randomUUID(),
     blobs = await renderRegions(pdf, regions);
@@ -631,7 +634,7 @@ async function commitCrop(
     )
       return fresh;
   }
-  const { data, error } = await ctx.db.rpc("save_problem_regions", {
+  const args={
     p_problem: {
       id,
       document_id: doc.id,
@@ -653,7 +656,9 @@ async function commitCrop(
       data: r,
     })),
     p_expected_revision: old?.data.revision ?? null,
-  });
+  };
+  if(stageOnly)return args;
+  const { data, error } = await ctx.db.rpc("save_problem_regions", args);
   if (error || !data)
     throw failure(
       "문항이 다른 화면에서 변경되었거나 크롭을 저장하지 못했습니다. 기존 문항을 확인하고 다시 시도해 주세요.",
@@ -822,18 +827,6 @@ async function runDocument(ctx: Context, job: Job): Promise<void> {
         parts = current
           ? await list(ctx, "problem_regions", "problem_id", id)
           : [];
-      if (
-        !job.force && !regions.some(r=>r.page===job.retryPage) && current?.data.layoutVersion==='local-layout-2026-11-02-v2' &&
-        current?.data.cropEngineVersion === PDF_ENGINE_VERSION &&
-        JSON.stringify(current.data.regions) === JSON.stringify(regions) &&
-        parts.length === regions.length &&
-        parts.every(
-          (p) =>
-            typeof p.image_path === "string" &&
-            p.image_path.startsWith(`${ctx.user.id}/${job.id}/`),
-        )
-      )
-        continue;
       const chapter=chapters.filter(c=>candidate.page>=c.start_page&&candidate.page<=c.end_page).sort((a,b)=>(a.end_page-a.start_page)-(b.end_page-b.start_page))[0];
       const fields = {
         number: candidate.number,
@@ -846,10 +839,28 @@ async function runDocument(ctx: Context, job: Job): Promise<void> {
         confidence: candidate.confidence,
         sharedRegionCount: candidate.sharedRegionCount || 0,
         autoRetired:false,
-        layoutVersion:'local-layout-2026-11-02-v2',
+        layoutVersion:PDF_LAYOUT_VERSION,
         chapterId:current?.data.chapterId??chapter?.id??null,
         index:{document_id:job.id,pdf_page:candidate.page,q_number:String(candidate.number),chapter_id:current?.data.chapterId??chapter?.id??null,regions:regions.map(r=>({page:r.page,bbox:[r.x,r.y,r.x+r.w,r.y+r.h]})),confidence:candidate.confidence,needs_review:true},
       };
+      // A new layout rule can correct text/number evidence without changing the
+      // saved geometry. Keep those original PNGs and update metadata atomically.
+      if (!job.force && !regions.some(r=>r.page===job.retryPage) &&
+        current?.data.cropEngineVersion === PDF_ENGINE_VERSION &&
+        JSON.stringify(current.data.regions) === JSON.stringify(regions) &&
+        completeParts(ctx,job.id,regions,parts)) {
+        if (Object.entries(fields).some(([key,value])=>JSON.stringify(current.data[key])!==JSON.stringify(value))) {
+          await ensureJob(ctx,job);
+          const updated=await ctx.db.from('problems').update({data:{...current.data,...fields,revision:crypto.randomUUID()}})
+            .eq('id',id).eq('user_id',ctx.user.id).eq('updated_at',current.updated_at).select('*').maybeSingle();
+          if(updated.error)throw failure('문항 인식 결과를 저장하지 못했습니다. 기존 원본 이미지는 보관했습니다.');
+          if(!updated.data){
+            const latest=await one(ctx,'problems',id);
+            if(!latest?.data.confirmed&&latest?.data.source!=='manual')throw failure('문항이 다른 화면에서 변경됐습니다. 저장된 페이지에서 인식을 이어서 실행하세요.');
+          }
+        }
+        continue;
+      }
       await commitCrop(ctx, starting, pdf, current, id, fields, regions, job);
       await patchDocument(
         ctx,
@@ -869,7 +880,7 @@ async function runDocument(ctx: Context, job: Job): Promise<void> {
         "자동으로 확정할 수 있는 문항 번호가 없습니다. 페이지 내용을 확인하고 필요한 문항 영역을 지정하세요.",
       );
     await ensureJob(ctx,job);
-    const retired=await ctx.db.rpc('retire_unmatched_pdf_candidates',{p_document:job.id,p_keep:[...used],p_token:job.token,p_layout_version:'local-layout-2026-11-02-v2'});
+    const retired=await ctx.db.rpc('retire_unmatched_pdf_candidates',{p_document:job.id,p_keep:[...used],p_token:job.token,p_layout_version:PDF_LAYOUT_VERSION});
     if(retired.error)throw failure('새 문항 인덱스를 저장하지 못했습니다. 기존 후보와 기록은 보관했습니다.');
     const savedQuestions = (await list(ctx, "problems", "document_id", job.id)).filter(q=>!q.data.autoRetired);
     // Retain unmatched historical/manual questions, repairing missing PNGs from
@@ -1190,4 +1201,34 @@ export async function saveQuestion(
   } finally {
     await pdf.loadingTask.destroy();
   }
+}
+
+/** Stage every new image before atomically changing either question. */
+export async function editProblemGroup(id:string,operation:'merge'|'split',body:any){
+ const ctx=await context(),old=(await one(ctx,'problems',id))!,doc=(await one(ctx,'documents',old.document_id))!;
+ if(doc.data.archived||['uploaded','processing'].includes(doc.status))throw failure('PDF 인식이 끝난 뒤 문항을 편집하세요.');
+ const pages=await list(ctx,'document_pages','document_id',doc.id),source=normalizedRegions(old.data.regions,pages,doc.data.pageCount,old.page);
+ const edits:{old:Row|undefined;id:string;number:number;regions:Region[];shared:number}[]=[],retire:Row[]=[];
+ if(operation==='merge'){
+  if(typeof body.otherId!=='string'||body.otherId===id)throw failure('합칠 다른 문항을 선택하세요.');
+  const other=(await one(ctx,'problems',body.otherId))!;if(other.document_id!==doc.id||other.data.mergedInto)throw failure('같은 자료에서 합칠 문항을 선택하세요.');
+  const otherRegions=normalizedRegions(other.data.regions,pages,doc.data.pageCount,other.page);
+  edits.push({old,id,number:old.number,regions:mergeRegions(source,otherRegions),shared:old.data.sharedRegionCount??0});retire.push({id:other.id,revision:other.data.revision??null});
+ }else{
+  if(!Number.isInteger(body.newNumber)||body.newNumber<1||body.newNumber>9999)throw failure('새 문항 번호를 1~9999 사이로 입력하세요.');
+  const shared=old.data.sharedRegionCount??0,split=splitRegions(source,body.regionIndex,body.axis,body.ratio,shared);
+  edits.push({old,id,number:old.number,regions:split.first,shared},{old:undefined,id:crypto.randomUUID(),number:body.newNumber,regions:split.second,shared});
+ }
+ const pdf=await processingPdf(ctx,doc);
+ try{
+  const staged:Row[]=[];
+  for(const edit of edits){
+   const page=edit.regions[edit.shared]?.page??edit.regions[0].page,regions=normalizedRegions(edit.regions,pages,doc.data.pageCount,page);
+   const fields={number:edit.number,page,materialId:doc.id,unit:old.data.unit??'',chapterId:old.data.chapterId??null,text:cropText(regions,pages),source:'manual',confirmed:false,confidence:1,sharedRegionCount:edit.shared,autoRetired:false,mergedInto:null};
+   staged.push(await commitCrop(ctx,doc,pdf,edit.old,edit.id,fields,regions,undefined,true));
+  }
+  const {data,error}=await ctx.db.rpc('save_manual_problem_group',{p_saves:staged,p_retire:retire});
+  if(error||!data)throw failure('문항이 다른 화면에서 변경됐거나 저장을 완료하지 못했습니다. 기존 문항과 기록은 보관했습니다.');
+  return{saved:true};
+ }finally{await pdf.loadingTask.destroy();}
 }

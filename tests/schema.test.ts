@@ -20,6 +20,22 @@ async function database(skipSlots=false){
   return db;
 }
 afterEach(async()=>{await db?.close()});
+test('manual multi-crop edits roll back together and merging preserves old answer/history IDs',async()=>{
+ const c=await database(),doc='33000000-0000-4000-8000-000000000003',a='43000000-0000-4000-8000-000000000001',b='43000000-0000-4000-8000-000000000002';
+ await c.query('insert into documents(id,user_id,title,subject,kind,data)values($1,$2,$3,$4,$5,$6)',[doc,owner,'수동 검사','수학','문제집',{pageCount:2}]);
+ await c.query('insert into document_pages(user_id,document_id,number,data)values($1,$2,1,$3)',[owner,doc,{kind:'content'}]);
+ for(const id of[a,b])await c.query('insert into problems(id,user_id,document_id,number,page,data)values($1,$2,$3,$4,1,$5)',[id,owner,doc,id===a?1:2,{revision:'old',answer:'보존',source:'manual'}]);
+ await c.query('insert into wrong_answers(user_id,problem_id,data)values($1,$2,$3)',[owner,b,{reviewCount:3}]);
+ await c.exec(`set role authenticated;set request.jwt.claim.sub='${owner}'`);
+ const save=(id:string,revision='new')=>({p_problem:{id,document_id:doc,number:id===a?1:2,page:1,data:{revision,confirmed:false,source:'manual'}},p_regions:[{part:0,page:1,image_path:`${owner}/${doc}/manual/${id}.png`,data:{page:1,x:.1,y:.1,w:.7,h:.3}}],p_expected_revision:'old'});
+ const broken=save(b);broken.p_regions[0].image_path='outside-owner/file.png';
+ await expect(c.query('select save_manual_problem_group($1,$2)',[[save(a),broken],[]])).rejects.toThrow();
+ expect((await c.query<{revision:string}>("select data->>'revision' revision from problems where id=$1",[a])).rows[0].revision).toBe('old');
+ await c.query('select save_manual_problem_group($1,$2)',[[save(a)],[{id:b,revision:'old'}]]);
+ expect((await c.query<{data:any}>('select data from problems where id=$1',[b])).rows[0].data.mergedInto).toBe(a);
+ expect((await c.query<{problem_id:string}>('select problem_id from wrong_answers')).rows[0].problem_id).toBe(b);
+ expect((await c.query<{data:any}>('select data from problems where id=$1',[a])).rows[0].data.answer).toBe('보존');
+});
 test('reindex retires only unused automatic candidates and keeps manual, confirmed and history IDs',async()=>{
  const c=await database(),doc='32000000-0000-4000-8000-000000000003';
  await c.query('insert into documents(id,user_id,title,subject,kind,data)values($1,$2,$3,$4,$5,$6)',[doc,owner,'인식 검사','역사','문제집',{pageCount:10,processingToken:'run'}]);

@@ -7,6 +7,7 @@ export async function cloudApi<T = any>(
   if (path === "materials" && method === "POST")
     return (await (await import("./documents")).uploadMaterials(body)) as T;
   const part = path.split("/");
+  if(part[0]==='questions'&&['merge','split'].includes(part[2])&&method==='POST')return(await(await import('./documents')).editProblemGroup(part[1],part[2]as'merge'|'split',body))as T;
   if(part[0]==='materials'&&part[2]==='reindex'){
     await(await import('./documents')).resumeMaterial(part[1],false,{reindex:true});return{ok:true}as T;
   }

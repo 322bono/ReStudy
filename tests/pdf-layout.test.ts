@@ -29,6 +29,11 @@ const page = (
 });
 
 describe("evidence-based question crops", () => {
+  it('resolves conflicting OCR numbers at the same printed marker using observed neighbours',()=>{
+   const body=page(56,[line('272',.51,.1,.05,.015),line('무슨 회의인지 쓰시오.',.51,.125,.35,.01),line('273',.51,.3,.05,.015),line('배경을 서술하시오.',.51,.325,.35,.01),line('274',.51,.5,.05,.015),line('회의의 명칭을 쓰시오.',.51,.525,.35,.01),line('275',.51,.7,.05,.015),line('회의 배경을 서술하시오.',.51,.725,.35,.01)]);
+   body.numberMarkers=[{...line('2974',.5105,.5,.05,.015),confidence:.92},{...line('2975',.5105,.7,.05,.015),confidence:.9}];
+   expect(detectProblems([body]).map(q=>q.number)).toEqual([272,273,274,275]);
+  });
   it("uses large standalone workbook markers above stems and ignores numbered source passages",()=>{
     const result=detectProblems([page(56,[
       line('270',.089,.105,.051,.015),line('(가)에 들어갈 내용으로 가장 적절한 것은?',.089,.129,.3,.010),

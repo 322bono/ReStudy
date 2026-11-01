@@ -51,6 +51,7 @@ export type Page = {
   items?: TextItem[];
 };
 export type Question = {
+  mergedInto?:string|null;
   id: string;
   materialId: string;
   number: number;
