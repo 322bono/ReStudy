@@ -132,6 +132,7 @@ export const RestudySchema = z
   });
 export type RestudyPackage = z.infer<typeof RestudySchema>;
 export type StandardJob = {
+  method?: "api" | "external";
   id: string;
   documentId: string;
   pageCount: number;

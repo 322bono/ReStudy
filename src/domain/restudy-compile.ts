@@ -53,7 +53,12 @@ export async function compileRestudy(merged: Validated, job: StandardJob) {
       data: {
         externalId: c.id,
         importJobId: job.id,
-        evidence: job.taskType === "toc" ? "toc_only" : "selected_pages",
+        evidence:
+          job.taskType === "toc"
+            ? "toc_only"
+            : job.taskType === "bank" && job.method !== "external"
+              ? "saved_concepts"
+              : "selected_pages",
       },
     })),
     concepts: merged.concepts.map((c) => ({
@@ -82,7 +87,12 @@ export async function compileRestudy(merged: Validated, job: StandardJob) {
         sourceGranularity: "chapter",
         importJobId: job.id,
         externalId: c.id,
-        evidence: job.taskType === "toc" ? "toc_only" : "selected_pages",
+        evidence:
+          job.taskType === "toc"
+            ? "toc_only"
+            : job.taskType === "bank" && job.method !== "external"
+              ? "saved_concepts"
+              : "selected_pages",
       },
     })),
     questions: await Promise.all(
