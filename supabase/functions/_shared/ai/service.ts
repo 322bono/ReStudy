@@ -5,6 +5,7 @@ import { cacheKey, processJob, validId, validateRequest, type Job, type JobReque
 import { providerState, sanitizeSettings, type Settings } from "./settings.ts";
 import type { Json } from "./schemas.ts";
 import type { RouterContext, TaskInput } from "./router.ts";
+import{discoverProviderModels}from'./providers-discovery.ts';
 import {commitPart}from'../standard/service.ts';
 
 const analysisVersion = "2026-11-01-v1";
@@ -119,6 +120,12 @@ export async function prepareTask(request: JobRequest, ctx: AuthContext): Promis
 }
 export async function providerContext(ctx: AuthContext, jobId: string, settings: Settings, master: string, input: TaskInput): Promise<Omit<RouterContext, "rotationIndex">> {
   const slots = await loadSlots(ctx);
+  // Legacy keys discover their eligible pool on an explicit AI action only.
+  // Upload/OCR never calls this code or contacts a model provider.
+  for(const slot of slots.filter(s=>s.provider==='gemini'&&!s.data.listed_at&&s.data.enabled!==false)){
+    if(!master)continue;
+    try{const key=await decryptKey({ciphertext:slot.ciphertext,iv:slot.iv,key_version:slot.key_version},ctx.user.id,'gemini',master),found=await discoverProviderModels('gemini',key),changes={modelIds:found.models.map(m=>m.id),selectedModels:slot.data.poolConfigured===true?slot.data.selectedModels:found.models.filter(m=>settings.allow_paid||m.freeEligible).map(m=>m.id),listed_at:found.listedAt};await patchSlot(ctx,slot,changes);slot.data={...slot.data,...changes};}catch{/* Existing key and saved selection remain available; routing reports errors. */}
+  }
   const health=checked(await ctx.admin.from('ai_key_model_states').select('credential_id,model,data').eq('user_id',ctx.user.id));
   const quotas=checked(await ctx.admin.from('ai_quota_cooldowns').select('provider,quota_group,model,cooldown_until').eq('user_id',ctx.user.id));
   const role = input.images?.length ? "vision" : input.kind !== "analyze_problem" ? "generation" : "analysis";
@@ -144,7 +151,7 @@ export function storeFor(ctx: AuthContext): JobStore {
     claim: async (id, dailyLimit, maxAttempts) => checked(await ctx.admin.rpc("claim_ai_job", { p_user_id: ctx.user.id, p_job_id: id, p_daily_limit: dailyLimit, p_max_attempts: maxAttempts })),
     finish: async (id, token, status, data, availableAt) => {
       const saved = checked(await ctx.admin.rpc("finish_ai_job", { p_user_id: ctx.user.id, p_job_id: id, p_lease_token: token, p_status: status, p_data: data, p_available_at: availableAt }));
-      return saved ? { id, status, available_at: availableAt, last_error: data.last_error ?? null } : null;
+      return saved ? { id, status, available_at: availableAt, last_error: data.last_error ?? null,provider_error:data.last_provider_error??null } : null;
     }, commit: async (id, token, result) => {
       if(result.standard){const committed=await commitPart(ctx,result.standardJobId,result.standard,false,{id,lease:token});return {...committed,id,status:'completed',review_status:'needs_review'};}
       const saved = checked(await ctx.admin.rpc("commit_ai_result", { p_user_id: ctx.user.id, p_job_id: id, p_lease_token: token, p_result: result }));

@@ -1,4 +1,5 @@
 import ContentReview from "../components/ContentReview";
+import{aiFailureText}from"../domain/ai-status";
 import LocalOutlineEditor from'../components/LocalOutlineEditor';
 import { useEffect, useState, useRef } from "react";
 import { api } from "../../lib/client";
@@ -58,11 +59,15 @@ export default function MaterialWorkspace({
     [prompt, setPrompt] = useState(""),
     [part, setPart] = useState(1),
     [message, setMessage] = useState(""),
-    [task, setTask] = useState("bank"),
+    [apiRunning,setApiRunning]=useState(false),
+    [apiStartedAt,setApiStartedAt]=useState(0),
+    [apiElapsed,setApiElapsed]=useState(0),
+    [apiError,setApiError]=useState(''),
+    [task, setTask] = useState("complete"),
     [questionCount, setQuestionCount] = useState(100),
     [conceptCount, setConceptCount] = useState(5),
     [practiceCount, setPracticeCount] = useState(5),
-    [similarCount, setSimilarCount] = useState(5),
+    [similarCount, setSimilarCount] = useState(0),
     [originalScope, setOriginalScope] = useState<"all" | "picked">("all"),
     [originalIds, setOriginalIds] = useState<string[]>([]),
     [chapter, setChapter] = useState(""),
@@ -77,6 +82,7 @@ export default function MaterialWorkspace({
       printedPageOffset: "",
     });
   const currentJob = useRef<string | undefined>(undefined);
+  useEffect(()=>{if(!apiRunning)return;let stopped=false;const timer=setInterval(()=>{setApiElapsed(Math.floor((Date.now()-apiStartedAt)/1000));if(currentJob.current)void standard('get',{jobId:currentJob.current}).then(value=>{if(!stopped&&currentJob.current===value.id)setJob(value);}).catch(()=>{});},2000);return()=>{stopped=true;clearInterval(timer);};},[apiRunning,apiStartedAt]);
   const chapters = (state.chapters || []).filter((c) => c.materialId === id),
     concepts = state.concepts.filter(
       (c: any) =>
@@ -144,7 +150,8 @@ export default function MaterialWorkspace({
               : String(d.printedPageOffset),
         });
         setTab(d.analysisMethod === "external" ? "external" : "concepts");
-        setTask(chapters.length ? "bank" : "toc");
+        setTask("complete");
+        setSimilarCount(d.kind === "문제집" ? 5 : 0);
       })
       .catch((e) => onError(e.message));
     return () => {
@@ -174,6 +181,7 @@ export default function MaterialWorkspace({
       await onRefresh();
     } catch (e) {
       onError((e as Error).message);
+      if(name.includes("API"))setApiError((e as Error).message);
     } finally {
       setBusy("");
     }
@@ -193,7 +201,7 @@ export default function MaterialWorkspace({
         "API 분석에는 확인된 원본 이미지가 있는 문제를 1~100개 선택하세요. 인덱스가 없으면 원본 PDF를 외부 AI에 첨부하세요.",
       );
     const totalQuestions =
-      task === "problem"
+      (task === "problem" || task === "complete")
         ? conceptCount + practiceCount + similarCount
         : questionCount;
     const created = await standard("create", {
@@ -205,14 +213,14 @@ export default function MaterialWorkspace({
       questionCount: totalQuestions,
       conceptQuestionCount: conceptCount,
       practiceQuestionCount: practiceCount,
-      ...(task === "problem"
+      ...(["problem","complete"].includes(task)
         ? {
             purposeCounts: {
               concept: conceptCount,
               practice: practiceCount,
               similar: similarCount,
             },
-            ...(originalScope === "picked" || method === "api"
+            ...(task === "problem" && (originalScope === "picked" || method === "api")
               ? { questionIds: targetOriginals.map((q) => q.id) }
               : {}),
           }
@@ -237,10 +245,14 @@ export default function MaterialWorkspace({
     setPrompt("");
     setTab("external");
     setMessage(`${created.totalParts}개 분할 작업을 준비했습니다.`);
+    if(method==="external"){const issued=createExternalPrompt(created,1);setPrompt(issued);try{await navigator.clipboard.writeText(issued);setMessage("통합 프롬프트를 복사했습니다. PDF와 함께 외부 AI에 입력하고, 결과 JSON을 아래에 붙여넣으세요.");}catch{setMessage("통합 프롬프트를 준비했습니다. 아래 프롬프트 복사를 눌러 주세요.");}}
     if (method === "api") await run(created);
   }
   async function run(current = job) {
     if (!current) return;
+    setApiError('');setApiRunning(true);setApiStartedAt(Date.now());setApiElapsed(0);
+    try{
+    if(current.method!=='api'||current.partSize>5){current=await standard('api_continuation',{jobId:current.id});currentJob.current=current.id;setJob(current);setJobs(all=>[current,...all.filter(j=>j.id!==current.id)]);}
     let requested = false;
     for (let next = 1; next <= current.totalParts; next++) {
       if (current.parts?.some((p: any) => p.part === next && p.applied))
@@ -255,7 +267,7 @@ export default function MaterialWorkspace({
       await onRefresh();
       if (result.result?.status !== "completed") {
         setMessage(
-          "남은 작업을 보관했습니다. AI 연결·한도를 확인하거나 외부 JSON을 가져올 수 있습니다.",
+          result.result?.provider_error||result.result?.last_error ? aiFailureText(result.result.provider_error??result.result.last_error) : result.result?.message || '작업이 대기 중입니다. 저장된 진행 상황을 확인하세요.',
         );
         return;
       }
@@ -265,6 +277,7 @@ export default function MaterialWorkspace({
         ? "API 결과를 저장했습니다. 내용을 검토한 뒤 학습에 사용하세요."
         : "등록된 결과를 재사용합니다.",
     );
+    }catch(error){setApiError(error instanceof Error?error.message:'API 준비를 완료하지 못했습니다.');if(current?.id)await load(current.id);throw error;}finally{setApiRunning(false);if(current?.id)await load(current.id);}
   }
   async function inspect() {
     if (!job) return;
@@ -346,6 +359,7 @@ export default function MaterialWorkspace({
           {message}
         </p>
       )}
+      {(apiRunning||apiError||job?.apiJobs?.length||job?.apiStatus?.state==='paused')&&<section className="panel" aria-live="polite" style={{padding:16,marginBottom:16}}><h2>API 준비 결과</h2><p role={apiError?'alert':'status'} className={apiError?'error':''}>{apiError||job?.apiStatus?.message||'API 요청을 시작하고 있습니다.'}</p><p>저장된 결과 {job?.apiStatus?.completed??0}/{job?.totalParts??0}분할 · 문항 {job?.importedQuestions??0}개{apiRunning?` · 경과 ${apiElapsed}초`:''}</p>{apiRunning&&<progress aria-label="API 분할 진행률" max={job?.totalParts||1} value={job?.apiStatus?.completed||0}/>}<details><summary>최근 시도와 오류</summary>{(job?.apiAttempts??[]).map((a:any,i:number)=><p key={i}>{a.provider} · {a.model} · {Math.round((a.duration_ms??0)/1000)}초 · {a.success?'유효한 응답 수신':aiFailureText(a.error)}</p>)}{!job?.apiAttempts?.length&&<p>아직 모델 호출 이력이 없습니다. 원본·요청 범위를 확인하거나 첫 응답을 기다리는 단계입니다.</p>}</details></section>}
       {tab === "concepts" && (
         <>
           <LocalOutlineEditor outline={doc.localOutline} pageCount={doc.pageCount} sourcePage={doc.tocPages?.[0]??doc.selectedPages?.[0]??1} busy={!!busy} onSave={outline=>act('자체 목차 저장',async()=>{await api(`materials/${id}/outline`,'POST',{outline,manual:true});})}/>
@@ -502,9 +516,7 @@ export default function MaterialWorkspace({
       {tab === "external" && (
         <>
           <p className="notice">
-            아래 프롬프트를 복사해 PDF와 함께 외부 AI에 붙여넣고, 출력된 결과
-            JSON을 입력하세요. 문제별 개념 연결과 개념 퀴즈·연습·유사문제는
-            결과의 분류에 맞춰 함께 저장합니다.
+            개념 정리·원본 문제 분석·퀴즈·문제 은행을 한 작업으로 준비합니다. API로 실행하거나, 통합 프롬프트를 외부 AI에 입력한 뒤 결과 JSON을 한 번에 가져오세요.
           </p>
           <section className="panel content-job-setup">
             <h2>준비할 콘텐츠</h2>
@@ -512,7 +524,8 @@ export default function MaterialWorkspace({
               <label>
                 작업
                 <select value={task} onChange={(e) => setTask(e.target.value)}>
-                  <option value="toc">목차·단원 구조 먼저</option>
+                  <option value="complete">통합 준비 · 개념·문제 분석·퀴즈·은행</option>
+                  <option value="toc">목차·단원 구조만</option>
                   <option value="initial">단원 기본 개념·퀴즈·연습문제</option>
                   <option value="bank">추가 문제 은행</option>
                   <option value="problem">문제별 개념 연결·퀴즈·은행</option>
@@ -535,7 +548,7 @@ export default function MaterialWorkspace({
                   ))}
                 </select>
               </label>
-              {task === "initial" || task === "problem" ? (
+              {["initial","problem","complete"].includes(task) ? (
                 <>
                   <label>
                     개념 퀴즈 수
@@ -557,7 +570,7 @@ export default function MaterialWorkspace({
                       onChange={(e) => setPracticeCount(+e.target.value)}
                     />
                   </label>
-                  {task === "problem" && (
+                  {["problem","complete"].includes(task) && (
                     <label>
                       유사문제 수
                       <input
@@ -661,7 +674,7 @@ export default function MaterialWorkspace({
               </fieldset>
             )}
             {task !== "toc" && (
-              <>
+              <details><summary>문제 유형·난이도 설정</summary>
                 <fieldset className="inline-options">
                   <legend>문제 형식</legend>
                   {Object.entries({
@@ -740,11 +753,10 @@ export default function MaterialWorkspace({
                     ),
                   )}
                 </div>
-              </>
+              </details>
             )}
             <p className="field-help">
-              문제 은행 100문제는 20문제씩 5개 분할로 준비합니다. 처음에는
-              목차를 확인한 뒤 각 단원의 기본 콘텐츠를 준비하세요.
+              통합 준비는 개념·원본 분석·퀴즈·문제 은행을 한 JSON에 함께 담습니다. API는 최대 5문항, 외부 AI는 최대 20문항씩 저장하며 완료된 분할은 재사용합니다.
             </p>
             <div className="row">
               <Button
@@ -757,7 +769,7 @@ export default function MaterialWorkspace({
                 }
                 onClick={() => act("외부 작업 준비", () => create("external"))}
               >
-                외부 작업 준비
+                외부 AI로 한 번에 준비
               </Button>
               <Button
                 busy={!!busy}

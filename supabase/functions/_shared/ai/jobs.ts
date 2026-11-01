@@ -64,7 +64,7 @@ export async function processJob(job: Job, store: JobStore, routing: Omit<Router
       const previous = active.data.pending_result;
       result = { ...previous, output: validateOutput(input.kind, previous.output, input.sourceIds, input.count) };
     } else result = await run(input, { ...routing, rotationIndex: claim.rotation_index });
-    if (result.status === "paused") return await store.finish(active.id, token, "paused", { ...active.data, last_error: result.reason }, new Date(result.retryAt ?? Date.now()).toISOString()) ?? { id: active.id, status: "running" };
+    if (result.status === "paused") return await store.finish(active.id, token, "paused", { ...active.data, last_error: result.reason,last_provider_error:result.lastError??null }, new Date(result.retryAt ?? Date.now()).toISOString()) ?? { id: active.id, status: "running" };
     completed = result;
     return await store.commit(active.id, token, toCommitResult(active, result)) ?? { id: active.id, status: "running" };
   } catch (error) {

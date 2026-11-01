@@ -521,8 +521,8 @@ export function createExternalPrompt(job: StandardJob, part: number) {
     },
   };
   const task =
-    job.taskType === "problem"
-      ? `요청: 문제별 개념 연결·개념 퀴즈·연습/유사문제 은행을 함께 준비합니다.
+    job.taskType === "problem" || job.taskType === "complete"
+      ? `요청: ${job.taskType==='complete'?'통합 준비입니다. 한 결과 안에 목차·단원, 핵심 개념·정의·공식·암기사항·오개념, 문제별 분석, 개념 퀴즈, 연습·유사문제 은행, 플래시카드를 모두 함께 작성하세요. 학습지·교과서에 원본 문항이 없는 부분은 concepts와 questions·flashcards로 준비하고 가짜 원본 번호를 만들지 마세요.':''} 문제별 개념 연결·개념 퀴즈·연습/유사문제 은행을 함께 준비합니다.
 ${job.targetQuestions.length ? "target_originals에 지정된 원본 문제만 분석하세요. id는 앱 내부 식별자이며, 출력 problem_analyses에는 스키마에 있는 실제 q_number·pdf_page·chapter_id를 사용하세요." : "선택 PDF 범위에 실제로 있는 원본 문제를 순서대로 읽으세요. 아직 앱에 문제 인덱스가 없어도 PDF에서 실제로 읽은 문제 번호와 실제 PDF 페이지로 problem_analyses를 작성하세요. 번호를 새로 매기거나 가짜 원본 번호를 만들지 마세요."}
 각 원본에 여러 개념을 연결할 수 있습니다. 개념 이름만 나열하지 말고 concepts에 정의·공식·암기사항·오개념을 작성하고 problem_analyses.concept_ids로 연결하세요. key_point에는 해결 핵심, memorize에는 이 원본에 필요한 암기사항, mistakes에는 발생 가능한 일반적 실수를 적으세요.
 questions에는 연결 개념을 확인하는 concept 퀴즈, 개념을 적용하는 practice 연습문제, 원본의 조건·사고과정을 변형한 similar 유사문제를 목적별 할당에 맞춰 만드세요. 원본 분석 개수와 생성 은행 문항 수는 서로 다른 수입니다. similar의 source_problem은 실제 원본의 식별 정보여야 합니다.`

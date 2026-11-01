@@ -31,6 +31,10 @@ describe("persistent rotation routing", () => {
     const ctx=context(0,[{...states()[0],credentialId:'a',selectedModels:[]}]);
     expect(await runTask(input,ctx)).toMatchObject({status:'paused',reason:'no_available_provider'});
   });
+  it('switches models after a timeout without repeating the timed-out model',async()=>{
+   const good=context().fetch,seen:string[]=[],ctx=context(0,[{...states()[1],credentialId:'a',selectedModels:['gemini-3.8-flash','gemini-3.6-flash']}],(async(...args:Parameters<typeof fetch>)=>{seen.push(String(args[0]));if(seen.length===1)throw new DOMException('timed out','TimeoutError');const body=JSON.parse(String(args[1]?.body));expect(body.store).toBe(false);return good(...args);})as typeof fetch);
+   expect(await runTask(input,ctx)).toMatchObject({status:'succeeded',model:'gemini-3.6-flash'});expect(seen).toHaveLength(2);
+  });
   it("uses another model when upstream explicitly identifies a per-model quota",async()=>{
     const seen:string[]=[],good=context().fetch,p=states()[1];
     const ctx=context(0,[{...p,credentialId:'a',selectedModels:['gemini-3.8-flash','gemini-3.6-flash']}],(async(...args:Parameters<typeof fetch>)=>{seen.push(String(args[0]));return seen.length===1?new Response(JSON.stringify({error:{details:[{violations:[{quotaDimensions:{model:'gemini-3.8-flash'}}]}]}}),{status:429}):good(...args);})as typeof fetch);

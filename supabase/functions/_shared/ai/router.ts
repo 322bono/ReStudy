@@ -6,7 +6,7 @@ export type Mode = "round_robin" | "nvidia_first" | "gemini_first" | "nvidia_onl
 export type ProviderState = { provider: Provider; enabled: boolean; model: string; access: "unknown" | "free_confirmed" | "paid"; status: string; cooldown_until?: string; credentialId?:string; label?:string; quotaGroup?:string; selectedModels?:string[]; modelStates?:Record<string,Json>; quotaCooldowns?:Record<string,string>; [key: string]: unknown };
 export type TaskInput = { kind: TaskKind; prompt: string; sourceIds: string[]; count?: number; images?: ImageInput[]; types?: string[]; difficulty?: string;allowedPages?:number[] };
 export type RouterContext = { providers: ProviderState[]; mode: Mode; rotationIndex: number; allowPaid: boolean; preferredProvider?: Provider; preferredModel?:string; getKey(provider: Provider,credentialId?:string): Promise<string>; updateProvider(provider: Provider, changes: Json,credentialId?:string,model?:string): Promise<void>; log(entry: Json): Promise<void>; fetch?: typeof fetch; now?: () => number; sleep?: (ms: number) => Promise<void> };
-export type TaskResult = { status: "succeeded"; provider: Provider; model: string; output: Json; usage: Record<string, number>; duration_ms: number } | { status: "paused"; reason: "no_available_provider" | "all_providers_failed"; retryAt?: number };
+export type TaskResult = { status: "succeeded"; provider: Provider; model: string; output: Json; usage: Record<string, number>; duration_ms: number } | { status: "paused"; reason: "no_available_provider" | "all_providers_failed"; retryAt?: number;lastError?:string };
 export class SuccessfulTaskPersistenceError extends Error {
   constructor(public result: Extract<TaskResult, { status: "succeeded" }>) { super("provider_result_persistence_failed"); }
 }
@@ -17,7 +17,7 @@ export async function runTask(input: TaskInput, context: RouterContext): Promise
   if (context.mode === "round_robin" && context.rotationIndex % 2 === 1) order.reverse();
   if (context.mode.endsWith("_only")) order = order.slice(0, 1);
   if (context.preferredProvider && !context.mode.endsWith("_only")) order = [context.preferredProvider, ...order.filter((provider) => provider !== context.preferredProvider)];
-  let tried = false; const retryTimes: number[] = [], blockedKeys=new Set<string>(),groupCooldowns=new Map<string,number>();
+  let tried = false,lastError:string|undefined; const retryTimes: number[] = [], blockedKeys=new Set<string>(),groupCooldowns=new Map<string,number>();
   const rotate=<T>(values:T[],index:number)=>values.length?[...values.slice(index%values.length),...values.slice(0,index%values.length)]:[];
   for (const provider of order) {
     const slots=context.providers.filter(s=>s.provider===provider);
@@ -35,7 +35,7 @@ export async function runTask(input: TaskInput, context: RouterContext): Promise
     let key: string;
     try { key = await context.getKey(provider,state.credentialId); } catch { blockedKeys.add(keyId);await context.updateProvider(provider, { status: "key_error", last_error: "credential_unavailable" },state.credentialId); continue; }
     for (let attempt = 0; attempt < 2; attempt++) {
-      if(now()+1000>=deadline)return {status:'paused',reason:'all_providers_failed',retryAt:now()+30000};
+      if(now()+1000>=deadline)return {status:'paused',reason:'all_providers_failed',lastError,retryAt:now()+30000};
       const start = now();
       let successful: Extract<TaskResult, { status: "succeeded" }> | undefined;
       try {
@@ -49,9 +49,10 @@ export async function runTask(input: TaskInput, context: RouterContext): Promise
       } catch (error) {
         // Never persist provider bodies, exception messages, prompts or request headers.
         const failure = error instanceof ProviderError ? error : new ProviderError("provider_error");
+        lastError=failure.code;
         await context.log({ provider,credential_id:state.credentialId,key_label:state.label, model: model.id, kind: input.kind, success: false, attempt: attempt + 1, duration_ms: Math.max(0, now() - start), error: failure.code, http_status: failure.status ?? null });
         if (["provider_error", "network_error"].includes(failure.code) && attempt === 0) { await sleep(1000); continue; }
-        const until = failure.retryAt ?? (["provider_error", "network_error"].includes(failure.code) ? now() + 5000 : now()+600000);
+        const until = failure.retryAt ?? (["provider_error", "network_error","timeout"].includes(failure.code) ? now() + 5000 : now()+600000);
         if (until) retryTimes.push(until);
         if(failure.code==='auth_error')blockedKeys.add(keyId);
         if(failure.code==='rate_limited')groupCooldowns.set(failure.quotaScope==='model'?`${groupId}:${model.id}`:groupId,until);
@@ -69,5 +70,5 @@ export async function runTask(input: TaskInput, context: RouterContext): Promise
     }
     }
   }
-  return { status: "paused", reason: tried ? "all_providers_failed" : "no_available_provider", ...(retryTimes.length ? { retryAt: Math.min(...retryTimes) } : {}) };
+  return { status: "paused", reason: tried ? "all_providers_failed" : "no_available_provider",lastError,...(retryTimes.length ? { retryAt: Math.min(...retryTimes) } : {}) };
 }

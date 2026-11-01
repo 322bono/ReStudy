@@ -343,6 +343,8 @@ function jobContext() {
         filters[key] = value;
         return this;
       },
+      order(){return this;},
+      limit(n:number){return this.range(0,n-1);},
       insert(value: any) {
         incoming = { id: "70000000-0000-4000-8000-000000000007", ...value };
         records[table].push(incoming);
@@ -379,6 +381,13 @@ function jobContext() {
   };
 }
 describe("original-analysis job preparation", () => {
+  it('prepares all-in-one API content in small validated units without crop targets',async()=>{
+   const {ctx,documentId}=jobContext();
+   const created=await createJob(ctx,{documentId,method:'api',taskType:'complete',questionCount:12,purposeCounts:{concept:4,practice:4,similar:4}});
+   expect(created).toMatchObject({taskType:'complete',method:'api',partSize:5,totalParts:3,partCounts:[4,4,4]});
+   expect(created.apiStatus).toMatchObject({state:'not_started',importedQuestions:0});
+   const prompt=createExternalPrompt(created,1);expect(prompt).toContain('통합 준비');expect(prompt).toContain('problem_analyses');expect(prompt).toContain('flashcards');
+  });
   it("prepares external unindexed analysis with real document metadata and 20-item parts", async () => {
     const { ctx, documentId } = jobContext();
     const created = await createJob(ctx, {

@@ -3,7 +3,7 @@ import { modelFor } from "./catalog.ts";
 import { outputSchema, type TaskKind } from "./schemas.ts";
 
 export class ProviderError extends Error {
-  constructor(public code: "rate_limited" | "auth_error" | "provider_error" | "network_error" | "invalid_response" | "model_unavailable" | "request_invalid" | "model_access_denied", public retryAt?: number, public status?: number,public quotaScope:'group'|'model'='group') { super(code); }
+  constructor(public code: "rate_limited" | "auth_error" | "provider_error" | "network_error" | "timeout" | "invalid_response" | "model_unavailable" | "request_invalid" | "model_access_denied", public retryAt?: number, public status?: number,public quotaScope:'group'|'model'='group') { super(code); }
 }
 export type ImageInput = { mimeType: string; data: string };
 export type ProviderInput = { kind: TaskKind; prompt: string; images?: ImageInput[] };
@@ -41,7 +41,7 @@ export async function checkConnection(provider: Provider, model: string, key: st
   const url = provider === "nvidia" ? "https://integrate.api.nvidia.com/v1/chat/completions" : `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}`;
   let response: Response;
   try { response = await transport(url, { ...(provider === "nvidia" ? { method: "POST", headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" }, body: JSON.stringify({ model, messages: [{ role: "user", content: "Reply OK." }], max_tokens: 4, stream: false,...(definition.nvidiaReasoningEffort?{reasoning_effort:definition.nvidiaReasoningEffort}:{}) }) } : { headers: { "x-goog-api-key": key } }), signal: AbortSignal.timeout(15000), redirect: "error" }); }
-  catch { throw new ProviderError("network_error"); }
+  catch(error) { throw new ProviderError(error instanceof Error&&['TimeoutError','AbortError'].includes(error.name)?'timeout':"network_error"); }
   if (!response.ok) throw await httpError(response, Date.now(),model);
   const data = await boundedJson(response);
   if (provider === "nvidia" && !Array.isArray(data.choices) || provider === "nvidia" && !data.choices.length) throw new ProviderError("invalid_response");
@@ -58,11 +58,11 @@ export async function generate(provider: Provider, model: string, key: string, i
     tools: [{ type: "function", function: { name: "submit_result", description: "Submit validated study content", parameters: schema } }], max_tokens: Math.min(input.kind==='restudy_v1'?16384:4096,definition.maxOutputTokens??4096), temperature: 0.2, stream: false,...(definition.nvidiaReasoningEffort?{reasoning_effort:definition.nvidiaReasoningEffort}:{}),
   } : {
     systemInstruction: { parts: [{ text: instruction }] }, contents: [{ role: "user", parts: [{ text: input.prompt }, ...(input.images ?? []).map((image) => ({ inlineData: { mimeType: image.mimeType, data: image.data } }))] }],
-    generationConfig: { temperature: 0.2, maxOutputTokens: input.kind==='restudy_v1'?16384:8192, thinkingConfig: { thinkingLevel: "LOW" }, responseFormat: { text: { mimeType: "APPLICATION_JSON", schema } } }, store: false,
+    generationConfig: { temperature: 0.2, maxOutputTokens: 8192, thinkingConfig: { thinkingLevel: "LOW" }, responseFormat: { text: { mimeType: "APPLICATION_JSON", schema } } },store:false,
   };
   let response: Response;
   try { response = await transport(url, { method: "POST", headers, body: JSON.stringify(body), redirect: "error", signal: AbortSignal.timeout(timeoutMs) }); }
-  catch { throw new ProviderError("network_error"); }
+  catch(error) { throw new ProviderError(error instanceof Error&&['TimeoutError','AbortError'].includes(error.name)?'timeout':"network_error"); }
   if (!response.ok) throw await httpError(response, now,model);
   const data = await boundedJson(response);
   let text: unknown;

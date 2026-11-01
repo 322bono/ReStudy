@@ -3,16 +3,23 @@ import {row,rows,type Ctx} from '../app/repository.ts';
 import {compileRestudy} from '../../../../src/domain/restudy-compile.ts';
 import {createExternalPrompt,parseRestudy,splitCount,validateRestudyParts,type StandardJob} from '../../../../src/domain/restudy.ts';
 import {selectPages,tocPages} from '../../../../src/domain/pages.ts';
+import{apiProgress}from'../../../../src/domain/ai-status.ts';
 
 export const standardJob=(r:any):StandardJob=>({...r.data,id:r.id,documentId:r.document_id});
 function dbError(error:any,message:string){if(error)throw new AppError(message);}
-export async function jobView(ctx:Ctx,id:string){const job=await row(ctx,'content_jobs',id),parts=(await rows(ctx,'content_parts')).filter((p:any)=>p.job_id===id);return {...standardJob(job),status:job.status,parts:parts.map((p:any)=>({part:p.part,totalParts:p.total_parts,questions:p.raw.questions?.length||0,applied:p.applied})),createdAt:job.created_at};}
+export async function jobView(ctx:Ctx,id:string){
+ const job=await row(ctx,'content_jobs',id),parts=(await rows(ctx,'content_parts')).filter((p:any)=>p.job_id===id);
+ const {data:apiJobs,error}=await ctx.admin.from('ai_jobs').select('id,status,attempts,available_at,updated_at,part:data->standardPart,label:data->label,last_error:data->last_error,provider_error:data->last_provider_error').eq('user_id',ctx.user.id).eq('data->>standardJobId',id).order('created_at').limit(1000);dbError(error,'API 진행 상황을 읽지 못했습니다.');
+ let attempts:any[]=[];
+ if(apiJobs?.length){const logs=await ctx.admin.from('ai_usage_logs').select('job_id,created_at,data').eq('user_id',ctx.user.id).in('job_id',apiJobs.map((j:any)=>j.id)).order('created_at',{ascending:false}).limit(8);dbError(logs.error,'API 시도 내역을 읽지 못했습니다.');attempts=(logs.data??[]).map((r:any)=>({jobId:r.job_id,at:r.created_at,...Object.fromEntries(['provider','model','key_label','success','error','http_status','duration_ms'].filter(k=>r.data?.[k]!==undefined).map(k=>[k,r.data[k]]))}));}
+ return {...standardJob(job),status:job.status,parts:parts.map((p:any)=>({part:p.part,totalParts:p.total_parts,questions:p.raw.questions?.length||0,applied:p.applied})),createdAt:job.created_at,apiJobs:apiJobs??[],apiStatus:apiProgress(apiJobs??[],job.data.totalParts,job.data.importedQuestions??0,job.data.apiFailure),apiAttempts:attempts};
+}
 export async function createJob(ctx:Ctx,body:any){
  const document=await row(ctx,'documents',String(body.documentId||''));if(document.data.archived)throw new AppError('보관된 자료를 먼저 복원하세요.');
  const pageCount=Number(document.data.pageCount);if(!pageCount)throw new AppError('PDF 페이지 수를 확인할 수 없습니다.');
  const selectedPages=Array.isArray(body.selectedPages)?selectPages(body.selectedPages.join(','),pageCount):selectPages(String(body.pages??document.data.analysisRange??''),pageCount,String(body.excludedPages??document.data.excludedPages??''));
  const toc=Array.isArray(body.tocPages)?tocPages(body.tocPages.join(','),pageCount):tocPages(String(body.tocRange??document.data.tocRange??''),pageCount);
- const taskType=String(body.taskType||'bank');if(!['initial','bank','problem','toc'].includes(taskType))throw new AppError('요청 작업을 확인하세요.');
+ const taskType=String(body.taskType||'complete');if(!['initial','bank','problem','toc','complete'].includes(taskType))throw new AppError('요청 작업을 확인하세요.');
  const conceptCount=Number(body.conceptQuestionCount??5),practiceCount=Number(body.practiceQuestionCount??5);
  const questionCount=taskType==='toc'?0:taskType==='initial'?conceptCount+practiceCount:Number(body.questionCount??100);
  if(!Number.isInteger(questionCount)||questionCount<0||questionCount>1000||taskType!=='toc'&&questionCount<1)throw new AppError('문제 수를 1~1000개로 입력하세요.');
@@ -29,16 +36,26 @@ export async function createJob(ctx:Ctx,body:any){
  const requestedChapters=Array.isArray(body.chapterIds)?new Set(body.chapterIds):null;
  if(requestedChapters&&[...requestedChapters].some(id=>!allChapters.some((c:any)=>c.id===id)))throw new AppError('현재 자료의 단원을 선택하세요.');
  const chapters=allChapters.filter((c:any)=>!requestedChapters||requestedChapters.has(c.id)).map((c:any)=>({id:c.id,title:c.title,start_page:c.start_page,end_page:c.end_page}));
- const partSize=20;let totalParts=splitCount(questionCount,partSize).length;
- if(method==='api'&&taskType!=='bank')totalParts=Math.max(totalParts,Math.ceil((taskType==='problem'?targetQuestions.length:taskType==='toc'&&toc.length?toc.length:selectedPages.length)/(taskType==='problem'?3:6)));
+ const partSize=method==='api'?5:20;let totalParts=splitCount(questionCount,partSize).length;
+ if(method==='api'&&taskType!=='bank')totalParts=Math.max(totalParts,Math.ceil((taskType==='problem'?targetQuestions.length:taskType==='toc'&&toc.length?toc.length:selectedPages.length)/3));
  const partCounts=method==='api'&&taskType!=='bank'?Array.from({length:totalParts},(_,i)=>Math.floor(questionCount/totalParts)+(i<questionCount%totalParts?1:0)):splitCount(questionCount,partSize);
  const data={pageCount,selectedPages,tocPages:toc,title:document.title,subject:document.subject,printedPageOffset:document.data.printedPageOffset??null,questionCount,totalParts,partSize,partCounts,taskType,questionTypes,difficultyDistribution,targetQuestions,chapters,knownChapters:chapters,knownConcepts:[],questionTypeCounts:body.questionTypeCounts||{},purposeCounts,method,evidence:selectedPages.every(p=>toc.includes(p))?'toc_only':'selected_pages',receivedParts:0,importedQuestions:0};
  let deterministicId:string|undefined;
- if(body.auto===true){const hex=await sha256(JSON.stringify([ctx.user.id,document.id,selectedPages,toc,taskType,questionCount,document.data.engineVersion]));deterministicId=`${hex.slice(0,8)}-${hex.slice(8,12)}-5${hex.slice(13,16)}-a${hex.slice(17,20)}-${hex.slice(20,32)}`;const {data:existing}=await ctx.admin.from('content_jobs').select('id').eq('id',deterministicId).eq('user_id',ctx.user.id).maybeSingle();if(existing)return jobView(ctx,existing.id);}
+ if(body.auto===true||body.continuationOf){const hex=await sha256(JSON.stringify([ctx.user.id,document.id,selectedPages,toc,taskType,questionCount,document.data.engineVersion,body.continuationOf??null,body.completedPartsHash??null]));deterministicId=`${hex.slice(0,8)}-${hex.slice(8,12)}-5${hex.slice(13,16)}-a${hex.slice(17,20)}-${hex.slice(20,32)}`;const {data:existing}=await ctx.admin.from('content_jobs').select('id').eq('id',deterministicId).eq('user_id',ctx.user.id).maybeSingle();if(existing)return jobView(ctx,existing.id);}
  const {data:saved,error}=await ctx.admin.from('content_jobs').insert({...(deterministicId?{id:deterministicId}:{}),user_id:ctx.user.id,document_id:document.id,data,status:'draft'}).select('*').single();
  if(error?.code==='23505'&&deterministicId)return jobView(ctx,deterministicId);dbError(error,'작업을 만들지 못했습니다.');
  if(body.auto===true)await ctx.admin.from('documents').update({data:{...document.data,initialContentJobId:saved.id}}).eq('id',document.id).eq('user_id',ctx.user.id).eq('updated_at',document.updated_at);
  return jobView(ctx,saved.id);
+}
+export async function apiContinuation(ctx:Ctx,id:string){
+ const master=await row(ctx,'content_jobs',id),job=standardJob(master);
+ if(job.method==='api'&&job.partSize<=5)return jobView(ctx,id);
+ const parts=(await rows(ctx,'content_parts')).filter((p:any)=>p.job_id===id),merged=validateRestudyParts(parts.map((p:any)=>p.raw),job,{chapters:master.data.knownChapters??[],concepts:master.data.knownConcepts??[]});
+ const done=merged.questions??[],remaining=Math.max(0,job.questionCount-done.length);
+ if(!remaining&&job.taskType!=='toc')return jobView(ctx,id);
+ const counts=Object.fromEntries(Object.entries(job.purposeCounts??{practice:job.questionCount}).map(([purpose,count])=>[purpose,Math.max(0,Number(count)-done.filter((q:any)=>q.purpose===purpose).length)]));
+ const body={documentId:job.documentId,method:'api',taskType:job.taskType,selectedPages:job.selectedPages,tocPages:job.tocPages,questionCount:remaining,conceptQuestionCount:counts.concept??0,practiceQuestionCount:counts.practice??remaining,purposeCounts:counts,questionTypes:job.questionTypes,difficultyDistribution:job.difficultyDistribution,continuationOf:id,completedPartsHash:await sha256(JSON.stringify(parts.map((p:any)=>[p.part,p.content_hash]))),...(job.taskType==='problem'?{questionIds:job.targetQuestions.map((q:any)=>q.id)}:{})};
+ return createJob(ctx,body);
 }
 export async function previewPart(ctx:Ctx,jobId:string,input:unknown){
  const rowJob=await row(ctx,'content_jobs',jobId),job=standardJob(rowJob);let incoming;
@@ -63,8 +80,9 @@ export async function commitPart(ctx:Ctx,jobId:string,input:unknown,reviewed=fal
  return {...data,job:await jobView(ctx,jobId),warnings:checked.merged.warnings};
 }
 export async function handleStandard(ctx:Ctx,input:any){const action=input.action||'list';
+ if(action==='api_continuation')return apiContinuation(ctx,input.jobId);
  if(action==='create')return createJob(ctx,input);
- if(action==='list'){const jobs=await rows(ctx,'content_jobs');return {jobs:jobs.filter((j:any)=>!input.documentId||j.document_id===input.documentId).map((j:any)=>({...standardJob(j),status:j.status})).sort((a:any,b:any)=>b.id.localeCompare(a.id))};}
+ if(action==='list'){const jobs=await rows(ctx,'content_jobs');return {jobs:jobs.filter((j:any)=>!input.documentId||j.document_id===input.documentId).map((j:any)=>({...standardJob(j),status:j.status,createdAt:j.created_at})).sort((a:any,b:any)=>String(b.createdAt??'').localeCompare(String(a.createdAt??'')))};}
  if(action==='get')return jobView(ctx,input.jobId);
  if(action==='prompt'){const r=await row(ctx,'content_jobs',input.jobId);return {prompt:createExternalPrompt(standardJob(r),Number(input.part||1)),job:standardJob(r)};}
  if(action==='preview')return (await previewPart(ctx,input.jobId,input.raw)).preview;
