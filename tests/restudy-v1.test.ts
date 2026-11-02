@@ -390,6 +390,10 @@ function jobContext() {
   };
 }
 describe("original-analysis job preparation", () => {
+  it('accepts the later API batches of a 1000-question bank without changing its job identity',()=>{
+    const raw={...part(),part:101,total_parts:200};
+    expect(parseRestudy(raw)).toMatchObject({part:101,total_parts:200});
+  });
   it('preserves legacy hashes when unchanged jsonb content is reimported and retains the last question preview',async()=>{
     const {ctx,records}=jobContext(),incoming=part();
     records.content_jobs.push({id:job.id,user_id:ctx.user.id,document_id:job.documentId,data:{...job,knownChapters:incoming.chapters,knownConcepts:incoming.concepts}});
@@ -408,7 +412,7 @@ describe("original-analysis job preparation", () => {
    expect(created.apiStatus).toMatchObject({state:'not_started',importedQuestions:0});
    const prompt=createExternalPrompt(created,1);expect(prompt).toContain('통합 준비');expect(prompt).toContain('problem_analyses');expect(prompt).toContain('flashcards');
   });
-  it("prepares external unindexed analysis with real document metadata and 20-item parts", async () => {
+  it("prepares external PDF analysis in one complete package regardless of question count", async () => {
     const { ctx, documentId } = jobContext();
     const created = await createJob(ctx, {
       documentId,
@@ -423,10 +427,21 @@ describe("original-analysis job preparation", () => {
       taskType: "problem",
       targetQuestions: [],
       printedPageOffset: 7,
-      totalParts: 5,
-      partCounts: [20, 20, 20, 20, 20],
+      totalParts: 1,
+      partSize: 100,
+      partCounts: [100],
       purposeCounts: { concept: 20, practice: 40, similar: 40 },
     });
+    const prompt=createExternalPrompt(created,1);
+    expect(prompt).toContain('part=1, total_parts=1');
+    expect(prompt).not.toContain('100문제는 기본 20문제씩');
+    expect(prompt).not.toContain('다음 분할을 요청하세요');
+  });
+  it('prepares concept-only textbook content without requiring generated questions or source problem numbers',async()=>{
+    const {ctx,documentId}=jobContext();
+    const created=await createJob(ctx,{documentId,method:'external',taskType:'concepts'});
+    expect(created).toMatchObject({taskType:'concepts',questionCount:0,totalParts:1,partCounts:[0],purposeCounts:{concept:0,practice:0,similar:0}});
+    expect(createExternalPrompt(created,1)).toContain('문제 번호를 찾거나 원본 문제를 분석하지');
   });
   it("rejects a problem API job with no original crop targets instead of creating a text-only request", async () => {
     const { ctx, records, documentId } = jobContext();

@@ -59,7 +59,7 @@ async function boundedJson(response: Response): Promise<any> {
     while (true) { const next = await reader.read(); if (next.done) break; size += next.value.length; if (size > 262144) { await reader.cancel(); throw new ProviderError("invalid_response"); } chunks.push(next.value); }
     const bytes = new Uint8Array(size); let offset = 0; for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.length; }
     return JSON.parse(new TextDecoder().decode(bytes));
-  } catch (error) { if (error instanceof ProviderError) throw error; throw new ProviderError("invalid_response"); }
+  } catch (error) { if (error instanceof ProviderError) throw error; if(error instanceof Error&&['TimeoutError','AbortError'].includes(error.name))throw new ProviderError('timeout'); throw new ProviderError("invalid_response",undefined,undefined,'group','json_invalid'); }
 }
 export async function checkConnection(provider: Provider, model: string, key: string, transport: typeof fetch = fetch): Promise<void> {
   const definition=modelFor(provider, model);if (!definition) throw new ProviderError("model_unavailable");
@@ -85,7 +85,7 @@ export async function generate(provider: Provider, model: string, key: string, i
     ...(input.kind==='restudy_v1'?{response_format:{type:'json_object'}}:{tools:[{type:'function',function:{name:'submit_result',description:'Submit validated study content',parameters:geminiSchema(schema)}}]}), max_tokens: Math.min(input.kind==='restudy_v1'?8192:4096,definition.maxOutputTokens??4096), temperature: 0.2, stream: false,...(definition.nvidiaReasoningEffort?{reasoning_effort:definition.nvidiaReasoningEffort}:{}),
   } : {
     systemInstruction: { parts: [{ text: instruction }] }, contents: [{ role: "user", parts: [{ text: input.prompt }, ...(input.images ?? []).map((image) => ({ inlineData: { mimeType: image.mimeType, data: image.data } }))] }],
-    generationConfig: { temperature: 0.2, maxOutputTokens: 8192, thinkingConfig: { thinkingLevel: "LOW" }, responseFormat: { text: { mimeType: "APPLICATION_JSON", ...(input.kind==='restudy_v1'?{}:{schema:geminiSchema(schema)}) } } },store:false,
+    generationConfig: { maxOutputTokens: Math.min(8192,definition.maxOutputTokens??8192), thinkingConfig: { thinkingLevel: "LOW" }, responseFormat: { text: { mimeType: "APPLICATION_JSON", schema:geminiSchema(schema) } } },store:false,
   };
   let response: Response;
   try { response = await transport(url, { method: "POST", headers, body: JSON.stringify(body), redirect: "error", signal: AbortSignal.timeout(timeoutMs) }); }
@@ -95,17 +95,20 @@ export async function generate(provider: Provider, model: string, key: string, i
   let text: unknown;
   if (provider === "nvidia") {
     const result = data.choices?.[0];
-    if (!["stop", "tool_calls"].includes(result?.finish_reason)) throw new ProviderError("invalid_response");
+    if (!["stop", "tool_calls"].includes(result?.finish_reason)) throw new ProviderError("invalid_response",undefined,undefined,'group',result?.finish_reason==='length'?'output_truncated':'generation_incomplete');
     const calls = result.message?.tool_calls;
     if (calls?.length) { if (calls.length !== 1 || calls[0].function?.name !== "submit_result") throw new ProviderError("invalid_response"); text = calls[0].function.arguments; }
     else text = result.message?.content;
   } else {
     const result = data.candidates?.[0];
-    if (result?.finishReason !== "STOP" || data.promptFeedback?.blockReason) throw new ProviderError("invalid_response");
+    if (result?.finishReason !== "STOP" || data.promptFeedback?.blockReason) throw new ProviderError("invalid_response",undefined,undefined,'group',result?.finishReason==='MAX_TOKENS'?'output_truncated':'generation_incomplete');
     text = result.content?.parts?.filter((part: any) => typeof part.text === "string" && !part.thought).map((part: any) => part.text).join("");
   }
   if (typeof text !== "string" || !text || text.length > 200000) throw new ProviderError("invalid_response");
-  let raw: unknown; try { raw = JSON.parse(text); } catch { throw new ProviderError("invalid_response"); }
+  // Only normalize wrappers that leave the exact JSON data unchanged. Never
+  // repair missing braces, invent required fields, or extract embedded prose.
+  const trimmed=text.replace(/^\uFEFF/,'').trim(),fence=trimmed.match(/^```(?:json)?\s*\n?([\s\S]*?)\n?```$/i);
+  let raw: unknown; try { raw = JSON.parse(fence?fence[1]:trimmed); } catch { throw new ProviderError("invalid_response",undefined,undefined,'group','json_invalid'); }
   const usage: Record<string, number> = {}; const returned = provider === "nvidia" ? data.usage : data.usageMetadata;
   for (const key of provider === "nvidia" ? ["prompt_tokens", "completion_tokens", "total_tokens"] : ["promptTokenCount", "candidatesTokenCount", "totalTokenCount", "thoughtsTokenCount"]) {
     if (typeof returned?.[key] === "number" && Number.isFinite(returned[key]) && returned[key] >= 0) usage[key] = returned[key];

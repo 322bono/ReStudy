@@ -17,11 +17,11 @@ import { storagePageText } from "../domain/pdf-text";
 import {pageOcrIndex,extractLocalOutline}from'../domain/pdf-index';
 import {edgeCall}from'./supabase';
 import{mergeRegions,splitRegions}from'../domain/problem-regions';
+import { downloadPrivateFile, uploadPrivateFile } from "./private-files";
 
 export const PDF_ENGINE_VERSION = "browser-pdf-2026-11-01-v1";
 export const PDF_LAYOUT_VERSION = "local-layout-2026-11-02-v3";
 const BUCKET = "study-files",
-  MAX_BYTES = 50 * 1024 * 1024,
   MAX_PAGES = 500;
 type Row = Record<string, any>;
 type Context = { db: ReturnType<typeof getSupabase>; user: { id: string } };
@@ -167,20 +167,32 @@ async function upload(ctx: Context, path: string, blob: Blob): Promise<void> {
     });
   if (error)
     throw failure(
-      "비공개 원본 이미지를 저장하지 못했습니다. 다시 시도해 주세요.",
+      "비공개 파일을 저장하지 못했습니다. 저장 공간과 연결을 확인하고 다시 시도해 주세요.",
     );
 }
 async function processingPdf(
   ctx: Context,
   doc: Row,
 ): Promise<PDFDocumentProxy> {
-  const path = ownPath(ctx, doc.id, doc.data.pdfPath || doc.data.originalPath);
+  return openPdf(await documentFile(ctx, doc, true));
+}
+async function documentFile(ctx: Context, doc: Row, processing = false): Promise<Blob> {
+  const path = ownPath(ctx, doc.id, processing ? doc.data.pdfPath || doc.data.originalPath : doc.data.originalPath);
   const cached = await cacheGet<Blob>(ctx.user.id, `pdf:${path}`);
-  if (cached instanceof Blob) return openPdf(cached);
-  const { data, error } = await ctx.db.storage.from(BUCKET).download(path);
-  if (error || !data) throw failure("비공개 원본 파일을 내려받지 못했습니다.");
+  if (cached instanceof Blob) return cached;
+  const reference = processing && doc.data.pdfPath && doc.data.pdfPath !== doc.data.originalPath ? doc.data.pdfStorage : doc.data.originalStorage;
+  const data = await downloadPrivateFile(path, reference, async (partPath) => {
+    const result = await ctx.db.storage.from(BUCKET).download(partPath);
+    if (result.error || !result.data) throw failure("비공개 원본 파일을 내려받지 못했습니다. 저장 공간과 연결을 확인해 주세요.");
+    return result.data;
+  }, (partPath) => ownPath(ctx, doc.id, partPath));
   await cachePut(ctx.user.id, `pdf:${path}`, data);
-  return openPdf(data);
+  return data;
+}
+/** Authenticated private download for original viewers and external PDF export. */
+export async function loadOriginalBlob(id: string): Promise<Blob> {
+  const ctx = await context();
+  return documentFile(ctx, (await one(ctx, "documents", id))!);
 }
 async function sha256(bytes: ArrayBuffer): Promise<string> {
   return Array.from(
@@ -302,8 +314,6 @@ async function preflight(file: File): Promise<UploadFile> {
     mime === "application/pdf"
       ? new Blob([bytes], { type: mime })
       : await imageToPdf(file, mime);
-  if (pdf.size > MAX_BYTES)
-    throw failure(`${file.name}: 처리용 PDF가 50MB를 넘습니다.`);
   const opened = await openPdf(pdf);
   try {
     if (opened.numPages < 1 || opened.numPages > MAX_PAGES)
@@ -335,11 +345,10 @@ export async function uploadMaterials(
   if (
     !files.length ||
     files.length > 10 ||
-    files.some((f) => !f.size) ||
-    files.reduce((sum, f) => sum + f.size, 0) > MAX_BYTES
+    files.some((f) => !f.size)
   )
     throw failure(
-      "한 번에 파일 10개, 합계 50MB까지 추가할 수 있습니다. 빈 파일은 추가할 수 없습니다.",
+      "한 번에 파일 10개까지 추가할 수 있습니다. 빈 파일은 추가할 수 없습니다.",
     );
   const inputs: UploadFile[] = [];
   for (const file of files) inputs.push(await preflight(file));
@@ -413,12 +422,12 @@ export async function uploadMaterials(
         input.mime === "application/pdf"
           ? originalPath
           : `${ctx.user.id}/${id}/source/processing.pdf`;
-    await upload(
-      ctx,
+    const originalStorage = await uploadPrivateFile(
       originalPath,
-      new Blob([await input.file.arrayBuffer()], { type: input.mime }),
+      new Blob([input.file], { type: input.mime }),
+      (path, blob) => upload(ctx, path, blob),
     );
-    if (pdfPath !== originalPath) await upload(ctx, pdfPath, input.pdf);
+    const pdfStorage = pdfPath === originalPath ? originalStorage : await uploadPrivateFile(pdfPath, input.pdf, (path, blob) => upload(ctx, path, blob));
     const now = new Date().toISOString();
     const row = {
       id,
@@ -438,6 +447,8 @@ export async function uploadMaterials(
           : "원본을 저장했습니다. 선택한 페이지를 준비합니다.",
         originalPath,
         pdfPath,
+        ...(originalStorage ? { originalStorage } : {}),
+        ...(pdfStorage ? { pdfStorage } : {}),
         engineVersion: PDF_ENGINE_VERSION,
         warnings: [],
         createdAt: now,
@@ -689,6 +700,7 @@ async function runDocument(ctx: Context, job: Job): Promise<void> {
   let pdf: PDFDocumentProxy | undefined;
   try {
     const starting = (await one(ctx, "documents", job.id))!;
+    const textbook = starting.kind === "교과서";
     if (
       job.controller.signal.aborted ||
       starting.data.paused ||
@@ -731,11 +743,11 @@ async function runDocument(ctx: Context, job: Job): Promise<void> {
       await ensureJob(ctx, job);
       job.page = number;
       const old = previousPages.find((r) => r.number === number);
-      if (cachedPage(old, job.force || job.retryPage===number)) {
+      if (cachedPage(old, job.force || job.retryPage===number || textbook && old?.data.preparationPurpose !== "textbook")) {
         ownPath(ctx, job.id, old.image_path);
-        if(!old.data.ocrIndex||old.data.source==='ocr'&&old.data.numberLayerVersion!==NUMBER_LAYER_VERSION){
+        if(!old.data.ocrIndex||!textbook&&old.data.source==='ocr'&&old.data.numberLayerVersion!==NUMBER_LAYER_VERSION){
           await patchDocument(ctx,job.id,{message:old.data.source==='ocr'?`PDF ${number}쪽 · 저장된 본문을 재사용하고 숫자 영역만 보완 인식합니다.`:`PDF ${number}쪽 · 저장된 페이지의 좌표 인덱스를 정리합니다.`},undefined,job);
-          const numberMarkers=old.data.source==='ocr'&&old.data.numberLayerVersion!==NUMBER_LAYER_VERSION?await prepareNumberMarkers(pdf,number):old.data.numberMarkers??[];
+          const numberMarkers=!textbook&&old.data.source==='ocr'&&old.data.numberLayerVersion!==NUMBER_LAYER_VERSION?await prepareNumberMarkers(pdf,number):old.data.numberMarkers??[];
           await pageCheckpoint(ctx,job,{...preparedFromRow(old),numberMarkers,numberLayerVersion:NUMBER_LAYER_VERSION},old.image_path);
         }
         continue;
@@ -752,7 +764,7 @@ async function runDocument(ctx: Context, job: Job): Promise<void> {
       );
       const cachedFields=!job.force&&job.retryPage!==number?await cacheGet<any>(ctx.user.id,`prepared:${job.id}:${number}:${PDF_ENGINE_VERSION}`):null;
       const cachedImage=cachedFields?await cacheGet<Blob>(ctx.user.id,`prepared-image:${job.id}:${number}:${PDF_ENGINE_VERSION}`):null;
-      const prepared:PreparedPage=cachedFields?.numberLayerVersion===NUMBER_LAYER_VERSION&&cachedImage instanceof Blob?{...cachedFields,image:cachedImage}:await preparePage(pdf, number);
+      const prepared:PreparedPage=cachedFields?.numberLayerVersion===NUMBER_LAYER_VERSION&&(!textbook||cachedFields.preparationPurpose==='textbook')&&cachedImage instanceof Blob?{...cachedFields,image:cachedImage}:await preparePage(pdf, number, undefined, {purpose:textbook?'textbook':'workbook'});
       const {image:preparedImage,...preparedFields}=storagePageText(prepared);
       await cachePut(ctx.user.id,`prepared:${job.id}:${number}:${PDF_ENGINE_VERSION}`,preparedFields);
       await cachePut(ctx.user.id,`prepared-image:${job.id}:${number}:${PDF_ENGINE_VERSION}`,preparedImage);
@@ -786,7 +798,7 @@ async function runDocument(ctx: Context, job: Job): Promise<void> {
     const localOutline=extractLocalOutline(prepared,starting.data.tocPages??[],pdf.numPages,starting.data.printedPageOffset);
     await edgeCall('app',{path:`materials/${job.id}/outline`,method:'POST',body:{outline:localOutline,processingToken:job.token}});
     const chapters=await list(ctx,'document_chapters','document_id',job.id);
-    const candidates = detectProblems(prepared),
+    const candidates = textbook ? [] : detectProblems(prepared),
       warnings = prepared.flatMap((p) =>
         (p.warnings || []).map((w) => `${p.number}쪽: ${w}`),
       );
@@ -875,13 +887,15 @@ async function runDocument(ctx: Context, job: Job): Promise<void> {
         job,
       );
     }
-    if (!candidates.length)
+    if (!textbook && !candidates.length)
       warnings.push(
         "자동으로 확정할 수 있는 문항 번호가 없습니다. 페이지 내용을 확인하고 필요한 문항 영역을 지정하세요.",
       );
     await ensureJob(ctx,job);
-    const retired=await ctx.db.rpc('retire_unmatched_pdf_candidates',{p_document:job.id,p_keep:[...used],p_token:job.token,p_layout_version:PDF_LAYOUT_VERSION});
-    if(retired.error)throw failure('새 문항 인덱스를 저장하지 못했습니다. 기존 후보와 기록은 보관했습니다.');
+    if (!textbook) {
+      const retired=await ctx.db.rpc('retire_unmatched_pdf_candidates',{p_document:job.id,p_keep:[...used],p_token:job.token,p_layout_version:PDF_LAYOUT_VERSION});
+      if(retired.error)throw failure('새 문항 인덱스를 저장하지 못했습니다. 기존 후보와 기록은 보관했습니다.');
+    }
     const savedQuestions = (await list(ctx, "problems", "document_id", job.id)).filter(q=>!q.data.autoRetired);
     // Retain unmatched historical/manual questions, repairing missing PNGs from
     // their own saved geometry before declaring the document finished.
@@ -928,7 +942,7 @@ async function runDocument(ctx: Context, job: Job): Promise<void> {
     const needsReview =
       warnings.length > 0 ||
       savedQuestions.some((q) => !q.data.confirmed) ||
-      !savedQuestions.length;
+      (!textbook && !savedQuestions.length);
     await patchDocument(
       ctx,
       job.id,
@@ -941,7 +955,7 @@ async function runDocument(ctx: Context, job: Job): Promise<void> {
         warnings: [...new Set(warnings)],
         processingToken: null,
         error: null,
-        message: needsReview
+        message: textbook ? "선택 범위의 원본과 개념 분석용 본문, 목차 후보를 저장했습니다. 개념 분석을 이어서 시작할 수 있습니다." : needsReview
           ? "선택 범위의 페이지와 문항 후보를 저장했습니다. 영역과 내용을 확인하세요."
           : "선택 범위의 확인된 원본 문항과 페이지를 저장했습니다.",
       },
@@ -1105,15 +1119,7 @@ export async function downloadSelectedPdf(id: string, pages: number[]) {
     doc = (await one(ctx, "documents", id))!;
   const selected = selectPages(pages.join(","), doc.data.pageCount);
   if (!pages.length) throw failure("내보낼 페이지를 선택하세요.");
-  const path = ownPath(ctx, id, doc.data.pdfPath || doc.data.originalPath);
-  let blob = await cacheGet<Blob>(ctx.user.id, `pdf:${path}`);
-  if (!(blob instanceof Blob)) {
-    const result = await ctx.db.storage.from(BUCKET).download(path);
-    if (result.error || !result.data)
-      throw failure("원본 PDF를 읽지 못했습니다.");
-    blob = result.data;
-    await cachePut(ctx.user.id, `pdf:${path}`, blob);
-  }
+  const blob = await documentFile(ctx, doc, true);
   const { PDFDocument } = await import("pdf-lib"),
     source = await PDFDocument.load(await blob.arrayBuffer()),
     output = await PDFDocument.create();

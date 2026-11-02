@@ -6,6 +6,7 @@ import { useEffect, useState, useRef } from "react";
 import { api } from "../../lib/client";
 import { Button, Empty } from "../../components/ui";
 import { edgeCall } from "../services/supabase";
+import { runPreparedJob } from '../services/content-runner';
 import {
   downloadSelectedPdf,
   updateMaterialRange,
@@ -64,7 +65,7 @@ export default function MaterialWorkspace({
     [apiStartedAt,setApiStartedAt]=useState(0),
     [apiElapsed,setApiElapsed]=useState(0),
     [apiError,setApiError]=useState(''),
-    [task, setTask] = useState("complete"),
+    [task, setTask] = useState("concepts"),
     [questionCount, setQuestionCount] = useState(100),
     [conceptCount, setConceptCount] = useState(5),
     [practiceCount, setPracticeCount] = useState(5),
@@ -151,7 +152,7 @@ export default function MaterialWorkspace({
               : String(d.printedPageOffset),
         });
         setTab(d.analysisMethod === "external" ? "external" : "concepts");
-        setTask("complete");
+        setTask(d.kind==='교과서'?'concepts':'initial');
         setSimilarCount(d.kind === "문제집" ? 5 : 0);
       })
       .catch((e) => onError(e.message));
@@ -229,7 +230,7 @@ export default function MaterialWorkspace({
           }
         : {}),
       questionTypes: types,
-      ...(task !== "toc" && Object.values(typeCounts).some((v) => v !== "")
+      ...(!['toc','concepts'].includes(task) && Object.values(typeCounts).some((v) => v !== "")
         ? {
             questionTypeCounts: Object.fromEntries(
               types.map((kind) => [kind, Number(typeCounts[kind] || 0)]),
@@ -247,7 +248,7 @@ export default function MaterialWorkspace({
     setPreview(undefined);
     setPrompt("");
     setTab("external");
-    setMessage(`${created.totalParts}개 분할 작업을 준비했습니다.`);
+    setMessage(method==='external'?'전체 결과를 한 JSON으로 가져올 준비가 됐습니다.':`${created.totalParts}개 처리 단위를 준비했습니다.`);
     if(method==="external"){const issued=createExternalPrompt(created,1);setPrompt(issued);try{await navigator.clipboard.writeText(issued);setMessage("통합 프롬프트를 복사했습니다. PDF와 함께 외부 AI에 입력하고, 결과 JSON을 아래에 붙여넣으세요.");}catch{setMessage("통합 프롬프트를 준비했습니다. 아래 프롬프트 복사를 눌러 주세요.");}}
     if (method === "api") await run(created);
   }
@@ -258,31 +259,9 @@ export default function MaterialWorkspace({
     stopApi.current=false;
     try{
     if(current.method!=='api'||current.partSize>5){current=await standard('api_continuation',{jobId:current.id});currentJob.current=current.id;setJob(current);setJobs(all=>[current,...all.filter(j=>j.id!==current.id)]);}
-    let requested = false;
-    for (let next = 1; next <= current.totalParts; next++) {
-      if(stopApi.current){setMessage('완료된 분할을 보관하고 API 준비를 멈췄습니다. 이어서 준비하면 남은 분할부터 진행합니다.');return;}
-      if (current.parts?.some((p: any) => p.part === next && p.applied))
-        continue;
-      const result = await edgeCall("ai-request", {
-        action: "run_standard",
-        standardJobId: current.id,
-        part: next,
-      });
-      requested = true;
-      await load(current.id);
-      await onRefresh();
-      if (result.result?.status !== "completed") {
-        setMessage(
-          result.result?.provider_error||result.result?.last_error ? aiFailureText(result.result.provider_error??result.result.last_error) : result.result?.message || '작업이 대기 중입니다. 저장된 진행 상황을 확인하세요.',
-        );
-        return;
-      }
-    }
-    setMessage(
-      requested
-        ? "API 결과를 저장했습니다. 내용을 검토한 뒤 학습에 사용하세요."
-        : "등록된 결과를 재사용합니다.",
-    );
+    const completed=await runPreparedJob(current,{shouldStop:()=>stopApi.current,onUpdate:async latest=>{setJob(latest);await onRefresh();}});
+    setJob(completed);
+    setMessage(stopApi.current?'완료된 결과를 보관하고 멈췄습니다. 이어서 준비할 수 있습니다.':completed.apiStatus?.message||'저장된 결과를 확인하세요.');
     }catch(error){setApiError(error instanceof Error?error.message:'API 준비를 완료하지 못했습니다.');if(current?.id)await load(current.id);throw error;}finally{setApiRunning(false);if(current?.id)await load(current.id);}
   }
   async function inspect() {
@@ -376,11 +355,11 @@ export default function MaterialWorkspace({
             <Button
               variant="secondary"
               onClick={() => {
-                setTask(chapters.length ? "initial" : "toc");
+                setTask("concepts");
                 setTab("external");
               }}
             >
-              {chapters.length ? "기본 퀴즈·연습문제 준비" : "목차부터 준비"}
+              개념 정리 준비
             </Button>
           </div>
           {!chapters.length && (
@@ -522,7 +501,7 @@ export default function MaterialWorkspace({
       {tab === "external" && (
         <>
           <p className="notice">
-            개념 정리·원본 문제 분석·퀴즈·문제 은행을 한 작업으로 준비합니다. API로 실행하거나, 통합 프롬프트를 외부 AI에 입력한 뒤 결과 JSON을 한 번에 가져오세요.
+            필요한 작업 하나를 고르세요. 외부 AI는 PDF와 프롬프트를 한 번 전달하고 결과 JSON을 통째로 가져옵니다. API는 저장된 근거를 작은 단위로 처리합니다.
           </p>
           <section className="panel content-job-setup">
             <h2>준비할 콘텐츠</h2>
@@ -530,11 +509,9 @@ export default function MaterialWorkspace({
               <label>
                 작업
                 <select value={task} onChange={(e) => setTask(e.target.value)}>
-                  <option value="complete">통합 준비 · 개념·문제 분석·퀴즈·은행</option>
-                  <option value="toc">목차·단원 구조만</option>
-                  <option value="initial">단원 기본 개념·퀴즈·연습문제</option>
-                  <option value="bank">추가 문제 은행</option>
-                  <option value="problem">문제별 개념 연결·퀴즈·은행</option>
+                  <option value="concepts">1. 개념 정리 · 정의·공식·암기사항</option>
+                  <option value="initial">2. 개념 문제·기본 문제</option>
+                  <option value="bank">3. 문제 은행 · 추가 연습문제</option>
                 </select>
               </label>
               <label>
@@ -679,7 +656,7 @@ export default function MaterialWorkspace({
                 )}
               </fieldset>
             )}
-            {task !== "toc" && (
+            {!['toc','concepts'].includes(task) && (
               <details><summary>문제 유형·난이도 설정</summary>
                 <fieldset className="inline-options">
                   <legend>문제 형식</legend>
@@ -762,7 +739,7 @@ export default function MaterialWorkspace({
               </details>
             )}
             <p className="field-help">
-              통합 준비는 개념·원본 분석·퀴즈·문제 은행을 한 JSON에 함께 담습니다. API는 최대 5문항, 외부 AI는 최대 20문항씩 저장하며 완료된 분할은 재사용합니다.
+              {task==='concepts'?'본문에서 핵심 개념과 암기 카드를 정리합니다. 교과서의 문제 번호는 찾지 않습니다.':task==='initial'?'개념 이해를 확인하는 퀴즈와 기본 적용 문제를 준비합니다.':'저장된 개념을 바탕으로 추가 연습문제를 준비합니다.'} 외부 AI는 분할 없이 한 JSON으로, API는 자동으로 나누어 저장합니다.
             </p>
             <div className="row">
               <Button
@@ -804,7 +781,7 @@ export default function MaterialWorkspace({
               >
                 {jobs.map((j) => (
                   <option key={j.id} value={j.id}>
-                    {j.taskType === "toc"
+                    {j.taskType === "concepts" ? "개념 정리" : j.taskType === "toc"
                       ? "목차"
                       : j.taskType === "initial"
                         ? "기본 콘텐츠"
@@ -817,12 +794,13 @@ export default function MaterialWorkspace({
               </select>
             </label>
           )}
-          {job && (
+          {job?.method==='api'&&<section className="panel"><h2>API 준비 결과</h2><p>개념 {job.preparedConcepts||0}개 · 암기 카드 {job.preparedFlashcards||0}개 · 문항 {job.preparedQuestions||0}개 저장 · {labels[job.status]||job.status}</p><div className="row"><Button busy={!!busy} onClick={()=>act('API 작업 재개',()=>run(job))}>이어서 준비</Button><Button variant="secondary" onClick={()=>onBank({materialIds:[id],showPending:true})}>저장된 문항 검토</Button><Button variant="ghost" onClick={()=>setTab('concepts')}>개념 정리 보기</Button></div></section>}
+          {job && job.method!=='api' && (
             <section className="panel external-import">
               <div className="section-heading">
                 <h2>외부 결과 가져오기</h2>
                 <small>
-                  {job.receivedParts || 0}/{job.totalParts} 분할 · 등록{" "}
+                  {job.totalParts===1?'전체 JSON':`${job.receivedParts||0}/${job.totalParts} 기존 분할`} · 등록{" "}
                   {job.importedQuestions || 0}문항 ·{" "}
                   {labels[job.status] || job.status}
                 </small>
@@ -831,10 +809,10 @@ export default function MaterialWorkspace({
                 <h3>1. 현재 작업의 프롬프트를 복사하세요.</h3>
                 <p>
                   실제 문서·작업 ID, 선택 범위와 전체 JSON 형식이 포함되어
-                  있습니다. 분할마다 해당 프롬프트를 사용하세요.
+                  있습니다. 외부 AI에는 전체 범위를 한 번에 요청하세요.
                 </p>
                 <div className="row">
-                  <label>
+                  {job.totalParts>1&&<label>
                     현재 분할
                     <select
                       value={part}
@@ -849,7 +827,7 @@ export default function MaterialWorkspace({
                         </option>
                       ))}
                     </select>
-                  </label>
+                  </label>}
                   <Button
                     variant="secondary"
                     busy={!!busy}
@@ -875,7 +853,7 @@ export default function MaterialWorkspace({
                     API로 이어서 준비
                   </Button>
                 </div>
-                <label>
+                <details><summary>프롬프트 내용 보기</summary><label>
                   외부 AI에 전달할 프롬프트
                   <textarea
                     aria-label="외부 AI 프롬프트"
@@ -885,7 +863,7 @@ export default function MaterialWorkspace({
                     rows={12}
                     onFocus={(e) => e.target.select()}
                   />
-                </label>
+                </label></details>
                 {!resumeProblemReady && (
                   <p className="field-help">
                     이 작업은 저장된 원본 이미지 대상이 없어 API로 이어갈 수
@@ -950,8 +928,7 @@ export default function MaterialWorkspace({
                 <h3>3. 결과 JSON을 붙여넣고 검사·검토·등록하세요.</h3>
                 <p>
                   JSON 전체 또는 바깥쪽 JSON 코드 블록을 그대로 입력하세요.
-                  분할을 하나씩 등록하면 원본별 연결, 개념 퀴즈, 연습·유사문제를
-                  같은 형식으로 병합합니다.
+                  개념·퀴즈·연습문제·암기 카드가 자동으로 분류됩니다.
                 </p>
                 <textarea
                   aria-label="분석 결과 붙여넣기"

@@ -4,6 +4,70 @@
   margin: 0 auto;
   padding-bottom: 28px;
 }
+.ww-study-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 24px;
+  align-items: start;
+}
+.ww-source {
+  min-width: 0;
+  position: sticky;
+  top: 24px;
+  padding: 20px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: white;
+}
+.ww-source-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+.ww-source-heading h2 {
+  font-size: 15px;
+}
+.ww-source-images {
+  overflow: auto;
+  max-height: 70vh;
+}
+.ww-source-images img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+.ww-source-images img + img {
+  margin-top: 16px;
+}
+.ww-source-history {
+  margin-top: 18px;
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+  font-size: 12px;
+  line-height: 1.8;
+}
+.ww-source-history summary {
+  cursor: pointer;
+  padding: 8px 0;
+}
+.ww-analysis-start {
+  margin-top: 14px;
+}
+@media (max-width: 900px) {
+  .ww-study-layout {
+    grid-template-columns: 1fr;
+    gap: 16px;
+  }
+  .ww-source {
+    position: static;
+    padding: 16px;
+  }
+  .ww-source-images {
+    max-height: none;
+  }
+}
 .ww-head {
   display: flex;
   align-items: flex-end;

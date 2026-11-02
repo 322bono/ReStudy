@@ -33,6 +33,14 @@ describe("bounded persistent jobs", () => {
     expect(result).toMatchObject({ status: "paused" });
     expect(saved[0]).toEqual(["job-a", "lease-a", "paused", expect.objectContaining({ last_error: "all_providers_failed" }), new Date(2000000).toISOString()]);
   });
+  it('returns a claimed running job while the durable background task waits for inference',async()=>{
+    let resolveRun!:(value:any)=>void,background:Promise<unknown>|undefined,committed=false;
+    const store={claim:async()=>({job:{...job(),status:'running',lease_token:'lease-a'},rotation_index:0}),finish:async()=>null,commit:async()=>{committed=true;return{status:'completed'};}};
+    const result=await processJob(job()as any,store,{}as any,async()=>await new Promise<any>(resolve=>{resolveRun=resolve;}),promise=>{background=promise;});
+    expect(result).toMatchObject({id:'job-a',status:'running'});expect(committed).toBe(false);
+    resolveRun({status:'succeeded',provider:'gemini',model:'gemini-3.8-flash',duration_ms:1,usage:{},output:{questions:[]}});
+    await background;expect(committed).toBe(true);
+  });
   it("creates inactive review items with citations derived from owned sources", () => {
     const result = toCommitResult(job() as any, { status: "succeeded", provider: "gemini", model: "gemini-3.8-flash", duration_ms: 5, usage: {}, output: { questions: [{ type: "multiple_choice", difficulty: "medium", prompt: "테스트", answer: "b", explanation: "해설", options: [{ id: "a", text: "1", explanation: "오답" }, { id: "b", text: "2", explanation: "정답" }], misconception_tags: [], source_citations: ["concept-a"] }] } });
     expect(result.items[0]).toMatchObject({ conceptId: "concept-a", active: false, review_status: "needs_review", answer: "2", sources: [{ materialId: "doc-a", page: 3 }] });

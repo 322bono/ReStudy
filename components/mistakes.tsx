@@ -19,12 +19,12 @@ export function AddMistakes({
   state,
   onClose,
   onDone,
-  onReview,
+  onRegistered,
 }: {
   state: AppState;
   onClose: () => void;
   onDone: () => Promise<void>;
-  onReview: (id: string) => void;
+  onRegistered: (ids: string[], autoAnalyzeIds: string[]) => void;
 }) {
   const [materialId, setMaterialId] = useState(state.materials[0]?.id || ""),
     [numbers, setNumbers] = useState(""),
@@ -35,6 +35,8 @@ export function AddMistakes({
       added: number;
       ambiguous: number[];
       missing: number[];
+      questionIds?: string[];
+      autoAnalyzeQuestionIds?: string[];
     }>(),
     [chosen, setChosen] = useState<string[]>([]);
   const add = async (explicit = false) => {
@@ -49,20 +51,14 @@ export function AddMistakes({
           : { materialId, numbers, cause },
       );
       await onDone();
-      if (r.reviewSessionId) {
-        onReview(r.reviewSessionId);
+      if (r.questionIds?.length && !r.ambiguous.length && !r.missing.length) {
+        onRegistered(r.questionIds, r.autoAnalyzeQuestionIds || []);
         return;
       }
       setResult(r);
       setMessage(
         `${r.added}개 문제를 저장했습니다.${r.added === 0 ? " 이미 등록한 문제는 중복 저장하지 않습니다." : ""}`,
       );
-      if (r.unregistered)
-        setMessage(
-          (prev) =>
-            prev +
-            ` 학습 콘텐츠 미등록 ${r.unregistered}개는 원본 다시 풀기를 이용해 주세요.`,
-        );
       if (explicit) setChosen([]);
     } catch (e) {
       setMessage((e as Error).message);
@@ -168,6 +164,19 @@ export function AddMistakes({
         </div>
       ) : null}
       <div className="dialog-footer">
+        {!!result?.questionIds?.length && (
+          <Button
+            variant="secondary"
+            onClick={() =>
+              onRegistered(
+                result.questionIds!,
+                result.autoAnalyzeQuestionIds || [],
+              )
+            }
+          >
+            저장한 문제 분석 보기
+          </Button>
+        )}
         <Button variant="secondary" onClick={onClose}>
           닫기
         </Button>
@@ -202,7 +211,7 @@ export function Mistakes({
   const [subject, setSubject] = useState("전체"),
     [material, setMaterial] = useState("전체"),
     [unit, setUnit] = useState("전체"),
-    [status, setStatus] = useState("전체"),
+    [status, setStatus] = useState("다시 풀 문제"),
     [selected, setSelected] = useState<string[]>([]),
     [search, setSearch] = useState(""),
     [detail, setDetail] = useState<any>();
@@ -221,10 +230,9 @@ export function Mistakes({
         (subject === "전체" || d.subject === subject) &&
         (material === "전체" || d.id === material) &&
         (unit === "전체" || q.unit === unit) &&
-        (status === "전체" ||
-          (status === "오늘 복습" && isDue(m.dueAt)) ||
-          (status === "확인 필요" && !q.confirmed) ||
-          (status === "개념 복습" && m.conceptState !== "understood")) &&
+        (status === "시험 전 복습" ||
+          (status === "다시 풀 문제" && !m.resolved) ||
+          (status === "오늘 복습" && !m.resolved && isDue(m.dueAt))) &&
         (!search ||
           String(q.number).includes(search) ||
           d.title.includes(search)),
@@ -245,9 +253,11 @@ export function Mistakes({
           <div className="eyebrow">다시, 내 것으로</div>
           <h1>
             오답 노트{" "}
-            <span className="title-count">{state.mistakes.length}</span>
+            <span className="title-count">
+              {state.mistakes.filter((m) => !m.resolved).length}
+            </span>
           </h1>
-          <p>틀린 문제를 다시 풀고, 내 개념으로 만드세요.</p>
+          <p>맞힌 문제의 분석과 기록은 시험 전 복습에 보관됩니다.</p>
         </div>
         <Button onClick={onAdd}>
           <Plus size={17} />
@@ -256,11 +266,14 @@ export function Mistakes({
       </div>
       <div className="toolbar">
         <div className="tabs">
-          {["전체", "오늘 복습", "개념 복습", "확인 필요"].map((s) => (
+          {["다시 풀 문제", "오늘 복습", "시험 전 복습"].map((s) => (
             <button
               key={s}
               className={status === s ? "active" : ""}
-              onClick={() => setStatus(s)}
+              onClick={() => {
+                setStatus(s);
+                setSelected([]);
+              }}
             >
               {s}
             </button>
@@ -348,8 +361,8 @@ export function Mistakes({
               />
               <button
                 className="question-thumb"
-                onClick={() => onOpen(d.id, q.regions[0].page)}
-                aria-label={`${q.number}번 원본 열기`}
+                onClick={() => onConcept(q.id)}
+                aria-label={`${q.number}번 저장된 분석 열기`}
               >
                 <SecureImage
                   alt={`${q.number}번 문제`}
@@ -360,31 +373,17 @@ export function Mistakes({
               <div className="mistake-info">
                 <div>
                   <Badge>{d.subject}</Badge>
-                  {!q.hasContent && (
-                    <Badge tone="amber">
-                      {q.conceptIds?.length
-                        ? "학습 콘텐츠 준비"
-                        : "개념 연결하기"}
-                    </Badge>
+                  {m.resolved ? (
+                    <Badge tone="green">맞힘 · 보관됨</Badge>
+                  ) : (
+                    <span className="due-small">{dueLabel(m.dueAt)} 복습</span>
                   )}
-                  {q.hasContent && (
-                    <Badge
-                      tone={
-                        m.conceptState === "understood" ? "green" : "indigo"
-                      }
-                    >
-                      {m.conceptState === "understood"
-                        ? "이해 확인됨"
-                        : "개념 복습 중"}
-                    </Badge>
-                  )}
-                  <span className="due-small">{dueLabel(m.dueAt)} 복습</span>
                 </div>
                 <h3>
                   {q.number}번 <span>{q.unit}</span>
                 </h3>
                 <p>
-                  {d.title} · {q.regions[0].page}쪽
+                  {d.title} · {q.page}쪽
                 </p>
                 <p className="concept-labels">
                   {q.conceptIds
@@ -426,11 +425,7 @@ export function Mistakes({
               <div className="mistake-actions">
                 <Button variant="secondary" onClick={() => onConcept(q.id)}>
                   <BookOpen size={14} />
-                  {q.hasContent
-                    ? "개념·문제 은행"
-                    : q.conceptIds?.length
-                      ? "학습 콘텐츠 준비"
-                      : "개념 연결하기"}
+                  저장된 분석
                 </Button>
                 <Button variant="ghost" onClick={() => onSolve([q.id])}>
                   다시 풀기
@@ -443,17 +438,35 @@ export function Mistakes({
           <div className="panel">
             <Empty
               title={
-                state.mistakes.length
-                  ? "조건에 맞는 오답이 없습니다"
-                  : "다시 볼 문제를 모아 보세요"
+                status !== "시험 전 복습" &&
+                state.mistakes.some((m) => m.resolved)
+                  ? "다시 풀 오답이 없습니다"
+                  : state.mistakes.length
+                    ? "조건에 맞는 오답이 없습니다"
+                    : "다시 볼 문제를 모아 보세요"
               }
-              description="자료의 문제를 누르거나, 번호를 입력해 오답을 등록할 수 있어요."
+              description={
+                status !== "시험 전 복습" &&
+                state.mistakes.some((m) => m.resolved)
+                  ? "맞힌 문제의 분석과 기록은 시험 전 복습에서 다시 볼 수 있습니다."
+                  : "자료의 문제를 누르거나, 번호를 입력해 오답을 등록할 수 있어요."
+              }
               icon={<BookOpen size={27} />}
               action={
-                <Button variant="secondary" onClick={onAdd}>
-                  <Plus size={16} />
-                  오답 등록
-                </Button>
+                status !== "시험 전 복습" &&
+                state.mistakes.some((m) => m.resolved) ? (
+                  <Button
+                    variant="secondary"
+                    onClick={() => setStatus("시험 전 복습")}
+                  >
+                    시험 전 복습 보기
+                  </Button>
+                ) : (
+                  <Button variant="secondary" onClick={onAdd}>
+                    <Plus size={16} />
+                    오답 등록
+                  </Button>
+                )
               }
             />
           </div>
@@ -471,7 +484,11 @@ export function Mistakes({
                   ? "미등록"
                   : "복습 중"}
             </p>
-            <p>다음 복습: {dateLabel(detail.mistake.dueAt)}</p>
+            <p>
+              {detail.mistake.resolved
+                ? "맞힌 문제로 보관 중 · 분석과 기록을 다시 볼 수 있습니다."
+                : `다음 복습: ${dateLabel(detail.mistake.dueAt)}`}
+            </p>
           </div>
           <div className="history-list">
             {detail.attempts.length ? (
@@ -500,6 +517,12 @@ export function Mistakes({
             )}
           </div>
           <div className="dialog-footer">
+            <Button
+              variant="secondary"
+              onClick={() => onConcept(detail.mistake.questionId)}
+            >
+              저장된 분석 보기
+            </Button>
             <Button variant="ghost" onClick={() => remove(detail.mistake.id)}>
               <Trash2 size={14} />
               오답에서 제거

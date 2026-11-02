@@ -25,6 +25,9 @@ import type {
 } from "@/lib/types";
 import { Badge, Button, Empty, IconButton } from "./ui";
 import { SecureImage } from "./secure-assets";
+import OriginalAnalysis from "../src/components/OriginalAnalysis";
+import "../src/styles/original-analysis.css";
+import "../src/styles/original-solve.css";
 
 function Drawing({
   question,
@@ -136,9 +139,9 @@ export function Solve({
   onRefresh: () => Promise<void>;
   onError: (s: string) => void;
   onConcept: (id: string) => void;
-  onBank: (scope:any) => void;
-  onSolve: (ids:string[]) => void;
-  onDetails: (id:string) => void;
+  onBank: (scope: any) => void;
+  onSolve: (ids: string[]) => void;
+  onDetails: (id: string) => void;
 }) {
   const [session, setSession] = useState<SolveSession>(),
     [index, setIndex] = useState(0),
@@ -149,12 +152,15 @@ export function Solve({
     [loaded, setLoaded] = useState(false),
     [summary, setSummary] = useState(false),
     [failure, setFailure] = useState(""),
-    [review,setReview]=useState<any>(),
+    [review, setReview] = useState<any>(),
     [helpText, setHelpText] = useState(""),
     [answerText, setAnswerText] = useState("");
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const reviewRef=useRef<HTMLDivElement>(null);
-  useEffect(()=>{if(review)reviewRef.current?.scrollIntoView({behavior:'smooth',block:'start'});},[review]);
+  const reviewRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (review && window.matchMedia("(max-width: 900px)").matches)
+      reviewRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, [review]);
   useEffect(() => {
     api<SolveSession>(`solve/${id}`)
       .then((s) => {
@@ -259,8 +265,8 @@ export function Solve({
       setReview(key.review);
       setHelpText(
         key.available
-          ? `${key.answer}\n\n${key.explanation || ""}`
-          : "등록된 정답·해설이 없습니다. 원본 정답을 확인하고 직접 채점해 주세요.",
+          ? ""
+          : "저장된 정답이 없습니다. 원본 정답을 확인하고 직접 채점해 주세요.",
       );
     } catch (e) {
       setHelpText((e as Error).message);
@@ -315,6 +321,10 @@ export function Solve({
                       ? "틀림"
                       : "다음에 풀기"}
                 </Badge>
+                <button className="text-button" onClick={() => onDetails(qid)}>
+                  저장된 분석
+                  <ArrowRight size={12} />
+                </button>
                 {a?.result === "wrong" && (
                   <button
                     className="text-button"
@@ -329,6 +339,10 @@ export function Solve({
             );
           })}
         </div>
+        <p className="muted">
+          맞힌 문제는 시험 전 복습에 보관하고, 틀린 문제는 다시 풀 목록에
+          남깁니다.
+        </p>
         <Button onClick={onBack}>
           오답 노트로
           <ArrowRight size={16} />
@@ -357,11 +371,7 @@ export function Solve({
       </div>
       <div className="solve-toolbar">
         <div className="row">
-          <IconButton
-            label="정답 확인"
-            disabled={busy}
-            onClick={help}
-          >
+          <IconButton label="정답 확인" disabled={busy} onClick={help}>
             <Lightbulb size={17} />
           </IconButton>
           <IconButton
@@ -416,41 +426,61 @@ export function Solve({
         </div>
       </div>
       <div className="solve-scroll">
-        {q.regions.map((_, i) => (
-          <Drawing
-            key={q.id + "-" + i}
-            question={q}
-            sessionId={id}
-            region={i}
-            zoom={zoom}
-            pen={pen}
-            disabled={!!answered || busy}
-            strokes={strokes}
-            onChange={changeDrawing}
-          />
-        ))}
-        {(review||helpText)&&<section ref={reviewRef} className="original-review panel" aria-label="정답 확인 후 복습" style={{padding:24,margin:'20px auto',maxWidth:850}}>
-          <h2>정답·해설</h2><p className="feedback-text">{helpText}</p>
-          {review&&<>
-            {review.analysis?.key_point&&<><h3>풀이 핵심</h3><p>{review.analysis.key_point}</p></>}
-            <h3>연결 개념</h3>
-            {!review.concepts.length&&<p className="muted">아직 이 문항에 등록된 개념이 없습니다.</p>}
-            {review.concepts.map((c:any)=><article key={c.id} style={{marginBottom:18}}><strong>{c.name}</strong><p>{c.definition||c.summary}</p>{(c.formulas?.length?c.formulas:c.properties||[]).map((v:string,i:number)=><p key={i}>{v}</p>)}{c.misconceptions?.length>0&&<details><summary>자주 하는 실수</summary>{c.misconceptions.map((m:any,i:number)=><p key={i}>{m.label} · {m.correction}</p>)}</details>}</article>)}
-            {review.memorize.length>0&&<><h3>암기사항</h3><ul>{review.memorize.map((v:string,i:number)=><li key={i}>{v}</li>)}</ul></>}
-            <div className="row" style={{flexWrap:'wrap',marginTop:20}}>
-              <Button disabled={!q.hasContent} onClick={()=>onConcept(q.id)}>개념 복습</Button>
-              <Button variant="secondary" disabled={!review.bankCounts.concept} onClick={()=>onBank({...review.bankScope,purposes:['concept'],mode:'check',count:5})}>개념 퀴즈 {review.bankCounts.concept}개</Button>
-              <Button variant="secondary" disabled={!review.bankCounts.practice} onClick={()=>onBank({...review.bankScope,purposes:['practice'],count:10})}>문제 은행 {review.bankCounts.practice}개</Button>
-              <Button variant="secondary" disabled={!review.bankCounts.similar} onClick={()=>onBank({materialIds:[q.materialId],questionIds:[q.id],purposes:['similar'],count:5})}>유사 문제 {review.bankCounts.similar}개</Button>
-              <Button variant="secondary" disabled={!review.bankCounts.memory} onClick={()=>onBank({...review.bankScope,mode:'memory',count:10})}>암기하기 {review.bankCounts.memory}개</Button>
-              {review.bankCounts.pending>0&&<Button variant="secondary" onClick={()=>onBank({...review.bankScope,showPending:true})}>준비된 문항 검토 {review.bankCounts.pending}개</Button>}
-              <Button variant="ghost" onClick={()=>onDetails(q.id)}>이 문항 학습 자료</Button>
-            </div>
-            <h3 style={{marginTop:24}}>함께 복습할 오답·유사 원본</h3>
-            {!review.similar.length&&<p className="muted">등록된 유사 관계나 공통 개념이 있는 다른 오답이 없습니다.</p>}
-            {review.similar.map((s:any)=><div className="row" key={s.id} style={{justifyContent:'space-between',marginTop:10}}><span>{s.number}번 · PDF {s.page}쪽<br/><small>{s.basis==='prepared_similarity'?'등록된 유사도':'공통 개념 비율'} {Math.round(s.score*100)}% · {s.reason}</small></span><Button variant="secondary" disabled={!s.canSolve} onClick={()=>onSolve([s.id])}>원본 풀기</Button></div>)}
-          </>}
-        </section>}
+        <div className={`solve-content ${review ? "has-analysis" : ""}`}>
+          <div className="solve-source-images">
+            {q.regions.map((_, i) => (
+              <Drawing
+                key={q.id + "-" + i}
+                question={q}
+                sessionId={id}
+                region={i}
+                zoom={zoom}
+                pen={pen}
+                disabled={!!answered || busy}
+                strokes={strokes}
+                onChange={changeDrawing}
+              />
+            ))}
+          </div>
+          {(review || helpText) && (
+            <section
+              ref={reviewRef}
+              className="solve-saved-review"
+              aria-label="정답 확인 후 저장된 분석"
+            >
+              {helpText && (
+                <p className="notice" role="status">
+                  {helpText}
+                </p>
+              )}
+              <OriginalAnalysis review={review} onBank={onBank} />
+              <div className="analysis-actions">
+                <Button variant="ghost" onClick={() => onDetails(q.id)}>
+                  이 문제의 분석·기록 보기
+                </Button>
+              </div>
+              {!!review?.similar?.length && (
+                <details className="solve-related-originals">
+                  <summary>함께 복습할 원본 {review.similar.length}개</summary>
+                  {review.similar.map((similar: any) => (
+                    <div className="row" key={similar.id}>
+                      <span>
+                        {similar.number}번 · PDF {similar.page}쪽
+                      </span>
+                      <Button
+                        variant="secondary"
+                        disabled={!similar.canSolve}
+                        onClick={() => onSolve([similar.id])}
+                      >
+                        원본 풀기
+                      </Button>
+                    </div>
+                  ))}
+                </details>
+              )}
+            </section>
+          )}
+        </div>
       </div>
       <div className="solve-answer">
         <label htmlFor="original-answer">
@@ -485,7 +515,11 @@ export function Solve({
               개념 복습
             </Button>
           </>
-        ) : !review ? <Button busy={busy} onClick={help}>정답 확인</Button> : (
+        ) : !review ? (
+          <Button busy={busy} onClick={help}>
+            정답 확인
+          </Button>
+        ) : (
           <>
             <span className="muted">직접 채점해 주세요.</span>
             <div className="row">

@@ -11,6 +11,8 @@ import {
   RotateCcw,
 } from "lucide-react";
 import { api } from "@/lib/client";
+import { studyInventory } from '../src/domain/study-inventory';
+import { selectPages } from '../src/domain/pages';
 import type { AppState, StudyItem, StudyMode, StudySession } from "@/lib/types";
 import { Badge, Button, Empty, IconButton, Sources } from "./ui";
 const modes = [
@@ -38,12 +40,16 @@ export function StudySetup({
   initialIds,
   onStart,
   onOpen,
+  onBank,
+  onMaterial,
   onError,
 }: {
   state: AppState;
   initialIds: string[];
   onStart: (id: string) => void;
   onOpen: (id: string, page?: number) => void;
+  onBank:(scope:any)=>void;
+  onMaterial:(id:string)=>void;
   onError: (s: string) => void;
 }) {
   const firstSubject =
@@ -52,19 +58,21 @@ export function StudySetup({
     "";
   const [subject, setSubject] = useState(firstSubject),
     [selected, setSelected] = useState(
-      initialIds.filter(
+      (initialIds.length?initialIds:state.materials.map(m=>m.id)).filter(
         (id) =>
           state.materials.find((m) => m.id === id)?.subject === firstSubject,
       ),
     ),
     [ranges, setRanges] = useState<Record<string, string>>({}),
     [mode, setMode] = useState<StudyMode>("quiz"),
-    [type, setType] = useState("객관식"),
+    [type, setType] = useState("전체"),
     [count, setCount] = useState(5),
-    [difficulty, setDifficulty] = useState("보통"),
+    [difficulty, setDifficulty] = useState("전체"),
+    [inventory,setInventory]=useState<any[]|null>(null),
     [busy, setBusy] = useState(false),
     [weak, setWeak] = useState(0);
   useEffect(() => {
+    api('bank/list','POST').then(r=>setInventory(r.items)).catch(e=>onError(e.message));
     api("study/weak")
       .then((r) => setWeak(r.count))
       .catch(() => {});
@@ -97,19 +105,17 @@ export function StudySetup({
   };
   const subjects = [...new Set(state.materials.map((m) => m.subject))];
   const materials = state.materials.filter((m) => m.subject === subject);
-  const conceptIds = new Set(
-    state.concepts.filter((c) => c.subject === subject).map((c) => c.id),
-  );
-  const available = state.bankStats
-    .filter((s) => conceptIds.has(s.conceptId) && s.modes.includes(mode))
-    .reduce((n, s) => n + s.count, 0);
+  let scopeError='';
+  const scopes=selected.map(id=>{try{return{id,pages:selectPages(ranges[id]||'',state.materials.find(m=>m.id===id)!.pageCount)}}catch(e){scopeError=(e as Error).message;return{id,pages:[]}}});
+  const counts=studyInventory(inventory||[],{materials:scopes,mode,type,difficulty}),available=counts.available;
+  const concepts=state.concepts.filter(c=>c.subject===subject&&c.sources?.some(s=>selected.includes(s.materialId)));
   return (
     <>
       <div className="page-heading">
         <div>
           <div className="eyebrow">자료 기반 학습</div>
           <h1>학습하기</h1>
-          <p>한 과목의 자료와 범위를 고르고, 등록된 콘텐츠로 공부하세요.</p>
+          <p>저장된 개념을 읽거나 문제·암기 카드로 복습하세요.</p>
         </div>
         {weak > 0 && (
           <Button variant="secondary" onClick={() => start(true)} busy={busy}>
@@ -129,7 +135,7 @@ export function StudySetup({
               value={subject}
               onChange={(e) => {
                 setSubject(e.target.value);
-                setSelected([]);
+                setSelected(state.materials.filter(m=>m.subject===e.target.value).map(m=>m.id));
               }}
             >
               {!subjects.length && <option value="">자료 없음</option>}
@@ -149,9 +155,6 @@ export function StudySetup({
                     <input
                       type="checkbox"
                       checked={selected.includes(m.id)}
-                      disabled={["uploaded", "processing", "error"].includes(
-                        m.status,
-                      )}
                       onChange={(e) =>
                         setSelected(
                           e.target.checked
@@ -205,15 +208,14 @@ export function StudySetup({
           <div className="notice">
             <BookOpen size={18} />
             <p>
-              {subject || "선택 과목"} · 연결 개념의 등록 문항{" "}
-              <strong>{available}개</strong>
+              선택 범위 · 학습 가능 <strong>{available}개</strong> · 검토 대기 <strong>{counts.pending}개</strong>
               <br />
               <small>
-                전체 과목 기준이며, 자료·페이지·방식·유형·난이도에 따라 실제
-                출제 수가 줄어들 수 있어요.
+                {inventory===null?'저장된 콘텐츠를 확인하고 있습니다.':'현재 선택한 자료·방식·유형·난이도 기준입니다.'}
               </small>
             </p>
           </div>
+          <section className="panel study-saved-concepts"><div className="section-heading"><h2>개념 정리 {concepts.length}개</h2></div>{concepts.length?concepts.map(c=><details key={c.id}><summary>{c.name}</summary><p>{c.definition}</p>{c.properties?.length>0&&<ul>{c.properties.map((v,i)=><li key={i}>{v}</li>)}</ul>}</details>):<p className="field-help">선택한 자료의 개념 정리를 준비하면 여기에 표시됩니다.</p>}<div className="row">{materials.filter(m=>selected.includes(m.id)).map(m=><Button key={m.id} variant="ghost" onClick={()=>onMaterial(m.id)}>{m.title} · 콘텐츠 준비</Button>)}</div></section>
         </section>
         <section>
           <div className="section-heading">
@@ -240,7 +242,7 @@ export function StudySetup({
               </button>
             ))}
           </div>
-          <div className="study-options">
+          <details className="study-options"><summary>문제 수·유형·난이도</summary>
             {mode !== "memory" && (
               <label>
                 문제 유형
@@ -279,18 +281,19 @@ export function StudySetup({
                 </select>
               </label>
             </div>
-          </div>
-          {available === 0 && (
+          </details>
+          {scopeError&&<p className="error" role="alert">{scopeError}</p>}
+          {counts.pending>0&&<div className="notice"><p>준비된 콘텐츠 {counts.pending}개가 검토를 기다립니다. 저장 내용과 정답을 확인하면 학습할 수 있습니다.</p><Button variant="secondary" onClick={()=>onBank({materialIds:selected,mode,showPending:true})}>준비된 콘텐츠 검토</Button></div>}
+          {inventory!==null&&available === 0&&counts.pending===0 && (
             <div className="notice">
               <p>
-                등록된 학습 문항이 없어요. 콘텐츠 관리에서 개념과 문제 은행을
-                등록한 뒤 학습할 수 있습니다.
+                현재 조건에 맞는 문항이 없습니다. 저장된 개념 정리는 왼쪽에서 읽을 수 있고, 자료의 콘텐츠 준비에서 문제를 추가할 수 있습니다.
               </p>
             </div>
           )}
           <Button
             className="full-width"
-            disabled={!selected.length || available === 0}
+            disabled={!selected.length || available === 0||!!scopeError||inventory===null}
             busy={busy}
             onClick={() => start()}
           >

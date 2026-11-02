@@ -7,7 +7,7 @@ const mocks = vi.hoisted(() => ({
   workerOptions: { workerSrc: "" },
 }));
 vi.mock("tesseract.js", () => ({ createWorker: mocks.createWorker }));
-vi.mock("pdfjs-dist", () => ({
+vi.mock("pdfjs-dist/legacy/build/pdf.mjs", () => ({
   GlobalWorkerOptions: mocks.workerOptions,
   AnnotationMode: { DISABLE: 0 },
   getDocument: mocks.getDocument,
@@ -72,6 +72,42 @@ afterEach(async () => {
 });
 
 describe("browser PDF preprocessing", () => {
+  it("keeps a textbook's native concept text over a large background illustration", async () => {
+    const { pdf } = fixture("함수의 정의역과 공역, 치역의 개념을 이해한다.", [0, 0, 0, 1, 1, 0]);
+    const page = await preparePage(pdf, 1, undefined, { purpose: "textbook" });
+    expect(page.source).toBe("text");
+    expect(page.text).toContain("정의역과 공역");
+    expect(page.numberMarkers).toEqual([]);
+    expect(page.warnings.some((warning) => /문항|문제 번호/.test(warning))).toBe(false);
+    expect(mocks.createWorker).not.toHaveBeenCalled();
+  });
+
+  it("reports an invalid OCR collection explicitly instead of leaking an iterator TypeError", async () => {
+    const { pdf } = fixture("");
+    mocks.createWorker.mockResolvedValue({
+      setParameters: vi.fn(), terminate: vi.fn(),
+      recognize: vi.fn(async () => ({ data: { text: "읽은 본문", blocks: { paragraphs: [] } } })),
+    });
+    await expect(preparePage(pdf, 1)).rejects.toMatchObject({ cause: { message: expect.stringMatching(/OCR.*blocks/) } });
+  });
+
+  it("accepts OCR image blocks without paragraph arrays and validates optional word geometry", async () => {
+    const { pdf } = fixture("");
+    mocks.createWorker.mockResolvedValue({
+      setParameters: vi.fn(), terminate: vi.fn(),
+      recognize: vi.fn(async () => ({ data: { text: "개념 설명", blocks: [
+        { blocktype: "image" },
+        { paragraphs: [{ lines: [{ text: "개념 설명", confidence: 92, bbox: { x0: 20, y0: 30, x1: 300, y1: 60 }, words: [
+          { text: "개념", confidence: 90, bbox: { x0: 20, y0: 30, x1: 100, y1: 60 } },
+          { text: "깨진 좌표", confidence: 90, bbox: { x0: NaN, y0: 30, x1: 100, y1: 60 } },
+        ] }] }] },
+      ] } })),
+    });
+    const page = await preparePage(pdf, 1, undefined, { purpose: "textbook" });
+    expect(page.items).toHaveLength(1);
+    expect(page.words?.map((word) => word.text)).toEqual(["개념"]);
+    expect(page.numberMarkers).toEqual([]);
+  });
   it("repairs malformed PDF Unicode while keeping Korean, formulas and valid emoji", async () => {
     const { pdf } = fixture("13. 한글 x² 😀 잘못된 글자 \ud800 끝 \udc00 \u0000 확인");
     const page = await preparePage(pdf, 1);

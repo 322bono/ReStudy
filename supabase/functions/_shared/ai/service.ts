@@ -135,6 +135,9 @@ export async function providerContext(ctx: AuthContext, jobId: string, settings:
       if (!master) throw new AiError("encryption_not_configured", 503);
       const record = checked(await ctx.admin.from("ai_key_slots").select("*").eq("user_id", ctx.user.id).eq("provider", provider).eq('id',credentialId).maybeSingle());
       if (!record||record.data.enabled===false||record.ciphertext!==slots.find(s=>s.id===credentialId)?.ciphertext) throw new AiError("credential_not_found", 404); return decryptKey(record, ctx.user.id, provider, master);
+    }, reserveRequest:async(provider,group)=>{
+      const reservation=checked(await ctx.admin.rpc('reserve_ai_provider_request',{p_user_id:ctx.user.id,p_provider:provider,p_group:group}));
+      return {granted:reservation?.granted===true,...(reservation?.retry_at?{retryAt:Date.parse(reservation.retry_at)}:{})};
     }, updateProvider: async (provider, changes,credentialId,model) => {
       const slot=slots.find(s=>s.id===credentialId&&s.provider===provider);if(!slot)throw new AiError('credential_not_found',404);
       if(changes.quotaCooldown)checked(await ctx.admin.rpc('set_ai_quota_cooldown',{p_user_id:ctx.user.id,p_provider:provider,p_group:changes.quotaCooldown.group,p_model:changes.quotaCooldown.model,p_until:changes.quotaCooldown.until}));

@@ -13,7 +13,7 @@ for(const name of ['cmaps','standard_fonts','wasm','iccs']){
   const source=path.resolve('node_modules/pdfjs-dist',name),target=path.resolve('public/pdfjs',name);
   mkdirSync(target,{recursive:true});cpSync(source,target,{recursive:true});
 }
-cpSync('node_modules/pdfjs-dist/build/pdf.worker.min.mjs','public/pdfjs/pdf.worker.min.mjs');
+cpSync('node_modules/pdfjs-dist/legacy/build/pdf.worker.min.mjs','public/pdfjs/pdf.worker.legacy.min.mjs');
 mkdirSync('public/ocr/core',{recursive:true});
 cpSync('node_modules/tesseract.js/dist/worker.min.js','public/ocr/worker.min.js');
 cpSync('node_modules/tesseract.js-core','public/ocr/core',{recursive:true});

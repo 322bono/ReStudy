@@ -27,7 +27,7 @@ export function Viewer({
   onError,
   manage = false,
   concepts = [],
-  onReview,
+  onRegistered,
 }: {
   id: string;
   initialPage?: number;
@@ -36,7 +36,7 @@ export function Viewer({
   onError: (s: string) => void;
   manage?: boolean;
   concepts?: Concept[];
-  onReview: (id: string) => void;
+  onRegistered: (ids: string[], autoAnalyzeIds: string[]) => void;
 }) {
   const [data, setData] = useState<{
       material: Material;
@@ -56,7 +56,11 @@ export function Viewer({
     [search, setSearch] = useState(""),
     [failure, setFailure] = useState(""),
     [conceptIds, setConceptIds] = useState<string[]>([]);
-  const [mergeId,setMergeId]=useState(''),[splitNumber,setSplitNumber]=useState(''),[splitIndex,setSplitIndex]=useState(0),[splitAxis,setSplitAxis]=useState<'x'|'y'>('y'),[splitRatio,setSplitRatio]=useState(50);
+  const [mergeId, setMergeId] = useState(""),
+    [splitNumber, setSplitNumber] = useState(""),
+    [splitIndex, setSplitIndex] = useState(0),
+    [splitAxis, setSplitAxis] = useState<"x" | "y">("y"),
+    [splitRatio, setSplitRatio] = useState(50);
   const regionPages = [...new Set(regions.map((region) => region.page))].sort(
     (a, b) => a - b,
   );
@@ -111,7 +115,9 @@ export function Viewer({
     p = data.pages.find((p) => p.number === page);
   const choose = (q: Question) => {
     setSelected(q.id);
-    setMergeId('');setSplitNumber('');setSplitIndex(q.sharedRegionCount??0);
+    setMergeId("");
+    setSplitNumber("");
+    setSplitIndex(q.sharedRegionCount ?? 0);
     setPage(q.page || q.regions[0]?.page || 1);
     setConceptIds(q.conceptIds || []);
     setEdit(false);
@@ -551,12 +557,128 @@ export function Viewer({
                     <Crop size={15} />
                     영역 수정
                   </Button>
-                  <details><summary>문항 합치기·분리하기</summary>
-                    <p className="field-help">모든 새 크롭이 저장된 뒤 함께 반영합니다. 기존 문항 ID와 학습 기록은 보존하며, 수정한 영역은 다시 확인합니다.</p>
-                    <label>이 문항에 합칠 문항<select value={mergeId} onChange={e=>setMergeId(e.target.value)}><option value="">선택</option>{data.questions.filter(other=>other.id!==q.id).map(other=><option key={other.id} value={other.id}>{other.number}번 · PDF {other.page}쪽</option>)}</select></label>
-                    <Button variant="secondary" disabled={!!busy||!mergeId||['uploaded','processing'].includes(data.material.status)} onClick={()=>act('문항 합치기',async()=>{await api(`questions/${q.id}/merge`,'POST',{otherId:mergeId});setMergeId('');})}>선택 문항 합치기</Button>
-                    <div className="form-grid"><label>분리할 본문 영역<select value={splitIndex} onChange={e=>setSplitIndex(Number(e.target.value))}>{q.regions.map((r,i)=>i>=(q.sharedRegionCount??0)&&<option key={i} value={i}>PDF {r.page}쪽 영역 {i+1}</option>)}</select></label><label>분리 방향<select value={splitAxis} onChange={e=>setSplitAxis(e.target.value as 'x'|'y')}><option value="y">위·아래</option><option value="x">왼쪽·오른쪽</option></select></label><label>나눌 위치 (%)<input type="number" min={10} max={90} value={splitRatio} onChange={e=>setSplitRatio(Number(e.target.value))}/></label><label>분리한 새 문항 번호<input type="number" min={1} max={9999} value={splitNumber} onChange={e=>setSplitNumber(e.target.value)}/></label></div>
-                    <Button variant="secondary" disabled={!!busy||!splitNumber||['uploaded','processing'].includes(data.material.status)} onClick={()=>act('문항 분리하기',async()=>{await api(`questions/${q.id}/split`,'POST',{newNumber:Number(splitNumber),regionIndex:Math.max(splitIndex,q.sharedRegionCount??0),axis:splitAxis,ratio:splitRatio/100});setSplitNumber('');})}>두 문항으로 분리</Button>
+                  <details>
+                    <summary>문항 합치기·분리하기</summary>
+                    <p className="field-help">
+                      모든 새 크롭이 저장된 뒤 함께 반영합니다. 기존 문항 ID와
+                      학습 기록은 보존하며, 수정한 영역은 다시 확인합니다.
+                    </p>
+                    <label>
+                      이 문항에 합칠 문항
+                      <select
+                        value={mergeId}
+                        onChange={(e) => setMergeId(e.target.value)}
+                      >
+                        <option value="">선택</option>
+                        {data.questions
+                          .filter((other) => other.id !== q.id)
+                          .map((other) => (
+                            <option key={other.id} value={other.id}>
+                              {other.number}번 · PDF {other.page}쪽
+                            </option>
+                          ))}
+                      </select>
+                    </label>
+                    <Button
+                      variant="secondary"
+                      disabled={
+                        !!busy ||
+                        !mergeId ||
+                        ["uploaded", "processing"].includes(
+                          data.material.status,
+                        )
+                      }
+                      onClick={() =>
+                        act("문항 합치기", async () => {
+                          await api(`questions/${q.id}/merge`, "POST", {
+                            otherId: mergeId,
+                          });
+                          setMergeId("");
+                        })
+                      }
+                    >
+                      선택 문항 합치기
+                    </Button>
+                    <div className="form-grid">
+                      <label>
+                        분리할 본문 영역
+                        <select
+                          value={splitIndex}
+                          onChange={(e) =>
+                            setSplitIndex(Number(e.target.value))
+                          }
+                        >
+                          {q.regions.map(
+                            (r, i) =>
+                              i >= (q.sharedRegionCount ?? 0) && (
+                                <option key={i} value={i}>
+                                  PDF {r.page}쪽 영역 {i + 1}
+                                </option>
+                              ),
+                          )}
+                        </select>
+                      </label>
+                      <label>
+                        분리 방향
+                        <select
+                          value={splitAxis}
+                          onChange={(e) =>
+                            setSplitAxis(e.target.value as "x" | "y")
+                          }
+                        >
+                          <option value="y">위·아래</option>
+                          <option value="x">왼쪽·오른쪽</option>
+                        </select>
+                      </label>
+                      <label>
+                        나눌 위치 (%)
+                        <input
+                          type="number"
+                          min={10}
+                          max={90}
+                          value={splitRatio}
+                          onChange={(e) =>
+                            setSplitRatio(Number(e.target.value))
+                          }
+                        />
+                      </label>
+                      <label>
+                        분리한 새 문항 번호
+                        <input
+                          type="number"
+                          min={1}
+                          max={9999}
+                          value={splitNumber}
+                          onChange={(e) => setSplitNumber(e.target.value)}
+                        />
+                      </label>
+                    </div>
+                    <Button
+                      variant="secondary"
+                      disabled={
+                        !!busy ||
+                        !splitNumber ||
+                        ["uploaded", "processing"].includes(
+                          data.material.status,
+                        )
+                      }
+                      onClick={() =>
+                        act("문항 분리하기", async () => {
+                          await api(`questions/${q.id}/split`, "POST", {
+                            newNumber: Number(splitNumber),
+                            regionIndex: Math.max(
+                              splitIndex,
+                              q.sharedRegionCount ?? 0,
+                            ),
+                            axis: splitAxis,
+                            ratio: splitRatio / 100,
+                          });
+                          setSplitNumber("");
+                        })
+                      }
+                    >
+                      두 문항으로 분리
+                    </Button>
                   </details>
                   {!q.confirmed && (
                     <Button
@@ -626,14 +748,11 @@ export function Viewer({
                     const result = await api("mistakes", "POST", {
                       questionIds: [q.id],
                     });
-                    if (result.reviewSessionId)
-                      onReview(result.reviewSessionId);
-                    else
-                      onError(
-                        result.unregistered
-                          ? "오답에 저장했습니다. 등록된 개념 학습 문항이 없어 원본 다시 풀기를 이용할 수 있습니다."
-                          : "오답 노트에 저장했습니다.",
-                      );
+                    await onChange();
+                    onRegistered(
+                      result.questionIds || [q.id],
+                      result.autoAnalyzeQuestionIds || [],
+                    );
                   })
                 }
               >

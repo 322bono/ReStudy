@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { runTask, type ProviderState } from "../supabase/functions/_shared/ai/router.ts";
 
 // Transport-only fixtures: no live API calls and no user database writes.
@@ -13,12 +13,23 @@ function context(rotationIndex = 0, providers = states(), transport?: typeof fet
   return { rotationIndex, providers, mode: "round_robin" as const, allowPaid: false, getKey: async () => "test-only-key", now: () => 1000000, sleep: async () => {}, updateProvider: async (_p: string, data: unknown) => { events.push(data); }, log: async (data: unknown) => { events.push(data); }, fetch: transport ?? (async (url: string | URL | Request) => new Response(JSON.stringify(String(url).includes("nvidia") ? { choices: [{ message: { content: JSON.stringify(output) }, finish_reason: "stop" }], usage: { total_tokens: 20 } } : { candidates: [{ content: { parts: [{ text: JSON.stringify(output) }] }, finishReason: "STOP" }], usageMetadata: { totalTokenCount: 20 } }), { status: 200 })) as typeof fetch, events };
 }
 describe("persistent rotation routing", () => {
-  it('reserves time for another provider when several keys on the first provider time out',async()=>{
+  it('preserves a full inference window and defers fallback instead of issuing a truncated request',async()=>{
     let clock=1000000;const seen:string[]=[],good=context().fetch;
+    const timeout=vi.spyOn(AbortSignal,'timeout');
     const providers=[...['a','b','c'].map(credentialId=>({...states()[1],credentialId})),states()[0]];
-    const ctx=context(1,providers,(async(...args:Parameters<typeof fetch>)=>{seen.push(String(args[0]));if(String(args[0]).includes('googleapis')){clock+=54000;throw new DOMException('timeout','TimeoutError');}return good(...args);})as typeof fetch);ctx.now=()=>clock;
-    expect(await runTask(input,ctx)).toMatchObject({status:'succeeded',provider:'nvidia'});
-    expect(seen).toHaveLength(2);
+    const ctx=context(1,providers,(async(...args:Parameters<typeof fetch>)=>{seen.push(String(args[0]));if(String(args[0]).includes('googleapis')){clock+=110000;throw new DOMException('timeout','TimeoutError');}return good(...args);})as typeof fetch);ctx.now=()=>clock;
+    try{
+      expect(await runTask(input,ctx)).toMatchObject({status:'paused',lastError:'timeout'});
+      expect(timeout).toHaveBeenCalledWith(110000);
+      expect(seen).toHaveLength(1);
+    }finally{timeout.mockRestore();}
+  });
+  it('applies the shared provider group reservation before every upstream request including retries',async()=>{
+    let clock=1000000, reservations=0,calls=0;const good=context().fetch,waits:number[]=[];
+    const ctx={...context(0,[{...states()[0],credentialId:'a',quotaGroup:'account'}],(async(...args:Parameters<typeof fetch>)=>{calls++;return calls===1?new Response('{}',{status:503}):good(...args);})as typeof fetch),reserveRequest:async(provider:string,group:string)=>{expect(provider).toBe('nvidia');expect(group).toBe('account');reservations++;return reservations===2?{granted:false,retryAt:clock+500}:{granted:true};}};
+    ctx.now=()=>clock;ctx.sleep=async(ms:number)=>{clock+=ms;waits.push(ms);};
+    expect(await runTask(input,ctx)).toMatchObject({status:'succeeded'});
+    expect(calls).toBe(2);expect(reservations).toBe(3);expect(waits).toEqual([1000,500]);
   });
   it("rotates keys and models and isolates an inaccessible model", async () => {
     const p=states()[0];

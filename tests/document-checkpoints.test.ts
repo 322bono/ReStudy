@@ -102,6 +102,41 @@ beforeEach(() => {
 const finished = () => vi.waitFor(() => expect(["needs_review", "ready", "error"]).toContain(mocked.db.tables.documents[0].status));
 
 describe("private browser document checkpoints", () => {
+  it("stores and reopens a PDF above 50MiB through private parts without changing its bytes", async () => {
+    const bytes = new Uint8Array(51 * 1024 * 1024);
+    bytes.set(new TextEncoder().encode("%PDF-1.4 large"));
+    bytes[bytes.length - 1] = 123;
+    const form = new FormData(); form.set("subject", "수학");
+    form.set("fileOptions", JSON.stringify([{ analysisMethod: "later" }]));
+    form.append("files", new File([bytes], "large.pdf", { type: "application/pdf" }));
+    const result = await uploadMaterials(form);
+    expect(result.materials).toHaveLength(1);
+    const doc = mocked.db.tables.documents[0];
+    expect(doc.data.originalStorage.parts.length).toBeGreaterThan(1);
+    expect([...mocked.db.files.values()].every((file: Blob) => file.size < 6 * 1024 * 1024)).toBe(true);
+    doc.data.paused = false;
+    await resumeMaterial(doc.id); await finished();
+    const opened = mocked.openPdf.mock.calls.at(-1)?.[0] as Blob;
+    expect(opened.size).toBe(bytes.length);
+    const reconstructed = new Uint8Array(await opened.arrayBuffer());
+    expect(reconstructed.slice(0, 13)).toEqual(bytes.slice(0, 13));
+    expect(reconstructed[reconstructed.length - 1]).toBe(123);
+    expect(Buffer.compare(Buffer.from(reconstructed), Buffer.from(bytes))).toBe(0);
+  });
+
+  it("prepares textbook concepts without detecting or retiring existing original questions", async () => {
+    const doc = seedDoc(); doc.kind = "교과서";
+    mocked.db.tables.problems.push({ id: Q, user_id: mocked.user, document_id: DOC, number: 17, page: 1, data: { confirmed: true, source: "manual", answer: "3", regions: [region] } });
+    mocked.db.tables.problem_regions.push({ user_id: mocked.user, problem_id: Q, part: 0, page: 1, image_path: `${mocked.user}/${DOC}/kept.png`, data: region });
+    await resumeMaterial(DOC); await finished();
+    expect(mocked.detectProblems).not.toHaveBeenCalled();
+    expect(mocked.prepareNumberMarkers).not.toHaveBeenCalled();
+    expect(mocked.preparePage.mock.calls[0]?.[3]).toEqual({ purpose: "textbook" });
+    expect(mocked.db.rpc.mock.calls.filter(([name]) => name === "retire_unmatched_pdf_candidates")).toHaveLength(0);
+    expect(mocked.db.tables.problems).toHaveLength(1);
+    expect(mocked.db.tables.problems[0]).toMatchObject({ id: Q, data: { answer: "3", confirmed: true } });
+    expect(mocked.db.tables.documents[0].data.warnings.some((warning: string) => /문항 번호/.test(warning))).toBe(false);
+  });
   it("refreshes layout metadata while preserving saved PNGs, IDs and answer history", async () => {
     seedDoc();seedPage(1);seedPage(2);
     const path=`${mocked.user}/${DOC}/original-crop.png`;

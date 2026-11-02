@@ -2,18 +2,16 @@ import { useEffect, useId, useRef, useState } from "react";
 import {
   ArrowLeft,
   ArrowRight,
-  BookOpen,
   Check,
   Clipboard,
   FileText,
-  Layers,
   RefreshCw,
   RotateCcw,
 } from "lucide-react";
-import { Badge, Button, Empty, Sources } from "../../components/ui";
+import { Badge, Button, Empty } from "../../components/ui";
 import { SecureImage } from "../../components/secure-assets";
-import { dateLabel, dueLabel } from "../../lib/client";
-import type { AppState, Concept, Question } from "../../lib/types";
+import { api, dateLabel, dueLabel } from "../../lib/client";
+import type { AppState, Question } from "../../lib/types";
 import {
   formatPages,
   parseRestudy,
@@ -22,14 +20,12 @@ import {
 import { downloadSelectedPdf } from "../services/documents";
 import { edgeCall } from "../services/supabase";
 import "../styles/wrong-workspace.css";
-import ApiPreparationStatus from '../components/ApiPreparationStatus';
+import ApiPreparationStatus from "../components/ApiPreparationStatus";
+import OriginalAnalysis from "../components/OriginalAnalysis";
+import { prepareWrongAnalysis } from "../services/wrong-analysis";
+import { runPreparedJob } from "../services/content-runner";
+import "../styles/original-analysis.css";
 
-type SavedConcept = Concept & {
-  formulas?: string[];
-  memorize?: string[];
-  pitfalls?: string[];
-  evidence?: string;
-};
 type SavedQuestion = Question & {
   imagePaths?: string[];
   memorize?: string[];
@@ -37,19 +33,20 @@ type SavedQuestion = Question & {
 };
 export type WrongWorkspaceProps = {
   id: string;
+  autoAnalyzeIds?: string[];
+  onAutoAnalysisComplete?: () => void;
   state: AppState;
   onBack: () => void;
   onBank: (scope: any) => void;
   onSolve: (ids: string[]) => void | Promise<void>;
-  onReview: (questionId: string) => void | Promise<void>;
   onViewer: (materialId: string, page?: number) => void;
   onError: (message: string) => void;
   onRefresh: () => void | Promise<void>;
 };
 type Job = {
   id: string;
-  method?:string;
-  partSize?:number;
+  method?: string;
+  partSize?: number;
   taskType: string;
   status?: string;
   targetQuestions?: { id: string }[];
@@ -87,109 +84,12 @@ const statusLabels: Record<string, string> = {
   failed: "확인 필요",
   retry_wait: "재시도 대기",
 };
-const strings = (value: unknown): string[] =>
-  Array.isArray(value)
-    ? value.filter(
-        (item): item is string => typeof item === "string" && !!item.trim(),
-      )
-    : [];
-const distinct = (values: string[]) => [...new Set(values)];
 const standard = <T,>(action: string, body: Record<string, unknown> = {}) =>
   edgeCall("content-jobs", { action, ...body }) as Promise<T>;
 const messageOf = (cause: unknown) =>
   cause instanceof Error
     ? cause.message
     : "요청을 처리하지 못했습니다. 다시 시도해 주세요.";
-
-function ConceptReading({
-  concept,
-  materials,
-  onViewer,
-}: {
-  concept: SavedConcept;
-  materials: AppState["materials"];
-  onViewer: WrongWorkspaceProps["onViewer"];
-}) {
-  const formulas = strings(concept.formulas),
-    memorize = strings(concept.memorize);
-  const properties =
-    formulas.length || memorize.length ? [] : strings(concept.properties);
-  const pitfalls = strings(concept.pitfalls);
-  const misconceptions = concept.misconceptions || [];
-  return (
-    <article
-      className="ww-concept"
-      aria-labelledby={`ww-concept-${concept.id}`}
-    >
-      <header>
-        <h3 id={`ww-concept-${concept.id}`}>{concept.name}</h3>
-        {concept.evidence === "toc_only" ? (
-          <Badge tone="amber">목차 기준 · 본문 확인 필요</Badge>
-        ) : null}
-      </header>
-      {concept.major || concept.minor ? (
-        <p className="ww-concept-location">
-          {[concept.major, concept.minor].filter(Boolean).join(" · ")}
-        </p>
-      ) : null}
-      <p className="ww-definition">
-        {concept.definition || "저장된 개념 설명이 없습니다."}
-      </p>
-      {formulas.length ? (
-        <div className="ww-reading-group">
-          <h4>공식·조건</h4>
-          <ul>
-            {formulas.map((value, index) => (
-              <li key={index}>{value}</li>
-            ))}
-          </ul>
-        </div>
-      ) : null}
-      {properties.length ? (
-        <div className="ww-reading-group">
-          <h4>핵심 성질</h4>
-          <ul>
-            {properties.map((value, index) => (
-              <li key={index}>{value}</li>
-            ))}
-          </ul>
-        </div>
-      ) : null}
-      {memorize.length ? (
-        <div className="ww-reading-group ww-memorize">
-          <h4>암기사항</h4>
-          <ul>
-            {memorize.map((value, index) => (
-              <li key={index}>{value}</li>
-            ))}
-          </ul>
-        </div>
-      ) : null}
-      {pitfalls.length || misconceptions.length ? (
-        <div className="ww-reading-group ww-pitfalls">
-          <h4>주의할 점</h4>
-          <ul>
-            {pitfalls.length
-              ? pitfalls.map((value, index) => <li key={index}>{value}</li>)
-              : misconceptions.map((item) => (
-                  <li key={item.id}>
-                    {item.label}
-                    {item.correction ? <p>{item.correction}</p> : null}
-                  </li>
-                ))}
-          </ul>
-        </div>
-      ) : null}
-      {concept.sources?.length ? (
-        <Sources
-          sources={concept.sources}
-          materials={materials}
-          onOpen={onViewer}
-        />
-      ) : null}
-    </article>
-  );
-}
 
 function PackageReview({ data }: { data: RestudyPackage }) {
   return (
@@ -301,11 +201,12 @@ function PackageReview({ data }: { data: RestudyPackage }) {
 
 export default function WrongWorkspace({
   id,
+  autoAnalyzeIds = [],
+  onAutoAnalysisComplete,
   state,
   onBack,
   onBank,
   onSolve,
-  onReview,
   onViewer,
   onError,
   onRefresh,
@@ -317,14 +218,6 @@ export default function WrongWorkspace({
     (item) => item.id === question?.materialId,
   );
   const mistake = state.mistakes.find((item) => item.questionId === id);
-  const conceptIds = distinct(question?.conceptIds || []);
-  const concepts = conceptIds
-    .map(
-      (cid) =>
-        state.concepts.find((concept) => concept.id === cid) as
-          SavedConcept | undefined,
-    )
-    .filter((concept): concept is SavedConcept => !!concept);
   const pages = [
     ...new Set(
       (question?.regions.length
@@ -357,19 +250,69 @@ export default function WrongWorkspace({
     mounted = useRef(true),
     selectedJob = useRef<string | undefined>(undefined);
   activeId.current = id;
-  const stopApi=useRef(false),apiStart=useRef(0);
-  const [apiElapsed,setApiElapsed]=useState(0);
-  useEffect(()=>{
-    if(!busy.includes('API'))return;
-    let stopped=false,polling=false;
-    const timer=setInterval(async()=>{
-      setApiElapsed(Math.floor((Date.now()-apiStart.current)/1000));
-      if(polling||!selectedJob.current)return;
-      polling=true;
-      try{const next=await standard<Job>('get',{jobId:selectedJob.current});if(!stopped&&mounted.current&&activeId.current===id)setJob(next);}catch{/* The final request reports errors without discarding prior progress. */}finally{polling=false;}
-    },2000);
-    return()=>{stopped=true;clearInterval(timer);};
-  },[busy,id]);
+  const stopApi = useRef(false),
+    apiStart = useRef(0);
+  const [apiElapsed, setApiElapsed] = useState(0);
+  const [savedReview, setSavedReview] = useState<any>(),
+    [loadingReview, setLoadingReview] = useState(true);
+  const automaticStarted = useRef("");
+  async function loadReview() {
+    const forId = id;
+    const result = await api(`questions/${forId}/review`);
+    if (mounted.current && activeId.current === forId) setSavedReview(result);
+    return result;
+  }
+  useEffect(() => {
+    let alive = true;
+    setLoadingReview(true);
+    setSavedReview(undefined);
+    loadReview()
+      .catch((cause) => {
+        if (alive) setError(messageOf(cause));
+      })
+      .finally(() => {
+        if (alive) setLoadingReview(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [id, state.questions, state.concepts]);
+  useEffect(() => {
+    const request = autoAnalyzeIds.join(",");
+    if (
+      !request ||
+      loadingJobs ||
+      loadingReview ||
+      automaticStarted.current === request ||
+      locked.current
+    )
+      return;
+    automaticStarted.current = request;
+    void act("API 자동 분석", () => startAutomatic(autoAnalyzeIds));
+  }, [autoAnalyzeIds, loadingJobs, loadingReview]);
+  useEffect(() => {
+    if (!busy.includes("API")) return;
+    let stopped = false,
+      polling = false;
+    const timer = setInterval(async () => {
+      setApiElapsed(Math.floor((Date.now() - apiStart.current) / 1000));
+      if (polling || !selectedJob.current) return;
+      polling = true;
+      try {
+        const next = await standard<Job>("get", { jobId: selectedJob.current });
+        if (!stopped && mounted.current && activeId.current === id)
+          setJob(next);
+      } catch {
+        /* The final request reports errors without discarding prior progress. */
+      } finally {
+        polling = false;
+      }
+    }, 2000);
+    return () => {
+      stopped = true;
+      clearInterval(timer);
+    };
+  }, [busy, id]);
 
   async function loadJobs(preferred?: string): Promise<Job | undefined> {
     if (!question) return;
@@ -437,12 +380,16 @@ export default function WrongWorkspace({
     if (locked.current) return;
     const forId = id;
     locked.current = true;
-    if(name.includes('API')){apiStart.current=Date.now();setApiElapsed(0);}
+    if (name.includes("API")) {
+      apiStart.current = Date.now();
+      setApiElapsed(0);
+    }
     setBusy(name);
     setError("");
     setMessage("");
     try {
       await work();
+      if (mounted.current && activeId.current === forId) await loadReview();
     } catch (cause) {
       if (mounted.current && activeId.current === forId) {
         const value = messageOf(cause);
@@ -463,40 +410,76 @@ export default function WrongWorkspace({
   }
   async function runApi(current: Job) {
     const forId = id;
-    stopApi.current=false;
-    if(current.method!=='api'||(current.partSize??20)>5){current=await standard<Job>('api_continuation',{jobId:current.id});setJob(current);selectedJob.current=current.id;}
-    let latest = current;
-    for (let next = 1; next <= current.totalParts; next++) {
-      if(stopApi.current){setMessage('완료된 분할을 보관하고 멈췄습니다. 이어서 준비할 수 있습니다.');return;}
-      if (activeId.current !== forId || !mounted.current) return;
-      if (latest.parts?.some((item) => item.part === next && item.applied))
-        continue;
-      const result = await edgeCall("ai-request", {
-        action: "run_standard",
-        standardJobId: current.id,
-        part: next,
-      });
-      latest = await standard<Job>("get", { jobId: current.id });
-      await onRefresh();
-      if (activeId.current !== forId || !mounted.current) return;
-      setJob(latest);
-      selectedJob.current = latest.id;
-      if (
-        result.result?.status !== "completed" &&
-        !latest.parts?.some((item) => item.part === next && item.applied)
-      ) {
-        setMessage(
-          "API 준비를 완료하지 못했습니다. 완료된 결과는 보관했습니다. 자료의 API 준비 결과에서 모델별 오류를 확인하고 이어서 실행할 수 있습니다.",
-        );
-        await loadJobs(current.id);
-        return;
-      }
+    stopApi.current = false;
+    if (current.method !== "api" || (current.partSize ?? 20) > 5) {
+      current = await standard<Job>("api_continuation", { jobId: current.id });
+      setJob(current);
+      selectedJob.current = current.id;
     }
+    const completed = await runPreparedJob(current, {
+      shouldStop: () =>
+        stopApi.current || activeId.current !== forId || !mounted.current,
+      onUpdate: (latest: Job) => {
+        if (mounted.current && activeId.current === forId) {
+          setJob(latest);
+          selectedJob.current = latest.id;
+        }
+      },
+    });
+    await onRefresh();
     await loadJobs(current.id);
     if (activeId.current === forId && mounted.current)
       setMessage(
-        "저장된 결과를 불러왔습니다. 문항의 내용·정답·해설을 검토한 뒤 학습에 사용하세요.",
+        completed.parts?.filter((part) => part.applied).length ===
+          completed.totalParts
+          ? "저장된 결과를 불러왔습니다. 문항의 내용·정답·해설을 검토한 뒤 학습에 사용하세요."
+          : "완료된 결과는 보관했습니다. 준비 도구에서 남은 분할과 오류를 확인하고 이어서 실행할 수 있습니다.",
       );
+  }
+  async function startAutomatic(ids: string[]) {
+    stopApi.current = false;
+    const failures: string[] = [];
+    try {
+      for (let index = 0; index < ids.length; index++) {
+        if (stopApi.current || !mounted.current) break;
+        const target = state.questions.find((item) => item.id === ids[index]);
+        const source = state.materials.find(
+          (item) => item.id === target?.materialId,
+        );
+        if (!target || !source) continue;
+        setMessage(
+          `${index + 1}/${ids.length} · ${target.number}번 원본을 분석하고 저장합니다.`,
+        );
+        try {
+          await prepareWrongAnalysis(target, source, {
+            shouldStop: () => stopApi.current || !mounted.current,
+            onUpdate: (next) => {
+              if (mounted.current) {
+                setJob(next);
+                selectedJob.current = next.id;
+              }
+            },
+          });
+          await onRefresh();
+          if (mounted.current) await loadReview();
+        } catch (cause) {
+          failures.push(`${target.number}번: ${messageOf(cause)}`);
+        }
+      }
+      if (mounted.current) {
+        await loadJobs();
+        if (failures.length) setError(failures.join("\n"));
+        setMessage(
+          stopApi.current
+            ? "완료된 분석은 저장했습니다. 준비 도구에서 이어서 실행할 수 있습니다."
+            : failures.length
+              ? "완료된 분석은 저장했습니다. 실패한 문제는 다시 분석할 수 있습니다."
+              : "저장된 분석을 불러왔습니다. 생성된 추가 문항은 내용을 검토한 뒤 풀 수 있습니다.",
+        );
+      }
+    } finally {
+      onAutoAnalysisComplete?.();
+    }
   }
   async function create(method: "api" | "external") {
     if (!question || !material)
@@ -509,11 +492,20 @@ export default function WrongWorkspace({
       questionIds: [id],
       selectedPages: pages,
       tocPages: material.tocPages || [],
-      questionCount: preparationKind === "similar" ? 5 : preparationKind==='complete'?20:15,
+      questionCount:
+        preparationKind === "similar"
+          ? 5
+          : preparationKind === "complete"
+            ? 20
+            : 15,
       purposeCounts:
         preparationKind === "similar"
           ? { concept: 0, practice: 0, similar: 5 }
-          : { concept: 5, practice: 10, similar: preparationKind==='complete'?5:0 },
+          : {
+              concept: 5,
+              practice: 10,
+              similar: preparationKind === "complete" ? 5 : 0,
+            },
       questionTypes: ["mcq", "ox", "short", "blank"],
       difficultyDistribution: { easy: 20, medium: 50, hard: 30 },
     });
@@ -583,9 +575,9 @@ export default function WrongWorkspace({
   ) {
     return {
       materialIds: question ? [question.materialId] : [],
-      originalId: purpose==="similar"?undefined:id,
-      questionIds: purpose==="similar"?[id]:[],
-      purposes: mode==="memory"?[]:[purpose],
+      originalId: purpose === "similar" ? undefined : id,
+      questionIds: purpose === "similar" ? [id] : [],
+      purposes: mode === "memory" ? [] : [purpose],
       count,
       mode,
     };
@@ -604,12 +596,6 @@ export default function WrongWorkspace({
         />
       </section>
     );
-  const analysis = question.analysis;
-  const memorized = distinct([
-    ...strings(question.memorize),
-    ...strings(analysis?.memorize),
-  ]);
-  const ready = concepts.length > 0;
   const preview = inspection?.preview;
   return (
     <section className="wrong-workspace" aria-labelledby={`${fieldId}-title`}>
@@ -631,99 +617,89 @@ export default function WrongWorkspace({
             {question.number}번 <span>{question.unit}</span>
           </h1>
           <p>
-            원본 PDF {formatPages(pages)}쪽
-            {mistake ? ` · ${dueLabel(mistake.dueAt)} 복습` : ""}
+            원본 PDF {formatPages(pages)}쪽 ·{" "}
+            {mistake?.resolved ? "맞힌 문제 · 기록 보관 중" : "오답 복습"}
           </p>
         </div>
-        <Button
-          variant="secondary"
-          onClick={() => onViewer(question.materialId, question.page)}
-        >
-          <FileText size={15} />
-          출처 보기
+        <Button variant="secondary" onClick={() => onSolve([id])}>
+          <RotateCcw size={15} />
+          다시 풀기
         </Button>
       </header>
-      <ApiPreparationStatus job={job} running={busy.includes('API')} elapsed={apiElapsed} error={busy.includes('API')?'':error} onStop={()=>{stopApi.current=true;setMessage('현재 요청이 끝나면 완료된 결과를 보관하고 멈춥니다.');}}/>
-      <div className="ww-layout">
-        <div className="ww-main">
-          <section className="ww-saved" aria-labelledby={`${fieldId}-concepts`}>
-            <div className="ww-section-heading">
-              <h2 id={`${fieldId}-concepts`}>관련 개념</h2>
-              {ready ? (
-                <Badge tone="indigo">저장된 개념 {concepts.length}개</Badge>
-              ) : null}
-            </div>
-            {analysis?.key_point ? (
-              <div className="ww-key-point">
-                <h3>문제 해결의 핵심</h3>
-                <p>{analysis.key_point}</p>
-              </div>
-            ) : null}
-            {memorized.length ? (
-              <div className="ww-question-memory">
-                <h3>이 문제에서 기억할 내용</h3>
-                <ul>
-                  {memorized.map((value, index) => (
-                    <li key={index}>{value}</li>
-                  ))}
-                </ul>
-              </div>
-            ) : null}
-            {ready ? (
-              concepts.map((concept) => (
-                <ConceptReading
-                  key={concept.id}
-                  concept={concept}
-                  materials={state.materials}
-                  onViewer={onViewer}
+      <ApiPreparationStatus
+        job={job}
+        running={busy.includes("API")}
+        elapsed={apiElapsed}
+        error={busy.includes("API") ? "" : error}
+        onStop={() => {
+          stopApi.current = true;
+          setMessage("현재 요청이 끝나면 완료된 결과를 보관하고 멈춥니다.");
+        }}
+      />
+      <div className="ww-study-layout">
+        <aside className="ww-source" aria-label="저장된 원본 문제">
+          <div className="ww-source-heading">
+            <h2>원본 문제</h2>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => onViewer(question.materialId, question.page)}
+            >
+              출처 보기
+            </Button>
+          </div>
+          {question.regions.length && question.imagePaths?.length ? (
+            <div className="ww-source-images">
+              {question.regions.map((_, index) => (
+                <SecureImage
+                  key={index}
+                  path={`questions/${id}/image/${index}`}
+                  alt={`${question.number}번 원본 문제${question.regions.length > 1 ? ` · 영역 ${index + 1}` : ""}`}
                 />
-              ))
-            ) : (
-              <div className="ww-unprepared">
-                <BookOpen size={25} strokeWidth={1.5} />
-                <h3>아직 연결된 개념 정리가 없습니다</h3>
-                <p>
-                  이 원본 문제의 개념과 개념 퀴즈 5개·연습문제 10개를 준비할 수
-                  있습니다.
-                </p>
-                <div className="ww-actions">
-                  <Button
-                    disabled={!!busy}
-                    busy={busy === "API 분석"}
-                    onClick={() => act("API 분석", () => create("api"))}
-                  >
-                    API로 준비
-                  </Button>
-                  <Button
-                    variant="secondary"
-                    disabled={!!busy}
-                    busy={busy === "외부 작업 준비"}
-                    onClick={() =>
-                      act("외부 작업 준비", () => create("external"))
-                    }
-                  >
-                    외부 AI 결과 가져오기
-                  </Button>
-                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="ww-help">
+              저장된 원본 크롭이 없습니다. 문항 영역을 먼저 저장해 주세요.
+            </p>
+          )}
+          <p className="ww-help">
+            다시 풀기에서는 깨끗한 원본을 먼저 보고, 정답 확인 후 저장된 분석을
+            읽습니다.
+          </p>
+          {mistake && (
+            <details className="ww-source-history">
+              <summary>복습 기록 · {mistake.reviewCount || 0}회</summary>
+              <p>
+                맞힘 {mistake.correctCount || 0}회 ·{" "}
+                {mistake.resolved
+                  ? "보관함에 저장됨"
+                  : `${dueLabel(mistake.dueAt)} 복습`}
+              </p>
+              {mistake.cause && <p>내 메모 · {mistake.cause}</p>}
+              <small>{dateLabel(mistake.createdAt)} 등록</small>
+            </details>
+          )}
+        </aside>
+        <div className="ww-main">
+          <OriginalAnalysis
+            review={savedReview}
+            loading={loadingReview}
+            onBank={onBank}
+          />
+          {!savedReview?.hasSavedAnalysis &&
+            !busy &&
+            !autoAnalyzeIds.length && (
+              <div className="ww-analysis-start">
+                <Button
+                  busy={busy === "API 분석"}
+                  disabled={!!busy}
+                  onClick={() => act("API 분석", () => startAutomatic([id]))}
+                >
+                  이 문제 분석하기
+                </Button>
               </div>
             )}
-            {strings(analysis?.mistakes).length ? (
-              <div className="ww-reading-group ww-analysis-cautions">
-                <h3>확인할 조건·예상 실수</h3>
-                <ul>
-                  {strings(analysis?.mistakes).map((value, index) => (
-                    <li key={index}>{value}</li>
-                  ))}
-                </ul>
-              </div>
-            ) : null}
-            {conceptIds.length > concepts.length ? (
-              <p className="ww-help">
-                연결된 일부 개념을 찾을 수 없습니다. 콘텐츠 등록 상태를 확인해
-                주세요.
-              </p>
-            ) : null}
-          </section>
           <details
             className="ww-preparation"
             open={preparationOpen}
@@ -745,15 +721,17 @@ export default function WrongWorkspace({
                   disabled={!!busy}
                   onChange={(e) => setPreparationKind(e.target.value)}
                 >
-                  <option value="complete">한 번에 · 개념 5개 · 연습 10개 · 유사 5개</option>
+                  <option value="complete">
+                    한 번에 · 개념 5개 · 연습 10개 · 유사 5개
+                  </option>
                   <option value="review">개념 퀴즈 5개 · 연습문제 10개</option>
                   <option value="similar">이 원본과 연결된 유사문제 5개</option>
                 </select>
               </label>
               <p className="ww-help">
                 원본 {question.number}번 · PDF {formatPages(pages)}쪽을 기준으로
-                개념 정리, 개념 퀴즈 5개와 연습문제 10개를 준비합니다. API
-                분석은 실행 버튼을 누를 때만 요청합니다.
+                개념 정리, 개념 퀴즈 5개와 연습문제 10개를 준비합니다. 오답 등록
+                시 저장된 분석이 없으면 자동으로 분석합니다.
               </p>
               <div className="ww-actions">
                 <Button
@@ -1058,143 +1036,18 @@ export default function WrongWorkspace({
               ) : null}
             </div>
           </details>
-          {error ? (
+          {error && (
             <p className="ww-feedback ww-error" role="alert">
               {error}
             </p>
-          ) : null}
-          {message ? (
+          )}
+          {message && (
             <p className="ww-feedback" role="status">
               <Check size={15} />
               {message}
             </p>
-          ) : null}
+          )}
         </div>
-        <aside className="ww-side" aria-label="이 문제의 복습">
-          <section className="ww-practice">
-            <h2>저장된 문항으로 복습</h2>
-            <p>이 문제에 연결된 개념과 문제만 고릅니다.</p>
-            <Button
-              disabled={!ready}
-              onClick={() => onBank(bankScope("concept", 5, "check"))}
-            >
-              <BookOpen size={15} />
-              개념 퀴즈 5문제
-              <ArrowRight size={14} />
-            </Button>
-            <Button
-              variant="secondary"
-              disabled={!ready}
-              onClick={() => onBank(bankScope("practice", 10))}
-            >
-              관련 연습문제 10문제
-              <ArrowRight size={14} />
-            </Button>
-            <Button
-              variant="secondary"
-              disabled={!ready}
-              onClick={() => onBank(bankScope("similar", 10))}
-            >
-              저장된 유사문제
-              <ArrowRight size={14} />
-            </Button>
-            <Button
-              variant="ghost"
-              disabled={!ready}
-              onClick={() => onBank(bankScope("concept", 10, "memory"))}
-            >
-              <Layers size={14} />
-              암기하기
-            </Button>
-            <Button
-              variant="ghost"
-              disabled={!question.hasContent || !!busy}
-              busy={busy === "개념 복습 시작"}
-              onClick={() =>
-                act("개념 복습 시작", async () => {
-                  await onReview(id);
-                })
-              }
-            >
-              이해 확인 복습
-            </Button>
-            <small>
-              문항이 부족하면 저장된 개수를 안내합니다. 추가 생성은 직접 선택할
-              수 있습니다.
-            </small>
-          </section>
-          <section className="ww-original">
-            <h2>원본 문제</h2>
-            <p>저장된 깨끗한 원본으로 다시 풉니다.</p>
-            <Button
-              variant="secondary"
-              disabled={
-                !question.regions.length || !question.imagePaths?.length || !!busy
-              }
-              busy={busy === "원본 다시 풀기"}
-              onClick={() =>
-                act("원본 다시 풀기", async () => {
-                  await onSolve([id]);
-                })
-              }
-            >
-              <RotateCcw size={15} />
-              원본 다시 풀기
-            </Button>
-            {!question.regions.length || !question.imagePaths?.length ? (
-              <p className="ww-help">저장된 원본 크롭이 없습니다. 문항 영역을 저장해 주세요.</p>
-            ) : null}
-            <details>
-              <summary>저장된 원본 보기</summary>
-              <div className="ww-original-images">
-                {question.regions.map((_, index) => (
-                  <SecureImage
-                    key={index}
-                    path={`questions/${id}/image/${index}`}
-                    alt={`${question.number}번 원본 문제${question.regions.length > 1 ? ` · 영역 ${index + 1}` : ""}`}
-                    loading="lazy"
-                  />
-                ))}
-              </div>
-            </details>
-          </section>
-          {mistake ? (
-            <section className="ww-history">
-              <h2>이 문제의 기록</h2>
-              <dl>
-                <div>
-                  <dt>원본 재풀이</dt>
-                  <dd>{mistake.reviewCount || 0}회</dd>
-                </div>
-                <div>
-                  <dt>원본 맞힘</dt>
-                  <dd>{mistake.correctCount || 0}회</dd>
-                </div>
-                <div>
-                  <dt>개념 이해</dt>
-                  <dd>
-                    {mistake.conceptState === "understood"
-                      ? "확인됨"
-                      : mistake.conceptState === "unregistered"
-                        ? "개념 미등록"
-                        : "복습 중"}
-                  </dd>
-                </div>
-                <div>
-                  <dt>다음 복습</dt>
-                  <dd>{dueLabel(mistake.dueAt)}</dd>
-                </div>
-              </dl>
-              {mistake.cause ? (
-                <p className="ww-user-note">
-                  <strong>내가 기록한 메모</strong>
-                  {mistake.cause}
-                </p>
-              ) : null}
-              <small>{dateLabel(mistake.createdAt)} 오답 등록</small>
-            </section>
-          ) : null}
-        </aside>
       </div>
     </section>
   );

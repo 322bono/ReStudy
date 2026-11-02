@@ -1,3 +1,17 @@
+.study-saved-concepts {padding:20px;margin-top:20px;line-height:1.8;}
+.study-saved-concepts details {border-top:1px solid #edf0f5;padding:12px 0;}
+.study-saved-concepts summary {font-weight:600;cursor:pointer;}
+.study-saved-concepts p {white-space:pre-wrap;}
+.study-saved-concepts ul {list-style:disc;padding-left:20px;}
+.study-options > summary {cursor:pointer;padding:12px 0;font-weight:600;}
+@media(max-width:600px){
+ .content-job-setup,.external-import,.bank-filters,.study-saved-concepts {padding:16px;}
+ .external-step textarea {width:100%;min-width:0;}
+ .content-job-setup select,.content-job-setup input,.external-step textarea,.study-options select {font-size:16px;}
+ .external-step .row > .button,.content-job-setup > .row > .button {flex:1 1 100%;min-height:44px;}
+ .study-saved-concepts .row > .button {white-space:normal;text-align:left;}
+ .bank-filters summary,.study-saved-concepts summary {min-height:44px;display:flex;align-items:center;}
+}
 .content-tabs {
   display: flex;
   gap: 24px;

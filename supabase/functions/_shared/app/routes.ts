@@ -8,7 +8,7 @@ import {answerSolve,answerStudy,createBankStudy,createReview,createSolve,createS
 const now=()=>new Date().toISOString(),uuid=()=>crypto.randomUUID();
 function numbers(text:string,max=1000){if(!text?.trim())return [];const out:number[]=[];for(const part of text.trim().split(/[\s,]+/)){const m=part.match(/^(\d{1,5})(?:[-~](\d{1,5}))?$/);if(!m)throw new AppError('번호 또는 범위를 확인하세요.');const a=+m[1],b=+(m[2]||m[1]);if(a<1||b<a||b-a>=max)throw new AppError('번호 범위를 확인하세요.');for(let n=a;n<=b;n++)out.push(n);if(out.length>max)throw new AppError('선택한 번호가 너무 많습니다.')}return [...new Set(out)];}
 const content=(s:any)=>({schemaVersion:1,concepts:s.concepts,items:s.bank,mappings:s.questions.map((q:any)=>({questionId:q.id,materialId:q.materialId,number:q.number,page:q.page,conceptIds:q.conceptIds,answer:q.answer||'',explanation:q.explanation||''})),materials:s.materials.map((m:any)=>({id:m.id,title:m.title,hash:m.hash}))});
-const solvePublic=(s:any)=>{const {questionSnapshots,...safe}=s;return {...safe,questions:(questionSnapshots||s.questions||[]).map(publicQuestion)}};
+const solvePublic=(s:any)=>{const {questionSnapshots,...safe}=s;return {...safe,questions:(questionSnapshots||s.questions||[]).map((q:any)=>{const {analysis,memorize,...original}=publicQuestion(q);return original;})}};
 const learnState=(s:any)=>({...s,questions:s.questions.filter((q:any)=>q.regions.every((r:any)=>s.pages.find((p:any)=>p.materialId===q.materialId&&p.number===r.page)?.kind!=='answers'))});
 async function saveStudy(ctx:Ctx,session:any){await put(ctx,'study_sessions',session.id,session);return publicStudy(session)}
 async function learningMutation(ctx:Ctx,kind:'study'|'solve',id:string,body:any,reveal=false){
@@ -82,18 +82,17 @@ export async function handle(ctx:Ctx,input:any):Promise<any>{
  if(route==='bank-items'&&method==='PUT'){const result=await importContent(ctx,{concepts:[],items:[{...b,id,userEdited:true}],mappings:[]});if(!result.valid)throw new AppError(result.errors.join('\n'));return result;}
  if(route==='bank-items'&&method==='DELETE'){const q=await row(ctx,'concept_questions',id);await put(ctx,'concept_questions',id,{...q.data,active:false,archived:true},{concept_id:q.concept_id,type:q.type,difficulty:q.difficulty,review_status:'archived'});return {archived:true};}
  if(route==='questions'&&action==='mapping'&&method==='PATCH')return importContent(ctx,{concepts:[],items:[],mappings:[{questionId:id,...b}]});
+ if(route==='questions'&&action==='review'&&method==='GET'){const s=learnState(await state(ctx,true)),q=s.questions.find((q:any)=>q.id===id);if(!q)throw new AppError('원본 문항을 찾을 수 없습니다.',404);return originalReview(q,s,await rows(ctx,'problem_similarities'));}
  if(route==='mistakes'){
   const s=await state(ctx,true);
-  if(id){const m=await row(ctx,'wrong_answers',id);if(method==='DELETE'){await put(ctx,'wrong_answers',id,{...m.data,archived:true},{problem_id:m.problem_id});return {archived:true};}return {mistake:{...value(m),questionId:m.problem_id},attempts:s.sessions.filter((ss:any)=>ss.answers?.[m.problem_id]).map((ss:any)=>({sessionId:ss.id,...ss.answers[m.problem_id],strokes:ss.drawings?.[m.problem_id]||[]}))};}
+  if(id){const m=await row(ctx,'wrong_answers',id);if(method==='DELETE'){await put(ctx,'wrong_answers',id,{...m.data,archived:true},{problem_id:m.problem_id});return {archived:true};}return {mistake:{...value(m),questionId:m.problem_id,resolved:m.data.resolved??m.data.lastResult==='correct'},attempts:s.sessions.filter((ss:any)=>ss.answers?.[m.problem_id]).map((ss:any)=>({sessionId:ss.id,...ss.answers[m.problem_id],strokes:ss.drawings?.[m.problem_id]||[]}))};}
   if(method!=='POST')return s.mistakes;
   const selected:any[]=[],ambiguous:number[]=[],missing:number[]=[];
   for(const qid of b.questionIds||[]){const q=s.questions.find((q:any)=>q.id===qid);if(!q)throw new AppError('선택한 원본 문항을 찾을 수 없습니다.');selected.push(q)}
   for(const num of numbers(String(b.numbers||''),200)){const found=s.questions.filter((q:any)=>q.materialId===b.materialId&&q.number===num);if(found.length>1)ambiguous.push(num);else if(!found.length)missing.push(num);else selected.push(found[0]);}
   let added=0;const unique=[...new Map(selected.map(q=>[q.id,q])).values()];
-  for(const q of unique){const exists=s.tables.wrong_answers.find((m:any)=>m.problem_id===q.id);if(exists&&!exists.data.archived)continue;const mid=exists?.id||uuid(),data={...(exists?.data||{}),id:mid,questionId:q.id,cause:String(b.cause||'').slice(0,500),createdAt:exists?.created_at||now(),dueAt:now(),reviewCount:exists?.data.reviewCount||0,correctCount:exists?.data.correctCount||0,streak:0,conceptState:q.conceptIds.length?'reviewing':'unregistered',archived:false};await put(ctx,'wrong_answers',mid,data,{problem_id:q.id});added++;}
-  const ready=unique.filter(q=>q.hasContent&&q.confirmed),unregistered=unique.length-ready.length;let reviewSessionId;
-  if(ready.length){const session=createReview(ready.map(q=>q.id),learnState(s));await saveStudy(ctx,session);reviewSessionId=session.id;}
-  return {added,ambiguous,missing,unregistered,reviewSessionId};
+  for(const q of unique){const exists=s.tables.wrong_answers.find((m:any)=>m.problem_id===q.id);if(exists&&!exists.data.archived&&!(exists.data.resolved??exists.data.lastResult==='correct'))continue;const mid=exists?.id||uuid(),data={...(exists?.data||{}),id:mid,questionId:q.id,cause:String(b.cause||'').slice(0,500),createdAt:exists?.created_at||now(),dueAt:now(),reviewCount:exists?.data.reviewCount||0,correctCount:exists?.data.correctCount||0,streak:0,conceptState:q.conceptIds.length?'reviewing':'unregistered',archived:false,resolved:false,resolvedAt:null};await put(ctx,'wrong_answers',mid,data,{problem_id:q.id});added++;}
+  return {added,ambiguous,missing,unregistered:unique.filter(q=>!q.hasContent).length,questionIds:unique.map(q=>q.id),autoAnalyzeQuestionIds:unique.filter(q=>!q.analysis&&!q.answer&&!q.explanation).map(q=>q.id)};
  }
  if(route==='lessons'){const s=learnState(await state(ctx,true));return saveStudy(ctx,createReview([b.questionId],s));}
  if(route==='study'){
@@ -104,7 +103,7 @@ export async function handle(ctx:Ctx,input:any):Promise<any>{
  if(route==='solve'){
   if(!id){const s=learnState(await state(ctx,true)),qs=(b.questionIds||[]).map((id:string)=>s.questions.find((q:any)=>q.id===id));if(!qs.length||qs.some((q:any)=>!q||!q.imagePaths?.length))throw new AppError('저장된 원본 크롭이 있는 문항을 선택하세요.');const session=createSolve(qs);await put(ctx,'solve_sessions',session.id,session);return solvePublic(session);}
   const ss=value(await row(ctx,'solve_sessions',id));
-  if(action==='answer-key'){const q=ss.questionSnapshots.find((q:any)=>q.id===p[3]);if(!q)throw new AppError('이 풀이의 문항이 아닙니다.');const s=learnState(await state(ctx,true)),relations=await rows(ctx,'problem_similarities');return {available:!!q.answer,answer:q.answer||'',explanation:q.explanation||'',review:originalReview(q,s,relations)};}
+  if(action==='answer-key'){const q=ss.questionSnapshots.find((q:any)=>q.id===p[3]);if(!q)throw new AppError('이 풀이의 문항이 아닙니다.');const s=learnState(await state(ctx,true)),relations=await rows(ctx,'problem_similarities'),review=originalReview(q,s,relations);return {available:!!review.answer,answer:review.answer,explanation:review.explanation,review};}
   if(action==='answer'||action==='drawing')return learningMutation(ctx,'solve',id,{...b,drawingOnly:action==='drawing'});
   return solvePublic(ss);
  }

@@ -5,27 +5,26 @@ import { validateOutput, type TaskKind, type Json } from "./schemas.ts";
 export type Mode = "round_robin" | "nvidia_first" | "gemini_first" | "nvidia_only" | "gemini_only";
 export type ProviderState = { provider: Provider; enabled: boolean; model: string; access: "unknown" | "free_confirmed" | "paid"; status: string; cooldown_until?: string; credentialId?:string; label?:string; quotaGroup?:string; selectedModels?:string[]; modelStates?:Record<string,Json>; quotaCooldowns?:Record<string,string>; [key: string]: unknown };
 export type TaskInput = { kind: TaskKind; prompt: string; sourceIds: string[]; count?: number; images?: ImageInput[]; types?: string[]; difficulty?: string;allowedPages?:number[] };
-export type RouterContext = { providers: ProviderState[]; mode: Mode; rotationIndex: number; allowPaid: boolean; preferredProvider?: Provider; preferredModel?:string; getKey(provider: Provider,credentialId?:string): Promise<string>; updateProvider(provider: Provider, changes: Json,credentialId?:string,model?:string): Promise<void>; log(entry: Json): Promise<void>; fetch?: typeof fetch; now?: () => number; sleep?: (ms: number) => Promise<void> };
+export type RouterContext = { providers: ProviderState[]; mode: Mode; rotationIndex: number; allowPaid: boolean; preferredProvider?: Provider; preferredModel?:string; deadline?:number; getKey(provider: Provider,credentialId?:string): Promise<string>; reserveRequest?(provider:Provider,group:string):Promise<{granted:boolean;retryAt?:number}>; updateProvider(provider: Provider, changes: Json,credentialId?:string,model?:string): Promise<void>; log(entry: Json): Promise<void>; fetch?: typeof fetch; now?: () => number; sleep?: (ms: number) => Promise<void> };
 export type TaskResult = { status: "succeeded"; provider: Provider; model: string; output: Json; usage: Record<string, number>; duration_ms: number } | { status: "paused"; reason: "no_available_provider" | "all_providers_failed"; retryAt?: number;lastError?:string };
 export class SuccessfulTaskPersistenceError extends Error {
   constructor(public result: Extract<TaskResult, { status: "succeeded" }>) { super("provider_result_persistence_failed"); }
 }
 export async function runTask(input: TaskInput, context: RouterContext): Promise<TaskResult> {
   const now = context.now ?? Date.now; const sleep = context.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
-  // Finish before the two-minute DB lease, leaving time to persist the result.
-  const deadline=now()+110000;
+  // One complete inference window fits inside the free Edge worker's 150s wall
+  // clock. The durable DB lease is 180s; fallback resumes in another invocation
+  // instead of repeatedly aborting calls against a shrinking time allowance.
+  const deadline=Math.min(now()+125000,context.deadline??Infinity),inferenceTimeout=110000;
   let order: Provider[] = context.mode === "gemini_first" || context.mode === "gemini_only" ? ["gemini", "nvidia"] : ["nvidia", "gemini"];
   if (context.mode === "round_robin" && context.rotationIndex % 2 === 1) order.reverse();
   if (context.mode.endsWith("_only")) order = order.slice(0, 1);
   if (context.preferredProvider && !context.mode.endsWith("_only")) order = [context.preferredProvider, ...order.filter((provider) => provider !== context.preferredProvider)];
   let tried = false,lastError:string|undefined; const retryTimes: number[] = [], blockedKeys=new Set<string>(),groupCooldowns=new Map<string,number>();
   const rotate=<T>(values:T[],index:number)=>values.length?[...values.slice(index%values.length),...values.slice(0,index%values.length)]:[];
-  const eligible=(state:ProviderState,id:string)=>{const m=modelFor(state.provider,id);return state.enabled&&state.status!=='auth_error'&&(context.allowPaid||state.access==='free_confirmed')&&m?.text&&m.structured&&(!input.images?.length||m.image)&&input.prompt.length<=m.maxInputChars;};
   for (const provider of order) {
     const slots=context.providers.filter(s=>s.provider===provider);
-    const hasAlternative=order.slice(order.indexOf(provider)+1).some(p=>context.providers.some(s=>s.provider===p&&(s.selectedModels??[s.model]).some(m=>eligible(s,m))));
-    const providerDeadline=hasAlternative?Math.min(deadline,now()+55000):deadline;
-    providerCandidates:for(const state of rotate(slots,Math.floor(context.rotationIndex/2))){
+    for(const state of rotate(slots,Math.floor(context.rotationIndex/2))){
     const keyId=state.credentialId??provider,groupId=`${provider}:${state.quotaGroup??'shared'}`;
     let selected=rotate(state.selectedModels??[state.model],Math.floor(context.rotationIndex/(2*Math.max(1,slots.length))));
     if(context.preferredModel&&selected.includes(context.preferredModel))selected=[context.preferredModel,...selected.filter(m=>m!==context.preferredModel)];
@@ -39,14 +38,24 @@ export async function runTask(input: TaskInput, context: RouterContext): Promise
     let key: string;
     try { key = await context.getKey(provider,state.credentialId); } catch { blockedKeys.add(keyId);await context.updateProvider(provider, { status: "key_error", last_error: "credential_unavailable" },state.credentialId); continue; }
     for (let attempt = 0; attempt < 2; attempt++) {
-      if(now()+1000>=deadline)return {status:'paused',reason:'all_providers_failed',lastError,retryAt:now()+30000};
-      if(now()+1000>=providerDeadline)break providerCandidates;
+      if(now()+inferenceTimeout+5000>deadline)return {status:'paused',reason:'all_providers_failed',lastError,retryAt:now()+5000};
+      if(context.reserveRequest){
+        // The reservation is shared by all keys/models in this account group.
+        // A denied reservation never causes a key switch to bypass the limit.
+        let reservation=await context.reserveRequest(provider,state.quotaGroup??'shared');
+        while(!reservation.granted){
+          const retryAt=reservation.retryAt??now()+1500,wait=Math.max(1,retryAt-now());
+          if(now()+wait+inferenceTimeout+5000>deadline)return {status:'paused',reason:'all_providers_failed',lastError:lastError??'rate_limited',retryAt};
+          await sleep(wait);
+          reservation=await context.reserveRequest(provider,state.quotaGroup??'shared');
+        }
+      }
       const start = now();
       let successful: Extract<TaskResult, { status: "succeeded" }> | undefined;
       try {
-        const response = await generate(provider, model.id, key, input, context.fetch ?? fetch, now(),Math.max(1000,Math.min(input.kind==='restudy_v1'?55000:20000,providerDeadline-now()-1000)));
+        const response = await generate(provider, model.id, key, input, context.fetch ?? fetch, now(),inferenceTimeout);
         let output: Json;
-        try { output = validateOutput(input.kind, response.raw, input.sourceIds, input.count); } catch { throw new ProviderError("invalid_response"); }
+        try { output = validateOutput(input.kind, response.raw, input.sourceIds, input.count); } catch { throw new ProviderError("invalid_response",undefined,undefined,'group','output_schema_invalid'); }
         if(input.kind==='restudy_v1'&&input.allowedPages&&(output.questions.some((q:Json)=>q.source_pages.some((n:number)=>!input.allowedPages!.includes(n)))||output.problem_analyses.some((q:Json)=>!input.allowedPages!.includes(q.pdf_page))))throw new ProviderError('invalid_response');
         if (input.kind !== "analyze_problem" && input.kind!=='restudy_v1' && output.questions.some((question: Json) => input.types?.length && !input.types.includes(question.type) || input.difficulty && input.difficulty !== question.difficulty)) throw new ProviderError("invalid_response");
         const duration_ms = Math.max(0, now() - start);
@@ -56,8 +65,8 @@ export async function runTask(input: TaskInput, context: RouterContext): Promise
         const failure = error instanceof ProviderError ? error : new ProviderError("provider_error");
         lastError=failure.code;
         await context.log({ provider,credential_id:state.credentialId,key_label:state.label, model: model.id, kind: input.kind, success: false, attempt: attempt + 1, duration_ms: Math.max(0, now() - start), error: failure.code, diagnostic:failure.diagnostic??null,http_status: failure.status ?? null });
-        if (["provider_error", "network_error"].includes(failure.code) && attempt === 0) { await sleep(1000); continue; }
-        const until = failure.retryAt ?? (["provider_error", "network_error","timeout"].includes(failure.code) ? now() + 5000 : now()+600000);
+        if (["provider_error", "network_error","invalid_response"].includes(failure.code) && attempt === 0) { await sleep(1000); continue; }
+        const until = failure.retryAt ?? (["provider_error", "network_error","timeout","invalid_response"].includes(failure.code) ? now() + 5000 : now()+600000);
         if (until) retryTimes.push(until);
         if(failure.code==='auth_error')blockedKeys.add(keyId);
         if(failure.code==='rate_limited')groupCooldowns.set(failure.quotaScope==='model'?`${groupId}:${model.id}`:groupId,until);

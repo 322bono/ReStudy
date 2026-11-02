@@ -51,7 +51,7 @@ export type Page = {
   items?: TextItem[];
 };
 export type Question = {
-  mergedInto?:string|null;
+  mergedInto?: string | null;
   id: string;
   materialId: string;
   number: number;
@@ -77,6 +77,8 @@ export type Mistake = {
   reviewCount: number;
   correctCount: number;
   lastResult?: Result;
+  resolved?: boolean;
+  resolvedAt?: string | null;
   conceptState: "unregistered" | "reviewing" | "understood";
   conceptAccuracy?: number;
 };

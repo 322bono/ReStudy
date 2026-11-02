@@ -24,10 +24,12 @@ export function UploadPreparation({
   files,
   options,
   onChange,
+  kind,
 }: {
   files: File[];
   options: Record<string, FileOptions>;
   onChange: (key: string, value: FileOptions) => void;
+  kind?: string;
 }) {
   const [selected, setSelected] = useState(0),
     [page, setPage] = useState(1),
@@ -226,7 +228,7 @@ export function UploadPreparation({
                 })
               }
             >
-              <option value="auto">자체 OCR·문항 인식</option>
+              <option value="auto">{kind === "교과서" ? "본문·목차 추출 (필요한 페이지만 OCR)" : "자체 OCR·문항 인식"}</option>
               <option value="external">외부 AI 결과 가져오기</option>
               <option value="later">나중에 분석</option>
             </select>
@@ -257,7 +259,9 @@ export function UploadPreparation({
           <p className="field-help">
             입력 범위는 PDF의 실제 페이지입니다. 원본 전체를 비공개로 저장하고,
             선택한 범위만 처리합니다.
-            OCR·목차·문항 인식에는 외부 AI API를 호출하지 않습니다.
+            {kind === "교과서" ? "교과서는 PDF의 본문 텍스트를 우선 사용하고, 스캔된 페이지만 OCR로 읽습니다. 문항 번호는 자동으로 찾지 않습니다." : "OCR·목차·문항 인식에는 외부 AI API를 호출하지 않습니다."}
+            앱의 파일 용량 제한은 없습니다. 큰 원본은 나누어 비공개로 저장하며,
+            실제 업로드 가능 용량은 계정의 저장 공간과 기기 메모리에 따라 달라집니다.
           </p>
         </div>
       </div>

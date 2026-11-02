@@ -39,7 +39,7 @@ export default function Bank({
     [mode, setMode] = useState(initial.mode || "quiz"),
     [busy, setBusy] = useState(false),
     [selected, setSelected] = useState<string[]>([]),
-    [showPending, setShowPending] = useState(initial.showPending === true),
+    [showPending, setShowPending] = useState(initial.showPending !== false),
     [search, setSearch] = useState(""),
     [page, setPage] = useState(0),
     [inspection, setInspection] = useState<any>();
@@ -248,7 +248,7 @@ export default function Bank({
             </fieldset>
           </div>
         </details>
-        <div className="bank-filter-row">
+        <details><summary>문제 형식·목적·난이도</summary><div className="bank-filter-row">
           <fieldset>
             <legend>형식</legend>
             {Object.entries({
@@ -299,10 +299,10 @@ export default function Bank({
               ),
             )}
           </fieldset>
-        </div>
+        </div></details>
       </section>
       <div className="toolbar">
-        <span>조건에 맞는 문항 {active.length}개</span>
+        <span>조건에 맞는 문항 {active.length}개 · 학습 가능 {active.filter((i:any)=>i.active).length}개 · 검토 대기 {active.filter((i:any)=>!i.active).length}개</span>
         <input
           aria-label="문제 은행 검색"
           placeholder="문항 검색"

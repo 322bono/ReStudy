@@ -25,3 +25,23 @@ test('request failure diagnostics expose fixed categories without provider messa
  expect(requestDiagnostic({error:{message:'Unknown name "store"'}})).toBe('store_rejected');
  expect(requestDiagnostic({error:{message:'private arbitrary message'}})).toBe('invalid_argument');
 });
+test('only removes a complete JSON code fence or BOM without repairing incomplete or ambiguous output',async()=>{
+ const transport=(content:string)=>(async()=>new Response(JSON.stringify({choices:[{message:{content},finish_reason:'stop'}]})))as typeof fetch;
+ const input={kind:'restudy_v1' as const,prompt:'fixture'};
+ expect((await generate('nvidia','nvidia/nemotron-3-super-120b-a12b','test-only',input,transport('\uFEFF```json\n{"chapters":[]}\n```'),Date.now())).raw).toEqual({chapters:[]});
+ await expect(generate('nvidia','nvidia/nemotron-3-super-120b-a12b','test-only',input,transport('Result: {"chapters":[]}'),Date.now())).rejects.toMatchObject({code:'invalid_response',diagnostic:'json_invalid'});
+});
+test('classifies a response body timeout as a timeout rather than invalid JSON',async()=>{
+ const transport=(async()=>new Response(new ReadableStream({start(controller){controller.error(new DOMException('private upstream message','TimeoutError'));}})))as typeof fetch;
+ await expect(generate('gemini','gemini-3.6-flash','test-only',{kind:'restudy_v1',prompt:'fixture'},transport,Date.now())).rejects.toMatchObject({code:'timeout'});
+});
+test('Gemini receives the supported structure for standard content rather than unconstrained JSON mode',async()=>{
+ const transport=(async(_url,init)=>{
+  const config=JSON.parse(String(init?.body)).generationConfig;
+  expect(config.responseFormat.text.schema.properties.schema_version.enum).toEqual(['restudy.v1']);
+  expect(config.responseFormat.text.schema.properties.questions.items.allOf).toBeUndefined();
+  expect(config.temperature).toBeUndefined();
+  return new Response(JSON.stringify({candidates:[{content:{parts:[{text:'{}'}]},finishReason:'STOP'}]}));
+ })as typeof fetch;
+ expect((await generate('gemini','gemini-3.6-flash','test-only',{kind:'restudy_v1',prompt:'fixture'},transport,Date.now())).raw).toEqual({});
+});

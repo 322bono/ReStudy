@@ -20,6 +20,17 @@ async function database(skipSlots=false){
   return db;
 }
 afterEach(async()=>{await db?.close()});
+test('shared provider pacing coordinates keys and isolates owners without exposing request clocks',async()=>{
+ const c=await database();
+ await c.exec(`set role service_role`);
+ const reserve=()=>c.query<{r:any}>('select reserve_ai_provider_request($1,$2,$3) r',[owner,'nvidia','shared']);
+ expect((await reserve()).rows[0].r.granted).toBe(true);
+ const second=(await reserve()).rows[0].r;expect(second.granted).toBe(false);expect(Date.parse(second.retry_at)).toBeGreaterThan(Date.now());
+ expect((await c.query<{r:any}>('select reserve_ai_provider_request($1,$2,$3) r',[other,'nvidia','shared'])).rows[0].r.granted).toBe(true);
+ await c.exec(`reset role;set role authenticated;set request.jwt.claim.sub='${owner}'`);
+ await expect(reserve()).rejects.toThrow(/permission/);
+ await expect(c.query('select * from ai_provider_request_slots')).rejects.toThrow(/permission/);
+});
 test('manual multi-crop edits roll back together and merging preserves old answer/history IDs',async()=>{
  const c=await database(),doc='33000000-0000-4000-8000-000000000003',a='43000000-0000-4000-8000-000000000001',b='43000000-0000-4000-8000-000000000002';
  await c.query('insert into documents(id,user_id,title,subject,kind,data)values($1,$2,$3,$4,$5,$6)',[doc,owner,'수동 검사','수학','문제집',{pageCount:2}]);

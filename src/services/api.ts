@@ -1,4 +1,4 @@
-import { edgeCall } from "./supabase";
+import { currentUser, edgeCall } from "./supabase";
 export async function cloudApi<T = any>(
   path: string,
   method = "GET",
@@ -50,15 +50,35 @@ export async function cloudApi<T = any>(
   return edgeCall("app", { path, method, body });
 }
 const assetCache = new Map<string, { url: string; until: number }>();
+const assetPending = new Map<string, Promise<string>>();
+let assetGeneration = 0;
 export async function assetUrl(path: string) {
-  const cached = assetCache.get(path);
+  const generation = assetGeneration;
+  const owner = (await currentUser()).id;
+  const key = `${owner}:${path}`;
+  const cached = assetCache.get(key);
   if (cached && cached.until > Date.now()) return cached.url;
-  const { url } = await cloudApi<{ url: string }>("asset", "POST", { path });
-  assetCache.set(path, { url, until: Date.now() + 120000 });
-  return url;
+  const pending = assetPending.get(key);
+  if (pending) return pending;
+  const loading = (async () => {
+    const original = /^\/?(?:api\/)?materials\/([^/?]+)\/file$/.exec(path);
+    const blob = original ? await (await import("./documents")).loadOriginalBlob(original[1]) : undefined;
+    const result = blob ? undefined : await cloudApi<{ url: string }>("asset", "POST", { path });
+    if (generation !== assetGeneration || (await currentUser()).id !== owner) throw new Error("로그인 상태가 변경되어 원본 열기를 중단했습니다.");
+    const url = blob ? URL.createObjectURL(blob) : result!.url;
+    if (cached?.url.startsWith("blob:")) URL.revokeObjectURL(cached.url);
+    assetCache.set(key, { url, until: blob ? Infinity : Date.now() + 120000 });
+    return url;
+  })();
+  assetPending.set(key, loading);
+  try { return await loading; }
+  finally { if (assetPending.get(key) === loading) assetPending.delete(key); }
 }
 export function clearAssetCache() {
+  assetGeneration++;
+  for (const { url } of assetCache.values()) if (url.startsWith("blob:")) URL.revokeObjectURL(url);
   assetCache.clear();
+  assetPending.clear();
 }
 export async function download(path: string) {
   const file = await cloudApi<{

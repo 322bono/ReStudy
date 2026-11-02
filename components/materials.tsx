@@ -136,6 +136,7 @@ export function UploadDialog({
       )}
       {files.length > 0 && (
         <UploadPreparation
+          kind={kind}
           files={files}
           options={fileOptions}
           onChange={(key, value) =>

@@ -104,26 +104,85 @@ const studyBody = (extra: any = {}) => ({
 });
 afterEach(() => vi.useRealTimers());
 
-describe('shared question bank',()=>{
- it('uses one saved multi-concept item once and updates original understanding separately',()=>{
-  const state=fixture(2);state.bank=[{...state.bank[0],conceptIds:['c0','c1'],kind:'mcq',purpose:'concept',chapterId:'ch1'}];
-  const session=createReview(['q'],state);expect(session.items).toHaveLength(1);expect(session.conceptIds).toEqual(['c0','c1']);
-  const result=answerStudy(session,{itemId:session.items[0].id,response:'옳은 답'},state);
-  expect(result.session.understoodConceptIds).toEqual(['c0','c1']);expect(result.mistakes[0].conceptState).toBe('understood');expect(result.mistakes[0].reviewCount).toBe(0);
- });
- it('builds a bank set from stored kind/purpose/concepts without generating missing items',()=>{
-  const state=fixture(2);state.bank[0]={...state.bank[0],kind:'mcq',purpose:'concept',chapterId:'ch1',conceptIds:['c0','c1']};
-  const session=createBankStudy({conceptIds:['c1'],purposes:['concept'],kinds:['mcq'],count:20,order:'unattempted',mode:'check'},state);
-  expect(session.items).toHaveLength(1);expect(session.notice).toContain('1');expect(session.items[0].bankItemId).toBe(state.bank[0].id);
-  expect(publicStudy(session).items[0].answer).toBeUndefined();
- });
- it('offers human review for a different short-answer phrasing before recording a wrong answer',()=>{
-  const state=fixture();state.bank[0]={...state.bank[0],type:'단답형',choices:[],answer:'치역과 공역이 같다',acceptedAnswers:['치역=공역']};
-  const session=createBankStudy({count:1,order:'sequential',mode:'quiz'}, {...state,bank:[state.bank[0]]});
-  const pending=answerStudy(session,{itemId:session.items[0].id,response:'공역이 치역과 일치한다'},state);
-  expect(pending.attempt).toBeUndefined();expect(pending.session.items[0].waitingSelfGrade).toBe(true);expect(publicStudy(pending.session).items[0].answer).toBe('치역과 공역이 같다');
-  const graded=answerStudy(pending.session,{itemId:session.items[0].id,selfGrade:'correct'},state);expect(graded.attempt.result).toBe('correct');
- });
+describe("shared question bank", () => {
+  it("uses one saved multi-concept item once and updates original understanding separately", () => {
+    const state = fixture(2);
+    state.bank = [
+      {
+        ...state.bank[0],
+        conceptIds: ["c0", "c1"],
+        kind: "mcq",
+        purpose: "concept",
+        chapterId: "ch1",
+      },
+    ];
+    const session = createReview(["q"], state);
+    expect(session.items).toHaveLength(1);
+    expect(session.conceptIds).toEqual(["c0", "c1"]);
+    const result = answerStudy(
+      session,
+      { itemId: session.items[0].id, response: "옳은 답" },
+      state,
+    );
+    expect(result.session.understoodConceptIds).toEqual(["c0", "c1"]);
+    expect(result.mistakes[0].conceptState).toBe("understood");
+    expect(result.mistakes[0].reviewCount).toBe(0);
+  });
+  it("builds a bank set from stored kind/purpose/concepts without generating missing items", () => {
+    const state = fixture(2);
+    state.bank[0] = {
+      ...state.bank[0],
+      kind: "mcq",
+      purpose: "concept",
+      chapterId: "ch1",
+      conceptIds: ["c0", "c1"],
+    };
+    const session = createBankStudy(
+      {
+        conceptIds: ["c1"],
+        purposes: ["concept"],
+        kinds: ["mcq"],
+        count: 20,
+        order: "unattempted",
+        mode: "check",
+      },
+      state,
+    );
+    expect(session.items).toHaveLength(1);
+    expect(session.notice).toContain("1");
+    expect(session.items[0].bankItemId).toBe(state.bank[0].id);
+    expect(publicStudy(session).items[0].answer).toBeUndefined();
+  });
+  it("offers human review for a different short-answer phrasing before recording a wrong answer", () => {
+    const state = fixture();
+    state.bank[0] = {
+      ...state.bank[0],
+      type: "단답형",
+      choices: [],
+      answer: "치역과 공역이 같다",
+      acceptedAnswers: ["치역=공역"],
+    };
+    const session = createBankStudy(
+      { count: 1, order: "sequential", mode: "quiz" },
+      { ...state, bank: [state.bank[0]] },
+    );
+    const pending = answerStudy(
+      session,
+      { itemId: session.items[0].id, response: "공역이 치역과 일치한다" },
+      state,
+    );
+    expect(pending.attempt).toBeUndefined();
+    expect(pending.session.items[0].waitingSelfGrade).toBe(true);
+    expect(publicStudy(pending.session).items[0].answer).toBe(
+      "치역과 공역이 같다",
+    );
+    const graded = answerStudy(
+      pending.session,
+      { itemId: session.items[0].id, selfGrade: "correct" },
+      state,
+    );
+    expect(graded.attempt.result).toBe("correct");
+  });
 });
 
 describe("prepared concept review", () => {
@@ -270,7 +329,7 @@ describe("material selection and honest grading", () => {
       createStudy(studyBody({ count: 1 }), state).items[0].bankItemId,
     ).toBe("c0-b1");
   });
-  it("prioritizes weak concepts and includes only fully selected source scopes", () => {
+  it("prioritizes weak concepts and includes saved items with a selected source even when other origins exist", () => {
     const state = fixture(2);
     state.results = [
       {
@@ -285,7 +344,36 @@ describe("material selection and honest grading", () => {
     );
     for (const item of state.bank)
       item.sources.push({ materialId: "other-doc", page: 1 });
+    expect(createStudy(studyBody(), state).items).toHaveLength(4);
+    for (const item of state.bank)
+      item.sources = [{ materialId: "other-doc", page: 1 }];
     expect(() => createStudy(studyBody(), state)).toThrow("사전 문항");
+  });
+  it("supports all types and levels and valid PDF sources before page processing while excluding known answer pages", () => {
+    const state = fixture();
+    state.pages = [];
+    state.bank[0].type = "OX";
+    state.bank[0].difficulty = "기본";
+    expect(
+      createStudy(studyBody({ type: "전체", difficulty: "전체" }), state).items,
+    ).toHaveLength(2);
+    state.pages = [{ materialId: "doc", number: 1, kind: "answers" }];
+    expect(() =>
+      createStudy(
+        studyBody({
+          type: "전체",
+          difficulty: "전체",
+          materials: [{ id: "doc" }],
+        }),
+        state,
+      ),
+    ).toThrow("사전 문항");
+    expect(() =>
+      createStudy(studyBody({ materials: [{ id: "doc", pages: "3" }] }), {
+        ...state,
+        pages: [],
+      }),
+    ).toThrow("페이지");
   });
   it("rejects answer pages, archived or mixed-subject documents and invalid ranges", () => {
     const state = fixture();
@@ -470,19 +558,152 @@ describe("material selection and honest grading", () => {
 });
 
 describe("saved clean original solving", () => {
-  it('links every part of a single-original preparation without modifying stored concept mappings',()=>{
-    const state=fixture(),q=state.questions[0];
-    const links=preparedBankLinks([{id:'j',task_type:'problem',document_id:'doc',first_target:'q',second_target:null},{id:'multi',task_type:'problem',document_id:'doc',first_target:'q',second_target:'q2'},{id:'foreign',task_type:'problem',document_id:'another-doc',first_target:'q'}],[{job_id:'j',kind:'question',actual_id:'prepared'},{job_id:'multi',kind:'question',actual_id:'ambiguous'},{job_id:'foreign',kind:'question',actual_id:'not-owned-source'}],state.questions);
-    expect([...links]).toEqual([['prepared',['q']]]);
-    state.concepts.push({...structuredClone(state.concepts[0]),id:'new-concept',name:'후속 분할 개념'});
-    state.bank.push({...structuredClone(state.bank[0]),id:'prepared',conceptId:'new-concept',purpose:'practice',preparedQuestionIds:links.get('prepared')});
-    expect(relatedOriginalIds(state.bank.at(-1),state.questions)).toEqual(['q']);
-    const review=originalReview(q,state);
-    expect(review.bankCounts.practice).toBe(1);expect(review.concepts.map(c=>c.id)).toContain('new-concept');
-    const session=createBankStudy({...review.bankScope,purposes:['practice'],count:1},state);
-    expect(session.items[0].bankItemId).toBe('prepared');expect(session.linkedQuestionIds).toEqual(['q']);
-    expect(q.conceptIds).toEqual(['c0']);
-    expect(()=>createBankStudy({originalId:'missing',count:1},state)).toThrow('원본');
+  it("keeps wrong originals pending, archives correct originals without deleting analysis, and reopens on a later wrong attempt", () => {
+    const state = fixture();
+    state.questions[0].analysis = {
+      answer: "저장된 정답",
+      explanation: "저장된 단계별 해설",
+      key_point: "핵심",
+      solution_steps: ["조건 확인", "계산"],
+      memorize: ["필수 공식"],
+      mistakes: [],
+    };
+    const before = structuredClone(state);
+    const correct = answerSolve(
+      createSolve(state.questions),
+      { questionId: "q", result: "correct" },
+      state,
+    );
+    expect(correct.mistakes[0]).toMatchObject({
+      id: "mistake",
+      resolved: true,
+      archived: false,
+      lastResult: "correct",
+      reviewCount: 1,
+      correctCount: 1,
+    });
+    expect(correct.mistakes[0].resolvedAt).toBeTruthy();
+    expect(correct.session.questionSnapshots[0].analysis).toEqual(
+      before.questions[0].analysis,
+    );
+    state.mistakes = correct.mistakes;
+    const wrong = answerSolve(
+      createSolve(state.questions),
+      { questionId: "q", result: "wrong" },
+      state,
+    );
+    expect(wrong.mistakes[0]).toMatchObject({
+      resolved: false,
+      resolvedAt: null,
+      reviewCount: 2,
+      correctCount: 1,
+    });
+    expect(state.questions[0].analysis).toEqual(before.questions[0].analysis);
+    expect(correct.session.answers.q.result).toBe("correct");
+    expect(wrong.session.answers.q.result).toBe("wrong");
+  });
+  it("reuses saved original explanation with four-group data and keeps unreviewed check questions out of learning", () => {
+    const state = fixture();
+    delete state.questions[0].answer;
+    delete state.questions[0].explanation;
+    state.questions[0].analysis = {
+      answer: "분석 정답",
+      explanation: "분석 해설",
+      solution_steps: ["저장된 단계"],
+      memorize: ["암기"],
+      key_point: "핵심",
+    };
+    state.bank = state.bank.map((item) => ({
+      ...item,
+      review_status: "needs_review",
+      active: false,
+    }));
+    const session = createSolve(state.questions);
+    state.questions[0].analysis.explanation = "나중에 수정됨";
+    const review = originalReview(session.questionSnapshots[0], state);
+    expect(review).toMatchObject({
+      answer: "분석 정답",
+      explanation: "분석 해설",
+      solutionSteps: ["저장된 단계"],
+      hasSavedAnalysis: true,
+      memorize: ["암기"],
+      bankCounts: { concept: 0, pending: 2 },
+    });
+    expect(review.concepts).toHaveLength(1);
+    expect(review.questions).toHaveLength(2);
+    expect(
+      review.questions.every(
+        (item: any) =>
+          item.active === false && item.reviewStatus === "needs_review",
+      ),
+    ).toBe(true);
+    expect(() => createBankStudy({ originalId: "q", count: 5 }, state)).toThrow(
+      "저장 문항",
+    );
+    expect(session.answers).toEqual({});
+  });
+  it("links every part of a single-original preparation without modifying stored concept mappings", () => {
+    const state = fixture(),
+      q = state.questions[0];
+    const links = preparedBankLinks(
+      [
+        {
+          id: "j",
+          task_type: "problem",
+          document_id: "doc",
+          first_target: "q",
+          second_target: null,
+        },
+        {
+          id: "multi",
+          task_type: "problem",
+          document_id: "doc",
+          first_target: "q",
+          second_target: "q2",
+        },
+        {
+          id: "foreign",
+          task_type: "problem",
+          document_id: "another-doc",
+          first_target: "q",
+        },
+      ],
+      [
+        { job_id: "j", kind: "question", actual_id: "prepared" },
+        { job_id: "multi", kind: "question", actual_id: "ambiguous" },
+        { job_id: "foreign", kind: "question", actual_id: "not-owned-source" },
+      ],
+      state.questions,
+    );
+    expect([...links]).toEqual([["prepared", ["q"]]]);
+    state.concepts.push({
+      ...structuredClone(state.concepts[0]),
+      id: "new-concept",
+      name: "후속 분할 개념",
+    });
+    state.bank.push({
+      ...structuredClone(state.bank[0]),
+      id: "prepared",
+      conceptId: "new-concept",
+      purpose: "practice",
+      preparedQuestionIds: links.get("prepared"),
+    });
+    expect(relatedOriginalIds(state.bank.at(-1), state.questions)).toEqual([
+      "q",
+    ]);
+    const review = originalReview(q, state);
+    expect(review.bankCounts.practice).toBe(1);
+    expect(review.concepts.map((c) => c.id)).toContain("new-concept");
+    const session = createBankStudy(
+      { ...review.bankScope, purposes: ["practice"], count: 1 },
+      state,
+    );
+    expect(session.items[0].bankItemId).toBe("prepared");
+    expect(session.linkedQuestionIds).toEqual(["q"]);
+    expect(q.conceptIds).toEqual(["c0"]);
+    expect(() =>
+      createBankStudy({ originalId: "missing", count: 1 }, state),
+    ).toThrow("원본");
   });
   it("opens saved private crops including unconfirmed OCR candidates and freezes clean source/answer data", () => {
     const state = fixture();
@@ -500,7 +721,10 @@ describe("saved clean original solving", () => {
       status: "active",
       version: 0,
     });
-      expect(createSolve([{...state.questions[0],confirmed:false}]).questionSnapshots[0].confirmed).toBe(false);
+    expect(
+      createSolve([{ ...state.questions[0], confirmed: false }])
+        .questionSnapshots[0].confirmed,
+    ).toBe(false);
     expect(() =>
       createSolve([{ ...state.questions[0], imagePaths: [] }]),
     ).toThrow("저장");
@@ -513,18 +737,52 @@ describe("saved clean original solving", () => {
       ]),
     ).toThrow("경로");
   });
-  it('reveals prepared concepts and distinguishes stored similarity from shared-concept overlap',()=>{
-    const state=fixture();state.concepts[0].memorize=['공역 확인'];
-    state.questions.push({...structuredClone(state.questions[0]),id:'other',number:48,page:2,chapterId:'chapter'});
-    state.mistakes.push({id:'m2',questionId:'other'});
-    const review=originalReview(state.questions[0],state);
-    expect(review.memorize).toEqual(['공역 확인']);expect(review.bankCounts.concept).toBe(2);
-    expect(review.similar[0]).toMatchObject({id:'other',basis:'shared_concepts',score:1});
-    state.bank.push({...structuredClone(state.bank[0]),id:'pending',active:false,review_status:'needs_review'});
-    expect(originalReview(state.questions[0],state).bankCounts).toMatchObject({concept:2,pending:1});
-    const saved=originalReview(state.questions[0],state,[{document_id:'doc',a:{q_number:'47',pdf_page:1},b:{q_number:'48',pdf_page:2},score:.8,reason:'조건 비교'}]);
-    expect(saved.similar[0]).toMatchObject({basis:'prepared_similarity',score:.8,reason:'조건 비교'});
-    expect(originalReview({...state.questions[0],conceptIds:[]},state).concepts).toEqual([]);
+  it("reveals prepared concepts and distinguishes stored similarity from shared-concept overlap", () => {
+    const state = fixture();
+    state.concepts[0].memorize = ["공역 확인"];
+    state.questions.push({
+      ...structuredClone(state.questions[0]),
+      id: "other",
+      number: 48,
+      page: 2,
+      chapterId: "chapter",
+    });
+    state.mistakes.push({ id: "m2", questionId: "other" });
+    const review = originalReview(state.questions[0], state);
+    expect(review.memorize).toEqual(["공역 확인"]);
+    expect(review.bankCounts.concept).toBe(2);
+    expect(review.similar[0]).toMatchObject({
+      id: "other",
+      basis: "shared_concepts",
+      score: 1,
+    });
+    state.bank.push({
+      ...structuredClone(state.bank[0]),
+      id: "pending",
+      active: false,
+      review_status: "needs_review",
+    });
+    expect(originalReview(state.questions[0], state).bankCounts).toMatchObject({
+      concept: 2,
+      pending: 1,
+    });
+    const saved = originalReview(state.questions[0], state, [
+      {
+        document_id: "doc",
+        a: { q_number: "47", pdf_page: 1 },
+        b: { q_number: "48", pdf_page: 2 },
+        score: 0.8,
+        reason: "조건 비교",
+      },
+    ]);
+    expect(saved.similar[0]).toMatchObject({
+      basis: "prepared_similarity",
+      score: 0.8,
+      reason: "조건 비교",
+    });
+    expect(
+      originalReview({ ...state.questions[0], conceptIds: [] }, state).concepts,
+    ).toEqual([]);
   });
   it("keeps final drawings and answers when duplicate answers or late drawings arrive", () => {
     const state = fixture();

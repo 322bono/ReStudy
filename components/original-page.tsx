@@ -1,7 +1,7 @@
 /// <reference types="vite/client" />
 import { useEffect, useRef, useState } from "react";
 import type { PDFDocumentProxy, PDFDocumentLoadingTask } from "pdfjs-dist";
-import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
+import workerUrl from "pdfjs-dist/legacy/build/pdf.worker.min.mjs?url";
 import { assetUrl } from "../src/services/api";
 import { SecureImage } from "./secure-assets";
 /** The PDF and worker stay on this computer; saved page PNGs cover image files and render failures. */
@@ -30,7 +30,7 @@ export function OriginalPage({
     if (mime !== "application/pdf") return;
     let alive = true;
     let task: PDFDocumentLoadingTask | undefined;
-    import("pdfjs-dist")
+    import("pdfjs-dist/legacy/build/pdf.mjs")
       .then(async (pdfjs) => {
         if (!alive) return;
         pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;

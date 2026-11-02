@@ -84,8 +84,9 @@ export default function RestudyApp({
     [busy, setBusy] = useState(""),
     [studyIds, setStudyIds] = useState<string[]>([]);
   const [bankScope, setBankScope] = useState<any>({});
+  const [automaticWrongIds, setAutomaticWrongIds] = useState<string[]>([]);
   const returnView = useRef<View>({ name: "materials" });
-  const bankReturn=useRef<View>({name:'study'});
+  const bankReturn = useRef<View>({ name: "study" });
   const notify = useCallback((message: string) => setToast(message), []);
   const refresh = useCallback(async () => {
     setState(await api<AppState>("state"));
@@ -114,7 +115,7 @@ export default function RestudyApp({
     return () => clearInterval(timer);
   }, [state?.materials, refresh, notify]);
   const navigate = (next: View) => {
-    if(next.name==='bank')bankReturn.current=view;
+    if (next.name === "bank") bankReturn.current = view;
     setView(next);
     const p = new URLSearchParams();
     if (next.name !== "home") p.set("screen", next.name);
@@ -131,6 +132,12 @@ export default function RestudyApp({
   const open = (id: string, page = 1, manage = false) => {
     returnView.current = view;
     navigate({ name: "viewer", id, page, manage });
+  };
+  const registeredWrong = (ids: string[], autoAnalyzeIds: string[]) => {
+    if (!ids.length) return;
+    setAddMistakes(false);
+    setAutomaticWrongIds(autoAnalyzeIds);
+    navigate({ name: "wrong", id: ids[0] });
   };
   const run = async (label: string, fn: () => Promise<void>) => {
     setBusy(label);
@@ -187,7 +194,7 @@ export default function RestudyApp({
               : view.name === "wrong"
                 ? "mistakes"
                 : view.name;
-  const due = state.mistakes.filter((m) => isDue(m.dueAt));
+  const due = state.mistakes.filter((m) => !m.resolved && isDue(m.dueAt));
   const recent = [...state.materials]
     .sort((a, b) => b.lastOpenedAt.localeCompare(a.lastOpenedAt))
     .slice(0, 3);
@@ -455,7 +462,7 @@ export default function RestudyApp({
                 onBack={() => navigate(returnView.current)}
                 onChange={refresh}
                 onError={notify}
-                onReview={(id) => navigate({ name: "study-session", id })}
+                onRegistered={registeredWrong}
               />
             )}
             {view.name === "material" && view.id && (
@@ -505,14 +512,20 @@ export default function RestudyApp({
                 onRefresh={refresh}
                 onError={notify}
                 onConcept={concept}
-                onBank={(scope)=>{setBankScope(scope);navigate({name:'bank'});}}
+                onBank={(scope) => {
+                  setBankScope(scope);
+                  navigate({ name: "bank" });
+                }}
                 onSolve={solve}
-                onDetails={(id)=>navigate({name:'wrong',id})}
+                onDetails={(id) => navigate({ name: "wrong", id })}
               />
             )}
             {view.name === "wrong" && view.id && (
               <WrongWorkspace
+                key={view.id}
                 id={view.id}
+                autoAnalyzeIds={automaticWrongIds}
+                onAutoAnalysisComplete={() => setAutomaticWrongIds([])}
                 state={state}
                 onBack={() => navigate({ name: "mistakes" })}
                 onBank={(scope) => {
@@ -520,7 +533,6 @@ export default function RestudyApp({
                   navigate({ name: "bank" });
                 }}
                 onSolve={solve}
-                onReview={concept}
                 onViewer={open}
                 onError={notify}
                 onRefresh={refresh}
@@ -548,6 +560,11 @@ export default function RestudyApp({
                     navigate({ name: "study-session", id });
                   }}
                   onOpen={open}
+                  onBank={(scope) => {
+                    setBankScope(scope);
+                    navigate({ name: "bank" });
+                  }}
+                  onMaterial={(id) => navigate({ name: "material", id })}
                   onError={notify}
                 />
               </>
@@ -616,10 +633,7 @@ export default function RestudyApp({
           state={state}
           onClose={() => setAddMistakes(false)}
           onDone={refresh}
-          onReview={(id) => {
-            setAddMistakes(false);
-            navigate({ name: "study-session", id });
-          }}
+          onRegistered={registeredWrong}
         />
       )}
     </div>

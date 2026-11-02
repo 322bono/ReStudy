@@ -29,6 +29,7 @@ export interface PreparedPage {
   words?: PageTextItem[];
   numberMarkers?: PageTextItem[];
   numberLayerVersion?: string;
+  preparationPurpose?: "textbook" | "workbook";
 }
 export interface Region {
   page: number;
@@ -63,8 +64,10 @@ function asset(path: string): string {
 export async function openPdf(
   source: Blob | Uint8Array | string,
 ): Promise<PDFDocumentProxy> {
-  const pdfjs = await import("pdfjs-dist");
-  pdfjs.GlobalWorkerOptions.workerSrc = asset("pdfjs/pdf.worker.min.mjs");
+  // Mozilla supports Safari through its translated/polyfilled legacy bundle.
+  // Keep the worker on the same build so it also has the required polyfills.
+  const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
+  pdfjs.GlobalWorkerOptions.workerSrc = asset("pdfjs/pdf.worker.legacy.min.mjs");
   const input =
     typeof source === "string"
       ? { url: source }
@@ -287,27 +290,35 @@ function ocrItems(
   data: OcrPage,
   width: number,
   height: number,
-): PageTextItem[] {
-  const result: PageTextItem[] = [];
-  for (const block of data.blocks ?? [])
-    for (const paragraph of block.paragraphs ?? [])
-      for (const line of paragraph.lines ?? []) {
-        if (!line.text.trim() || line.confidence < 30) continue;
-        const x = clamp(line.bbox.x0 / width),
-          y = clamp(line.bbox.y0 / height);
-        const x1 = clamp(line.bbox.x1 / width),
-          y1 = clamp(line.bbox.y1 / height);
-        if (x1 > x && y1 > y)
-          result.push({
-            text: line.text.trim(),
-            x,
-            y,
-            width: x1 - x,
-            height: y1 - y,
-            confidence: clamp(line.confidence / 100),
-          });
+): { items: PageTextItem[]; words: PageTextItem[]; text: string } {
+  // Tesseract 7's JSON includes non-text/image blocks with no paragraphs.
+  // Check the message boundary once; never assume worker collections iterable.
+  const collection = (value: unknown, name: string): any[] => {
+    if (value === undefined || value === null) return [];
+    if (!Array.isArray(value)) throw new Error(`OCR 결과의 ${name} 배열 형식이 올바르지 않습니다.`);
+    return value;
+  };
+  if (!data || typeof data.text !== "string") throw new Error("OCR 결과의 text 형식이 올바르지 않습니다.");
+  const item = (value: any): PageTextItem | undefined => {
+    if (!value || typeof value.text !== "string" || !value.text.trim() || !Number.isFinite(value.confidence) || value.confidence < 30) return;
+    const box = value.bbox;
+    if (!box || ![box.x0, box.y0, box.x1, box.y1].every(Number.isFinite)) return;
+    const x = clamp(box.x0 / width), y = clamp(box.y0 / height), x1 = clamp(box.x1 / width), y1 = clamp(box.y1 / height);
+    if (x1 <= x || y1 <= y) return;
+    return { text: value.text.trim(), x, y, width: x1 - x, height: y1 - y, confidence: clamp(value.confidence / 100) };
+  };
+  const items: PageTextItem[] = [], words: PageTextItem[] = [];
+  for (const block of collection(data.blocks, "blocks"))
+    for (const paragraph of collection(block?.paragraphs, "paragraphs"))
+      for (const line of collection(paragraph?.lines, "lines")) {
+        const parsed = item(line);
+        if (parsed) items.push(parsed);
+        for (const word of collection(line?.words, "words")) {
+          const parsedWord = item(word);
+          if (parsedWord) words.push(parsedWord);
+        }
       }
-  return result;
+  return { items, words, text: data.text.trim() };
 }
 
 async function recognize(
@@ -326,11 +337,7 @@ async function recognize(
         current.recognize(canvas, {}, { text: true, blocks: true }),
         signal,
       );
-      return {
-        items: ocrItems(result.data, canvas.width, canvas.height),
-        words: result.data.blocks?.flatMap(b=>b.paragraphs.flatMap(p=>p.lines.flatMap(l=>(l.words??[]).filter(w=>w.text.trim()).map(w=>({text:w.text,x:clamp(w.bbox.x0/canvas.width),y:clamp(w.bbox.y0/canvas.height),width:clamp(w.bbox.x1/canvas.width)-clamp(w.bbox.x0/canvas.width),height:clamp(w.bbox.y1/canvas.height)-clamp(w.bbox.y0/canvas.height),confidence:clamp(w.confidence/100)})))))??[],
-        text: result.data.text.trim(),
-      };
+      return ocrItems(result.data, canvas.width, canvas.height);
     } finally {
       ocrProgress = undefined;
     }
@@ -373,6 +380,7 @@ export async function preparePage(
   pdf: PDFDocumentProxy,
   pageNumber: number,
   onProgress?: PageProgress,
+  options: { purpose?: "textbook" | "workbook" } = {},
 ): Promise<PreparedPage> {
   validatePage(pdf, pageNumber);
   const signal = ocrController.signal;
@@ -412,7 +420,8 @@ export async function preparePage(
       .sort(order)
       .map((i) => i.text)
       .join("\n");
-    if (scan || count < 12) {
+    const textbook = options.purpose === "textbook";
+    if (textbook ? count === 0 || (scan && count < 12) : scan || count < 12) {
       source = "ocr";
       onProgress?.(0.3, "한국어·영어 OCR로 원본을 읽고 있어요.");
       try {
@@ -432,26 +441,24 @@ export async function preparePage(
           { cause: error },
         );
       }
-      warnings.push(
-        "OCR 후보입니다. 문제 번호·수식·지문을 원본 이미지와 비교해 확인하세요.",
-      );
+      warnings.push(textbook ? "OCR로 읽은 본문입니다. 개념·수식은 원본 이미지와 비교해 확인하세요." : "OCR 후보입니다. 문제 번호·수식·지문을 원본 이미지와 비교해 확인하세요.");
     }
-    const numberMarkers=source==='ocr'?await numberLayer(canvas,signal):[];
+    const numberMarkers=!textbook&&source==='ocr'?await numberLayer(canvas,signal):[];
     const lines = textLines([...items,...numberMarkers]);
     const fallback =
       items.reduce((sum, i) => sum + i.text.trim().length, 0) < 25
         ? "uncertain"
         : "content";
-    const kind = pageKind(lines, fallback);
+    const kind = textbook ? fallback : pageKind(lines, fallback);
     if (kind === "uncertain")
       warnings.push(
-        "읽을 수 있는 글자가 적습니다. 원본을 보고 문항 영역을 직접 확인하세요.",
+        textbook ? "읽을 수 있는 본문이 적습니다. 원본의 개념과 수식을 확인하세요." : "읽을 수 있는 글자가 적습니다. 원본을 보고 문항 영역을 직접 확인하세요.",
       );
-    if (kind !== "answers" && findAnchors(lines).length === 0)
+    if (!textbook && kind !== "answers" && findAnchors(lines).length === 0)
       warnings.push(
         "확실한 문항 번호 경계를 찾지 못했습니다. 관리 화면에서 문항 영역을 지정하세요.",
       );
-    onProgress?.(1, "페이지 원본과 추출 후보를 준비했어요.");
+    onProgress?.(1, textbook ? "페이지 원본과 개념 분석용 본문을 준비했어요." : "페이지 원본과 추출 후보를 준비했어요.");
     return storagePageText({
       number: pageNumber,
       width: viewport.width,
@@ -463,6 +470,7 @@ export async function preparePage(
       image,
       warnings,
       words,numberMarkers,numberLayerVersion:NUMBER_LAYER_VERSION,
+      preparationPurpose: textbook ? "textbook" as const : "workbook" as const,
     });
   } finally {
     signal.removeEventListener("abort", cancelRender);

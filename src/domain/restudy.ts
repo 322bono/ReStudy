@@ -86,8 +86,8 @@ export const RestudySchema = z
     schema_version: z.literal("restudy.v1"),
     document_id: id,
     job_id: id,
-    part: z.number().int().min(1).max(100),
-    total_parts: z.number().int().min(1).max(100),
+    part: z.number().int().min(1).max(1000),
+    total_parts: z.number().int().min(1).max(1000),
     chapters: z.array(ChapterSchema).max(500),
     concepts: z.array(ConceptSchema).max(1000),
     problem_analyses: z
@@ -99,6 +99,9 @@ export const RestudySchema = z
             chapter_id: id,
             concept_ids: z.array(id).min(1).max(50),
             key_point: text,
+            answer: text.optional(),
+            explanation: text.optional(),
+            solution_steps: strings.optional(),
             memorize: strings,
             mistakes: strings,
           })
@@ -529,6 +532,7 @@ export function standardManifest(job: StandardJob, part: number) {
   return manifest;
 }
 export function createExternalPrompt(job: StandardJob, part: number) {
+  const single=job.method==='external'&&job.totalParts===1;
   const manifest=standardManifest(job,part);
   const {questions:count,purposes,kinds,levels}=manifest.part_quotas;
   const task =
@@ -537,6 +541,8 @@ export function createExternalPrompt(job: StandardJob, part: number) {
 ${job.targetQuestions.length ? "target_originals에 지정된 원본 문제만 분석하세요. id는 앱 내부 식별자이며, 출력 problem_analyses에는 스키마에 있는 실제 q_number·pdf_page·chapter_id를 사용하세요." : "선택 PDF 범위에 실제로 있는 원본 문제를 순서대로 읽으세요. 아직 앱에 문제 인덱스가 없어도 PDF에서 실제로 읽은 문제 번호와 실제 PDF 페이지로 problem_analyses를 작성하세요. 번호를 새로 매기거나 가짜 원본 번호를 만들지 마세요."}
 각 원본에 여러 개념을 연결할 수 있습니다. 개념 이름만 나열하지 말고 concepts에 정의·공식·암기사항·오개념을 작성하고 problem_analyses.concept_ids로 연결하세요. key_point에는 해결 핵심, memorize에는 이 원본에 필요한 암기사항, mistakes에는 발생 가능한 일반적 실수를 적으세요.
 questions에는 연결 개념을 확인하는 concept 퀴즈, 개념을 적용하는 practice 연습문제, 원본의 조건·사고과정을 변형한 similar 유사문제를 목적별 할당에 맞춰 만드세요. 원본 분석 개수와 생성 은행 문항 수는 서로 다른 수입니다. similar의 source_problem은 실제 원본의 식별 정보여야 합니다.`
+      : job.taskType === "concepts"
+        ? "요청: 교과서·학습지 본문의 핵심 개념 정리만 수행하세요. 단원별 정의·성립 조건·공식·중요 문장·암기사항·오개념을 concepts에 충분히 정리하고 flashcards도 작성하세요. 문제 번호를 찾거나 원본 문제를 분석하지 마세요. problem_analyses, questions, similarities는 []입니다. 목차와 본문 근거를 구분하세요."
       : job.taskType === "toc"
         ? "요청: 실제 목차에서 단원 이름과 PDF 범위를 정리하세요. questions는 []이며 문제별 심층 분석은 하지 않습니다. 목차 제목만으로 본문을 읽었다고 주장하지 마세요."
         : job.taskType === "initial"
@@ -578,16 +584,16 @@ ${task}
 1. 모든 최상위 필드 schema_version, document_id, job_id, part, total_parts, chapters, concepts, problem_analyses, questions, flashcards, similarities를 빠짐없이 출력하세요. schema_version은 정확히 restudy.v1, 문서·작업 ID와 분할 번호는 위 실제 값 그대로 사용하세요. 사용하지 않는 컬렉션은 []이고 임의의 최상위 키·설명 필드를 추가하지 마세요.
 2. chapters는 과목 내 단원과 실제 PDF 시작/끝 페이지입니다. 기존 목차가 제공되면 ID·이름·범위를 유지하고, 새 단원은 실제 PDF 근거로 정의하세요. concepts의 chapter_id와 모든 개념 참조가 정의된 항목을 가리켜야 합니다.
 3. concepts는 개념별 id, chapter_id, name, summary(정의와 성립 조건), formulas(공식·필수 조건), memorize(암기사항), pitfalls(흔한 오개념)를 포함합니다. 여러 문제에서 재사용되는 같은 개념은 한 번 정의하고 같은 ID로 연결하세요.
-4. problem_analyses는 원본 문항별 연결입니다. q_number는 PDF에서 읽은 실제 번호의 문자열, pdf_page는 그 원본이 시작하는 실제 PDF 페이지, chapter_id는 단원 ID, concept_ids는 관련 개념 ID 배열입니다. key_point·memorize·mistakes를 함께 작성하세요. 학생의 실제 풀이를 보지 않았다면 왜 틀렸는지 단정하지 마세요. 앱에 대응 원본 영역이 아직 없으면 이 연결은 보관되고 원본 인덱스 확인 후 연결합니다.
+4. problem_analyses는 원본 문항별 연결입니다. q_number는 PDF에서 읽은 실제 번호의 문자열, pdf_page는 그 원본이 시작하는 실제 PDF 페이지, chapter_id는 단원 ID, concept_ids는 관련 개념 ID 배열입니다. key_point·memorize·mistakes를 함께 작성하세요. 원본 문제 분석 작업에서는 explanation(정답 근거와 오답 해설), solution_steps(풀이 순서)를 작성하고, 정답이 확실한 경우에만 answer를 포함하세요. 판독되지 않는 정답은 추측하지 말고 선택 필드를 생략하세요. 학생의 실제 풀이를 보지 않았다면 왜 틀렸는지 단정하지 마세요. 앱에 대응 원본 영역이 아직 없으면 이 연결은 보관되고 원본 인덱스 확인 후 연결합니다.
 5. questions는 새로 생성하는 학습용 은행 문항입니다. kind는 표현 형식(mcq/ox/short/blank), purpose는 학습 목적(concept/practice/similar), level은 난이도(easy/medium/hard)입니다. 세 필드를 독립적으로 선택하세요. 앱은 purpose=concept를 개념 퀴즈, practice를 연습문제, similar를 유사문제로 분류합니다. 한국어 분류명이나 사용자 예시의 문장을 코드 값으로 쓰지 마세요.
 6. 각 questions 항목은 id, chapter_id, concept_ids, kind, purpose, level, source_problem, prompt, options, answer, accepted_answers, explanation, option_explanations, source_pages를 모두 포함합니다. source_pages는 선택 범위 안의 실제 PDF 근거 페이지입니다. 실제 존재하지 않는 그림을 임의로 참조하지 마세요. 자료가 필요하면 실제 출처 이미지 또는 문제 안의 텍스트 표로 완결되게 제시하세요.
 7. mcq: 서로 다른 선택지 4~5개를 options에 순서대로 넣고 answer는 정답 선택지 문자 A~D 또는 A~E 하나입니다. option_explanations는 실제 모든 선택지 문자별로 왜 맞거나 틀린지 설명해야 합니다. 선택지 텍스트를 정답 문자 대신 넣지 마세요.
 8. ox: options=[], answer="O" 또는 "X", option_explanations={}. short/blank: options=[], 간결한 기준 답을 answer에, 동등하게 인정할 표현을 accepted_answers에, option_explanations={}로 작성하세요. explanation에는 정답의 근거·성립 조건을 설명하고 모호한 문장을 피하세요.
 9. source_problem은 원본과 연결되지 않은 일반 문제라면 null입니다. purpose=similar이면 반드시 실제 원본의 {q_number,chapter_id,pdf_page} 객체입니다. 연결된 원본을 questions의 생성 문제 ID로 대체하지 마세요. flashcards에는 id,concept_id,front,back을 작성하고, similarities는 두 실제 원본의 a/b 식별 객체와 score(0~1),reason만 사용합니다. 근거 없는 유사도는 만들지 말고 []로 두세요.
 
-분할·정확성 규칙:
-10. 이번 응답의 questions는 위 이번 분할 수를 따르며 총 문제 수를 한 응답에 몰아 넣지 마세요. 100문제는 기본 20문제씩 5개 분할입니다. 목적·유형 할당이 비어 있으면 요청한 허용 유형 안에서 구성하고, 숫자가 지정되면 이번 분할 할당을 지키세요. 중복·판독 불가로 부족하면 가짜 문제나 허위 출처로 채우지 마세요.
-11. 같은 대화에서 이전 분할 JSON을 유지하며 다음 분할을 요청하세요. 다른 분할에 정의한 같은 단원·개념의 ID와 내용을 그대로 재사용하고, 새로 정의할 때만 p${part}- 접두어를 붙이세요. 새로운 은행 문항·카드 ID는 현재 분할 접두어를 사용하고 본문 중복을 피하세요. 기존 ID를 다른 내용으로 재정의하지 마세요. 교차 분할 참조는 해당 정의가 도착할 때까지 앱에서 대기하며, 마지막 분할까지 모든 참조가 해결되어야 합니다.
+정확성 규칙:
+10. ${single?'외부 AI 작업은 분할하지 않습니다. 선택 범위 전체와 요청한 전체 문제 수를 하나의 완결된 JSON에 작성하세요. part=1, total_parts=1 값을 그대로 사용합니다. 다음 회차나 다음 분할을 요구하지 마세요.':'이번 응답은 이번 분할 할당량을 따릅니다. API 호출은 작은 단위로 나누어 저장합니다.'} 목적·유형 할당이 비어 있으면 요청한 허용 유형 안에서 구성하고, 숫자가 지정되면 할당을 지키세요. 중복·판독 불가로 부족하면 가짜 문제나 허위 출처로 채우지 마세요.
+11. ${single?'모든 단원·개념 참조를 이 JSON 안에서 완결하세요. 같은 개념은 한 번만 정의하고 ID를 재사용합니다.':'같은 대화에서 이전 분할 JSON을 유지하며 다음 분할을 요청하세요. 다른 분할의 같은 단원·개념 ID와 내용을 그대로 재사용하고 새 항목에만 현재 분할 접두어를 사용하세요.'} 새로운 은행 문항·카드 ID는 p${part}- 접두어를 사용하고 본문 중복을 피하세요. 기존 ID를 다른 내용으로 재정의하지 마세요.
 12. 판독할 수 없는 PDF·수식·표·그림은 추측하여 복원하지 마세요. 원본 PDF 전체를 첨부하지 않았거나 입력을 읽을 수 없으면 확인되지 않은 항목은 제외하세요. 목차만으로 본문 분석·모든 문제 분석이 끝났다고 주장하지 마세요. 예상되는 실수와 실제 학생 오답 원인은 구별하세요.
 13. JSON 외 설명·Markdown 표·추가 텍스트는 출력하지 마세요. 순수 JSON 또는 바깥쪽 JSON 코드 블록 하나만 허용합니다. 코드 블록을 사용해도 내부는 완성된 JSON 객체여야 합니다. 이번 분할에서 완성한 항목만 포함하고 JSON을 중간에서 자르지 마세요. part·total_parts·할당량을 임의로 변경하지 마세요. 실제로 준비하지 못한 문항은 허위로 채우지 않으며 앱에서 부족한 문항 수를 확인합니다.
 14. 결과는 사용자가 앱에서 붙여넣기 → 구조·출처·참조 검사 → 병합된 개념/원본 연결/문항/정답/해설 검토 → 등록 순서로 확인합니다. 이 과정에는 AI API 호출이 없으며 검토 상태로 저장됩니다. 사용자가 내용을 검토한 뒤 학습 가능 상태로 전환합니다.

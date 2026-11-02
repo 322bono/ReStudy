@@ -51,12 +51,23 @@ export function toCommitResult(job: Job, result: Extract<TaskResult, { status: "
     return { ...(job.data.conceptId ? { conceptId: job.data.conceptId } : { conceptKey: q.concept_key }), type: ["application", "data_interpretation", "condition_judgment", "statement_judgment"].includes(q.type) && !q.options.length ? "서술형" : types[q.type] ?? "단답형", original_type: q.type, prompt: q.prompt, choices: q.options.map((option: Json) => option.text), answer, acceptedAnswers: [answer], explanation: q.explanation, choiceFeedback: Object.fromEntries(q.options.map((option: Json) => [option.text, { explanation: option.explanation, misconceptionTag: q.misconception_tags[0] ?? "" }])), correction: q.explanation, difficulty: ({ easy: "기본", medium: "보통", hard: "심화" } as Record<string, string>)[q.difficulty], modes: job.data.mode === "memory" ? ["memory"] : ["quiz", "check"], sources: sources(job, q.source_citations), active: false, verification: q.verification ?? null, ...provenance };
   }) };
 }
-export async function processJob(job: Job, store: JobStore, routing: Omit<RouterContext, "rotationIndex">, run: typeof runTask = runTask): Promise<any> {
+export type BackgroundTask = (work:Promise<unknown>)=>void;
+export function edgeBackgroundTask():BackgroundTask|undefined{
+  const runtime=(globalThis as typeof globalThis&{EdgeRuntime?:{waitUntil(work:Promise<unknown>):void}}).EdgeRuntime;
+  return runtime?work=>runtime.waitUntil(work):undefined;
+}
+export async function processJob(job: Job, store: JobStore, routing: Omit<RouterContext, "rotationIndex">, run: typeof runTask = runTask,background?:BackgroundTask): Promise<any> {
   if (job.status === "completed") return { id: job.id, status: job.status, cached: true, result: job.data.result_summary ?? null };
   const settings = job.data.settings ?? {};
   const claim = await store.claim(job.id, settings.daily_limit ?? 20, settings.max_attempts ?? 3);
   if (!claim) return { id: job.id, status: job.status, available_at: job.available_at ?? null, message: "작업이 실행 중이거나 대기 시간·사용 한도에 도달했습니다." };
-  const active = claim.job; const token = active.lease_token!;
+  const active = claim.job;
+  const work=processClaimedJob(active,claim.rotation_index,store,routing,run);
+  if(background){background(work.catch(()=>undefined));return{id:active.id,status:'running',lease_until:active.lease_until??null};}
+  return work;
+}
+async function processClaimedJob(active:Job,rotationIndex:number,store:JobStore,routing:Omit<RouterContext,'rotationIndex'>,run:typeof runTask){
+  const token = active.lease_token!;
   let completed: Extract<TaskResult, { status: "succeeded" }> | undefined;
   try {
     const input = active.data.input as TaskInput;
@@ -64,7 +75,7 @@ export async function processJob(job: Job, store: JobStore, routing: Omit<Router
     if (active.data.pending_result?.status === "succeeded") {
       const previous = active.data.pending_result;
       result = { ...previous, output: validateOutput(input.kind, previous.output, input.sourceIds, input.count) };
-    } else result = await run(input, { ...routing, rotationIndex: claim.rotation_index });
+    } else result = await run(input, { ...routing, rotationIndex });
     if (result.status === "paused") return await store.finish(active.id, token, "paused", { ...active.data, last_error: result.reason,last_provider_error:result.lastError??null }, new Date(result.retryAt ?? Date.now()).toISOString()) ?? { id: active.id, status: "running" };
     completed = result;
     return await store.commit(active.id, token, toCommitResult(active, result)) ?? { id: active.id, status: "running" };

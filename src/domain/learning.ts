@@ -229,7 +229,7 @@ function studySession(
 export function relatedOriginalIds(item: any, questions: any[]): string[] {
   return questions
     .filter((q) => {
-        if(list(item.preparedQuestionIds).includes(q.id))return true;
+      if (list(item.preparedQuestionIds).includes(q.id)) return true;
       const refs = [
         ...(item.origins || []).map((o: any) => ({
           ref: o.data?.source_problem || o.data?.sourceProblem,
@@ -253,11 +253,34 @@ export function relatedOriginalIds(item: any, questions: any[]): string[] {
 }
 /** Explicit single-original preparation is provenance, not a concept guess.
  * Content refs also retain the link when a bank item was deduplicated. */
-export function preparedBankLinks(jobs:any[],refs:any[],questions:any[]):Map<string,string[]> {
- const targets=new Map(jobs.filter(j=>j.task_type==='problem'&&j.first_target&&!j.second_target&&questions.some(q=>q.id===j.first_target&&q.materialId===j.document_id)).map(j=>[j.id,j.first_target]));
- const links=new Map<string,string[]>();
- for(const ref of refs){const target=targets.get(ref.job_id);if(target&&['question','flashcard'].includes(ref.kind))links.set(ref.actual_id,unique([...(links.get(ref.actual_id)??[]),target]));}
- return links;
+export function preparedBankLinks(
+  jobs: any[],
+  refs: any[],
+  questions: any[],
+): Map<string, string[]> {
+  const targets = new Map(
+    jobs
+      .filter(
+        (j) =>
+          j.task_type === "problem" &&
+          j.first_target &&
+          !j.second_target &&
+          questions.some(
+            (q) => q.id === j.first_target && q.materialId === j.document_id,
+          ),
+      )
+      .map((j) => [j.id, j.first_target]),
+  );
+  const links = new Map<string, string[]>();
+  for (const ref of refs) {
+    const target = targets.get(ref.job_id);
+    if (target && ["question", "flashcard"].includes(ref.kind))
+      links.set(
+        ref.actual_id,
+        unique([...(links.get(ref.actual_id) ?? []), target]),
+      );
+  }
+  return links;
 }
 export function createBankStudy(options: any, state: LearningState): any {
   const count = Number(options.count ?? 20),
@@ -310,7 +333,18 @@ export function createBankStudy(options: any, state: LearningState): any {
   );
   if (Array.isArray(options.bankItemIds) && options.bankItemIds.length)
     pool = pool.filter((i) => options.bankItemIds.includes(i.id));
-  if(options.originalId){const original=find(state.questions,options.originalId,'원본 문항을 찾을 수 없습니다.');pool=pool.filter(i=>relatedOriginalIds(i,[original]).length>0||itemConcepts(i).some(id=>list(original.conceptIds).includes(id)));}
+  if (options.originalId) {
+    const original = find(
+      state.questions,
+      options.originalId,
+      "원본 문항을 찾을 수 없습니다.",
+    );
+    pool = pool.filter(
+      (i) =>
+        relatedOriginalIds(i, [original]).length > 0 ||
+        itemConcepts(i).some((id) => list(original.conceptIds).includes(id)),
+    );
+  }
   if (list(options.questionIds).length)
     pool = pool.filter((i) =>
       relatedOriginalIds(i, state.questions).some((id) =>
@@ -372,7 +406,10 @@ export function createBankStudy(options: any, state: LearningState): any {
       unique(chosen.flatMap(itemConcepts)),
     );
   session.bankStudy = true;
-  session.linkedQuestionIds = unique([...list(options.questionIds),...(options.originalId?[options.originalId]:[])]);
+  session.linkedQuestionIds = unique([
+    ...list(options.questionIds),
+    ...(options.originalId ? [options.originalId] : []),
+  ]);
   if (chosen.length < count)
     session.notice = `조건에 맞는 ${chosen.length}문제로 시작합니다. 추가 생성은 별도로 선택할 수 있습니다.`;
   return session;
@@ -456,7 +493,7 @@ export function createStudy(body: any, state: LearningState): any {
     throw new LearningError("문제 수는 1~20개로 선택해 주세요.");
   if (!Array.isArray(body.materials) || !body.materials.length)
     throw new LearningError("한 과목의 자료를 선택해 주세요.");
-  if (!["기본", "보통", "심화"].includes(body.difficulty || "보통"))
+  if (!["전체", "기본", "보통", "심화"].includes(body.difficulty || "보통"))
     throw new LearningError("난이도를 확인해 주세요.");
   const scopes = new Map<string, Set<number> | null>(),
     subjects = new Set<string>();
@@ -483,16 +520,21 @@ export function createStudy(body: any, state: LearningState): any {
       throw new LearningError("페이지 번호 입력을 확인해 주세요.");
     const requested = input.trim() ? parsePages(input) : null;
     if (state.pages) {
-      const pages = state.pages
-        .filter(
-          (page) => page.materialId === choice.id && page.kind !== "answers",
+      const pages = state.pages.filter((page) => page.materialId === choice.id);
+      if (
+        requested?.some(
+          (page) =>
+            (Number.isInteger(material?.pageCount) &&
+              page > material.pageCount) ||
+            pages.some(
+              (known) => known.number === page && known.kind === "answers",
+            ),
         )
-        .map((page) => page.number);
-      if (requested?.some((page) => !pages.includes(page)))
+      )
         throw new LearningError(
           `${material?.title || "선택 자료"}: 출처 페이지 범위를 확인해 주세요.`,
         );
-      scopes.set(choice.id, new Set(requested || pages));
+      scopes.set(choice.id, requested ? new Set(requested) : null);
     } else scopes.set(choice.id, requested ? new Set(requested) : null);
   }
   if (subjects.size > 1)
@@ -507,18 +549,34 @@ export function createStudy(body: any, state: LearningState): any {
     )
       return false;
     if (
-      (body.mode === "quiz" && item.type !== body.type) ||
-      item.difficulty !== (body.difficulty || "보통")
+      (body.mode === "quiz" &&
+        body.type !== "전체" &&
+        item.type !== body.type) ||
+      (body.difficulty !== "전체" &&
+        item.difficulty !== (body.difficulty || "보통"))
     )
       return false;
     const refs = sources(item, state);
     return (
       refs.length > 0 &&
-      refs.every(
+      refs.some(
         (source) =>
           scopes.has(source.materialId) &&
           Number.isInteger(source.page) &&
           source.page > 0 &&
+          !state.pages?.some(
+            (page) =>
+              page.materialId === source.materialId &&
+              page.number === source.page &&
+              page.kind === "answers",
+          ) &&
+          (!state.materials?.find(
+            (material) => material.id === source.materialId,
+          )?.pageCount ||
+            source.page <=
+              state.materials.find(
+                (material) => material.id === source.materialId,
+              ).pageCount) &&
           (scopes.get(source.materialId) === null ||
             scopes.get(source.materialId)!.has(source.page)),
       )
@@ -871,7 +929,8 @@ export function createSolve(questions: any[]): any {
     const question = find(questions, id, "문제를 찾을 수 없습니다.");
     const regions = list(question.regions),
       paths = list(question.imagePaths);
-      if(question.autoRetired||question.mergedInto)throw new LearningError('현재 사용하는 원본 문항을 선택해 주세요.');
+    if (question.autoRetired || question.mergedInto)
+      throw new LearningError("현재 사용하는 원본 문항을 선택해 주세요.");
     if (!regions.length || paths.length !== regions.length)
       throw new LearningError(
         "미리 저장된 원본 크롭이 없습니다. 사전 처리를 확인해 주세요.",
@@ -893,29 +952,120 @@ export function createSolve(questions: any[]): any {
 }
 
 /** Revealed only after the learner explicitly asks to check the original. */
-export function originalReview(question:any,state:LearningState,relations:any[]=[]):any {
- const ids=list(question.conceptIds);
- const relatedBank=state.bank.filter(i=>itemConcepts(i).some(id=>ids.includes(id))||relatedOriginalIds(i,[question]).length>0);
- const concepts=state.concepts.filter(c=>unique([...ids,...relatedBank.flatMap(itemConcepts)]).includes(c.id)).map(clone);
- const bank=relatedBank.filter(approved);
- const bankCounts={concept:0,practice:0,similar:0,memory:0,pending:relatedBank.filter(i=>(i.reviewStatus??i.review_status)==='needs_review'&&!i.archived).length};
- for(const item of bank){
-  const purposes=unique([item.purpose,...list(item.purposes)].filter(Boolean));
-  const quiz=list(item.modes).some(mode=>['quiz','check'].includes(mode));
-  if(quiz&&(purposes.includes('concept')||!purposes.length))bankCounts.concept++;
-  if(quiz&&purposes.includes('practice'))bankCounts.practice++;
-  if(quiz&&purposes.includes('similar')&&relatedOriginalIds(item,[question]).length)bankCounts.similar++;
-  if(list(item.modes).includes('memory'))bankCounts.memory++;
- }
- const match=(ref:any,q:any)=>ref&&String(Number(ref.q_number))===String(q.number)&&ref.pdf_page===q.page&&(!ref.chapter_id||ref.chapter_id===q.chapterId);
- const wrong=new Set(state.mistakes.map(m=>m.questionId));
- const similar=state.questions.filter(q=>q.id!==question.id&&!q.mergedInto&&!q.autoRetired).flatMap(q=>{
-  const saved=relations.find(r=>r.document_id===question.materialId&&q.materialId===question.materialId&&((match(r.a,question)&&match(r.b,q))||(match(r.b,question)&&match(r.a,q))));
-  const shared=ids.filter(id=>list(q.conceptIds).includes(id));
-  if(!saved&&(!wrong.has(q.id)||!shared.length))return[];
-  return[{id:q.id,number:q.number,page:q.page,materialId:q.materialId,score:saved?Number(saved.score):shared.length/Math.max(1,new Set([...ids,...list(q.conceptIds)]).size),basis:saved?'prepared_similarity':'shared_concepts',reason:saved?saved.reason:`공통 개념 ${shared.length}개`,canSolve:list(q.regions).length>0&&list(q.imagePaths).length===list(q.regions).length}];
- }).sort((a,b)=>b.score-a.score).slice(0,8);
- return{concepts,bankScope:{originalId:question.id},analysis:clone(question.analysis??null),memorize:unique([...list(question.memorize),...list(question.analysis?.memorize),...concepts.flatMap(c=>list(c.memorize))]),bankCounts,similar};
+export function originalReview(
+  question: any,
+  state: LearningState,
+  relations: any[] = [],
+): any {
+  const ids = list(question.conceptIds);
+  const relatedBank = state.bank.filter(
+    (i) =>
+      itemConcepts(i).some((id) => ids.includes(id)) ||
+      relatedOriginalIds(i, [question]).length > 0,
+  );
+  const concepts = state.concepts
+    .filter((c) =>
+      unique([...ids, ...relatedBank.flatMap(itemConcepts)]).includes(c.id),
+    )
+    .map(clone);
+  const bank = relatedBank.filter(approved);
+  const bankCounts = {
+    concept: 0,
+    practice: 0,
+    similar: 0,
+    memory: 0,
+    pending: relatedBank.filter(
+      (i) =>
+        (i.reviewStatus ?? i.review_status) === "needs_review" && !i.archived,
+    ).length,
+  };
+  for (const item of bank) {
+    const purposes = unique(
+      [item.purpose, ...list(item.purposes)].filter(Boolean),
+    );
+    const quiz = list(item.modes).some((mode) =>
+      ["quiz", "check"].includes(mode),
+    );
+    if (quiz && (purposes.includes("concept") || !purposes.length))
+      bankCounts.concept++;
+    if (quiz && purposes.includes("practice")) bankCounts.practice++;
+    if (
+      quiz &&
+      purposes.includes("similar") &&
+      relatedOriginalIds(item, [question]).length
+    )
+      bankCounts.similar++;
+    if (list(item.modes).includes("memory")) bankCounts.memory++;
+  }
+  const match = (ref: any, q: any) =>
+    ref &&
+    String(Number(ref.q_number)) === String(q.number) &&
+    ref.pdf_page === q.page &&
+    (!ref.chapter_id || ref.chapter_id === q.chapterId);
+  const wrong = new Set(state.mistakes.map((m) => m.questionId));
+  const similar = state.questions
+    .filter((q) => q.id !== question.id && !q.mergedInto && !q.autoRetired)
+    .flatMap((q) => {
+      const saved = relations.find(
+        (r) =>
+          r.document_id === question.materialId &&
+          q.materialId === question.materialId &&
+          ((match(r.a, question) && match(r.b, q)) ||
+            (match(r.b, question) && match(r.a, q))),
+      );
+      const shared = ids.filter((id) => list(q.conceptIds).includes(id));
+      if (!saved && (!wrong.has(q.id) || !shared.length)) return [];
+      return [
+        {
+          id: q.id,
+          number: q.number,
+          page: q.page,
+          materialId: q.materialId,
+          score: saved
+            ? Number(saved.score)
+            : shared.length /
+              Math.max(1, new Set([...ids, ...list(q.conceptIds)]).size),
+          basis: saved ? "prepared_similarity" : "shared_concepts",
+          reason: saved ? saved.reason : `공통 개념 ${shared.length}개`,
+          canSolve:
+            list(q.regions).length > 0 &&
+            list(q.imagePaths).length === list(q.regions).length,
+        },
+      ];
+    })
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 8);
+  const analysis = clone(question.analysis ?? null);
+  return {
+    concepts,
+    bankScope: { originalId: question.id },
+    analysis,
+    answer: question.answer || analysis?.answer || "",
+    explanation: question.explanation || analysis?.explanation || "",
+    solutionSteps: list(analysis?.solution_steps),
+    hasSavedAnalysis: !!(analysis || question.answer || question.explanation),
+    memorize: unique([
+      ...list(question.memorize),
+      ...list(analysis?.memorize),
+      ...concepts.flatMap((c) => list(c.memorize)),
+    ]),
+    bankCounts,
+    questions: relatedBank
+      .filter((i) => !i.archived)
+      .map((i) =>
+        clone({
+          id: i.id,
+          prompt: i.prompt,
+          type: i.type,
+          choices: list(i.choices),
+          answer: i.answer,
+          explanation: i.explanation,
+          reviewStatus: i.reviewStatus ?? i.review_status ?? "approved",
+          active: approved(i),
+        }),
+      ),
+    similar,
+  };
 }
 export function answerSolve(
   input: any,
@@ -971,6 +1121,9 @@ export function answerSolve(
               streak: result === "wrong" ? 0 : streak + 1,
               dueAt: new Date(Date.parse(at) + days * 86400000).toISOString(),
               lastResult: result,
+              resolved: result === "correct",
+              resolvedAt: result === "correct" ? at : null,
+              archived: false,
               reviewCount: (mistake.reviewCount || 0) + 1,
               correctCount:
                 (mistake.correctCount || 0) + Number(result === "correct"),
