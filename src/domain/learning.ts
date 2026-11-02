@@ -889,8 +889,9 @@ export function createSolve(questions: any[]): any {
 /** Revealed only after the learner explicitly asks to check the original. */
 export function originalReview(question:any,state:LearningState,relations:any[]=[]):any {
  const ids=list(question.conceptIds),concepts=state.concepts.filter(c=>ids.includes(c.id)).map(clone);
- const bank=state.bank.filter(i=>approved(i)&&itemConcepts(i).some(id=>ids.includes(id)));
- const bankCounts={concept:0,practice:0,similar:0,memory:0};
+ const relatedBank=state.bank.filter(i=>itemConcepts(i).some(id=>ids.includes(id)));
+ const bank=relatedBank.filter(approved);
+ const bankCounts={concept:0,practice:0,similar:0,memory:0,pending:relatedBank.filter(i=>(i.reviewStatus??i.review_status)==='needs_review'&&!i.archived).length};
  for(const item of bank){
   const purposes=unique([item.purpose,...list(item.purposes)].filter(Boolean));
   if(purposes.includes('concept')||!purposes.length)bankCounts.concept++;

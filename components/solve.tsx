@@ -443,6 +443,7 @@ export function Solve({
               <Button variant="secondary" disabled={!review.bankCounts.practice} onClick={()=>onBank({conceptIds:q.conceptIds,purposes:['practice'],count:10})}>문제 은행 {review.bankCounts.practice}개</Button>
               <Button variant="secondary" disabled={!review.bankCounts.similar} onClick={()=>onBank({materialIds:[q.materialId],questionIds:[q.id],purposes:['similar'],count:5})}>유사 문제 {review.bankCounts.similar}개</Button>
               <Button variant="secondary" disabled={!review.bankCounts.memory} onClick={()=>onBank({conceptIds:q.conceptIds,mode:'memory',count:10})}>암기하기 {review.bankCounts.memory}개</Button>
+              {review.bankCounts.pending>0&&<Button variant="secondary" onClick={()=>onBank({conceptIds:q.conceptIds,showPending:true})}>준비된 문항 검토 {review.bankCounts.pending}개</Button>}
               <Button variant="ghost" onClick={()=>onDetails(q.id)}>이 문항 학습 자료</Button>
             </div>
             <h3 style={{marginTop:24}}>함께 복습할 오답·유사 원본</h3>

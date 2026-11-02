@@ -504,6 +504,8 @@ describe("saved clean original solving", () => {
     const review=originalReview(state.questions[0],state);
     expect(review.memorize).toEqual(['공역 확인']);expect(review.bankCounts.concept).toBe(2);
     expect(review.similar[0]).toMatchObject({id:'other',basis:'shared_concepts',score:1});
+    state.bank.push({...structuredClone(state.bank[0]),id:'pending',active:false,review_status:'needs_review'});
+    expect(originalReview(state.questions[0],state).bankCounts).toMatchObject({concept:2,pending:1});
     const saved=originalReview(state.questions[0],state,[{document_id:'doc',a:{q_number:'47',pdf_page:1},b:{q_number:'48',pdf_page:2},score:.8,reason:'조건 비교'}]);
     expect(saved.similar[0]).toMatchObject({basis:'prepared_similarity',score:.8,reason:'조건 비교'});
     expect(originalReview({...state.questions[0],conceptIds:[]},state).concepts).toEqual([]);
