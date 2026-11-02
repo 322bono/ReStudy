@@ -177,6 +177,7 @@ export default function MaterialWorkspace({
     if (busy) return;
     setBusy(name);
     setMessage("");
+    if(name.includes('API')){setApiError('');setApiRunning(true);setApiStartedAt(Date.now());setApiElapsed(0);}
     try {
       await fn();
       await load();
@@ -186,6 +187,7 @@ export default function MaterialWorkspace({
       if(name.includes("API"))setApiError((e as Error).message);
     } finally {
       setBusy("");
+      if(name.includes('API'))setApiRunning(false);
     }
   };
   async function create(method: "external" | "api") {
@@ -363,7 +365,7 @@ export default function MaterialWorkspace({
           {message}
         </p>
       )}
-      {(apiRunning||apiError||job?.apiJobs?.length||job?.apiStatus?.state==='paused')&&<section className="panel" aria-live="polite" style={{padding:16,marginBottom:16}}><h2>API 준비 결과</h2><p role={apiError?'alert':'status'} className={apiError?'error':''}>{apiError||job?.apiStatus?.message||'API 요청을 시작하고 있습니다.'}</p><p>저장된 결과 {job?.apiStatus?.completed??0}/{job?.totalParts??0}분할 · 문항 {job?.importedQuestions??0}개{apiRunning?` · 경과 ${apiElapsed}초`:''}</p>{apiRunning&&<progress aria-label="API 분할 진행률" max={job?.totalParts||1} value={job?.apiStatus?.completed||0}/>}{apiRunning&&<Button variant="secondary" onClick={()=>{stopApi.current=true;setMessage("현재 요청이 끝나면 완료된 결과를 보관하고 멈춥니다.");}}>현재 분할 후 멈추기</Button>}<details><summary>최근 시도와 오류</summary>{(job?.apiAttempts??[]).map((a:any,i:number)=><p key={i}>{a.provider} · {a.model} · {Math.round((a.duration_ms??0)/1000)}초 · {a.success?'유효한 응답 수신':aiFailureText(a.error)}</p>)}{!job?.apiAttempts?.length&&<p>아직 모델 호출 이력이 없습니다. 원본·요청 범위를 확인하거나 첫 응답을 기다리는 단계입니다.</p>}</details></section>}
+      {(apiRunning||apiError||job?.apiJobs?.length||job?.apiStatus?.state==='paused')&&<section className="panel" aria-live="polite" style={{padding:16,marginBottom:16}}><h2>API 준비 결과</h2><p role={apiError?'alert':'status'} className={apiError?'error':''}>{apiError||(apiRunning&&job?.apiStatus?.state!=='running'?'API 요청을 준비하고 있습니다. 완료된 결과는 보관됩니다.':job?.apiStatus?.message)||'API 요청을 시작하고 있습니다.'}</p><p>저장된 결과 {job?.apiStatus?.completed??0}/{job?.totalParts??0}분할 · 응답 보관 {job?.preparedQuestions??0}문항 · 은행 등록 {job?.importedQuestions??0}문항{apiRunning?` · 경과 ${apiElapsed}초`:''}</p>{apiRunning&&<progress aria-label="API 분할 진행률" max={job?.totalParts||1} value={job?.apiStatus?.completed||0}/>}{apiRunning&&<Button variant="secondary" onClick={()=>{stopApi.current=true;setMessage("현재 요청이 끝나면 완료된 결과를 보관하고 멈춥니다.");}}>현재 분할 후 멈추기</Button>}<details><summary>최근 시도와 오류</summary>{(job?.apiAttempts??[]).map((a:any,i:number)=><p key={i}>{a.provider} · {a.model} · {Math.round((a.duration_ms??0)/1000)}초 · {a.success?'유효한 응답 수신':aiFailureText(a.error)}</p>)}{!job?.apiAttempts?.length&&<p>아직 모델 호출 이력이 없습니다. 원본·요청 범위를 확인하거나 첫 응답을 기다리는 단계입니다.</p>}</details>{job?.preparedPreview?.length>0&&<details><summary>최근 보관한 결과 보기 · 검토 전</summary>{job.preparedPreview.map((q:any,i:number)=><article key={i} style={{marginTop:16}}><strong>{q.part}분할 · {q.prompt}</strong><p>정답: {q.answer}</p><p>{q.explanation}</p></article>)}</details>}</section>}
       {tab === "concepts" && (
         <>
           <LocalOutlineEditor outline={doc.localOutline} pageCount={doc.pageCount} sourcePage={doc.tocPages?.[0]??doc.selectedPages?.[0]??1} busy={!!busy} onSave={outline=>act('자체 목차 저장',async()=>{await api(`materials/${id}/outline`,'POST',{outline,manual:true});})}/>

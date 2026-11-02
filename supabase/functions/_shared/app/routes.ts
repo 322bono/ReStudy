@@ -3,7 +3,7 @@ import {material,publicQuestion,put,row,rows,signed,state,value,type Ctx} from '
 import {importContent,validate} from './content.ts';
 import {exportData,restoreData} from './backup.ts';
 import{saveOutline,documentIndex}from'./pdf-index.ts';
-import {answerSolve,answerStudy,createBankStudy,createReview,createSolve,createStudy,publicStudy,repeatWeak,revealStudy,relatedOriginalIds} from '../../../../src/domain/learning.ts';
+import {answerSolve,answerStudy,createBankStudy,createReview,createSolve,createStudy,publicStudy,repeatWeak,revealStudy,relatedOriginalIds,originalReview} from '../../../../src/domain/learning.ts';
 
 const now=()=>new Date().toISOString(),uuid=()=>crypto.randomUUID();
 function numbers(text:string,max=1000){if(!text?.trim())return [];const out:number[]=[];for(const part of text.trim().split(/[\s,]+/)){const m=part.match(/^(\d{1,5})(?:[-~](\d{1,5}))?$/);if(!m)throw new AppError('번호 또는 범위를 확인하세요.');const a=+m[1],b=+(m[2]||m[1]);if(a<1||b<a||b-a>=max)throw new AppError('번호 범위를 확인하세요.');for(let n=a;n<=b;n++)out.push(n);if(out.length>max)throw new AppError('선택한 번호가 너무 많습니다.')}return [...new Set(out)];}
@@ -67,7 +67,7 @@ export async function handle(ctx:Ctx,input:any):Promise<any>{
    const pages=await rows(ctx,'document_pages'),page=pages.find((pg:any)=>pg.document_id===id&&pg.number===b.page);if(!page)throw new AppError('페이지를 찾을 수 없습니다.');
    const {error}=await ctx.db.from('document_pages').update({data:{...page.data,kind:b.kind,manualKind:true}}).eq('id',page.id).eq('user_id',ctx.user.id);if(error)throw new AppError('페이지 종류를 저장하지 못했습니다.');return {ok:true};
   }
-  const s=await state(ctx,true);return {material:material(r),pages:s.pages.filter((pg:any)=>pg.materialId===id),questions:s.questions.filter((q:any)=>q.materialId===id).map(publicQuestion)};
+  const s=await state(ctx,true);return {material:material(r),pages:s.pages.filter((pg:any)=>pg.materialId===id),questions:s.questions.filter((q:any)=>q.materialId===id&&!q.mergedInto).map(publicQuestion)};
  }
  if(route==='content'){
   const s=await state(ctx,true),pkg=content(s);
@@ -102,9 +102,9 @@ export async function handle(ctx:Ctx,input:any):Promise<any>{
   return saveStudy(ctx,createStudy(b,learnState(await state(ctx,true))));
  }
  if(route==='solve'){
-  if(!id){const s=learnState(await state(ctx,true)),qs=(b.questionIds||[]).map((id:string)=>s.questions.find((q:any)=>q.id===id));if(!qs.length||qs.some((q:any)=>!q||!q.confirmed||!q.imagePaths?.length))throw new AppError('확인된 깨끗한 원본 문항을 선택하세요.');const session=createSolve(qs);await put(ctx,'solve_sessions',session.id,session);return solvePublic(session);}
+  if(!id){const s=learnState(await state(ctx,true)),qs=(b.questionIds||[]).map((id:string)=>s.questions.find((q:any)=>q.id===id));if(!qs.length||qs.some((q:any)=>!q||!q.imagePaths?.length))throw new AppError('저장된 원본 크롭이 있는 문항을 선택하세요.');const session=createSolve(qs);await put(ctx,'solve_sessions',session.id,session);return solvePublic(session);}
   const ss=value(await row(ctx,'solve_sessions',id));
-  if(action==='answer-key'){const q=ss.questionSnapshots.find((q:any)=>q.id===p[3]);if(!q)throw new AppError('이 풀이의 문항이 아닙니다.');return {available:!!q.answer,answer:q.answer||'',explanation:q.explanation||''};}
+  if(action==='answer-key'){const q=ss.questionSnapshots.find((q:any)=>q.id===p[3]);if(!q)throw new AppError('이 풀이의 문항이 아닙니다.');const s=learnState(await state(ctx,true)),relations=await rows(ctx,'problem_similarities');return {available:!!q.answer,answer:q.answer||'',explanation:q.explanation||'',review:originalReview(q,s,relations)};}
   if(action==='answer'||action==='drawing')return learningMutation(ctx,'solve',id,{...b,drawingOnly:action==='drawing'});
   return solvePublic(ss);
  }

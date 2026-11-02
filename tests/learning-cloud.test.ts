@@ -4,6 +4,7 @@ import {
   answerStudy,
   createReview,
   createSolve,
+  originalReview,
   createStudy,
   createBankStudy,
   publicStudy,
@@ -467,7 +468,7 @@ describe("material selection and honest grading", () => {
 });
 
 describe("saved clean original solving", () => {
-  it("requires confirmed saved private crop paths and snapshots clean source/answer data", () => {
+  it("opens saved private crops including unconfirmed OCR candidates and freezes clean source/answer data", () => {
     const state = fixture();
     const session = createSolve(state.questions);
     state.questions[0].answer = "수정";
@@ -483,9 +484,7 @@ describe("saved clean original solving", () => {
       status: "active",
       version: 0,
     });
-    expect(() =>
-      createSolve([{ ...state.questions[0], confirmed: false }]),
-    ).toThrow("확인");
+      expect(createSolve([{...state.questions[0],confirmed:false}]).questionSnapshots[0].confirmed).toBe(false);
     expect(() =>
       createSolve([{ ...state.questions[0], imagePaths: [] }]),
     ).toThrow("저장");
@@ -497,6 +496,17 @@ describe("saved clean original solving", () => {
         },
       ]),
     ).toThrow("경로");
+  });
+  it('reveals prepared concepts and distinguishes stored similarity from shared-concept overlap',()=>{
+    const state=fixture();state.concepts[0].memorize=['공역 확인'];
+    state.questions.push({...structuredClone(state.questions[0]),id:'other',number:48,page:2,chapterId:'chapter'});
+    state.mistakes.push({id:'m2',questionId:'other'});
+    const review=originalReview(state.questions[0],state);
+    expect(review.memorize).toEqual(['공역 확인']);expect(review.bankCounts.concept).toBe(2);
+    expect(review.similar[0]).toMatchObject({id:'other',basis:'shared_concepts',score:1});
+    const saved=originalReview(state.questions[0],state,[{document_id:'doc',a:{q_number:'47',pdf_page:1},b:{q_number:'48',pdf_page:2},score:.8,reason:'조건 비교'}]);
+    expect(saved.similar[0]).toMatchObject({basis:'prepared_similarity',score:.8,reason:'조건 비교'});
+    expect(originalReview({...state.questions[0],conceptIds:[]},state).concepts).toEqual([]);
   });
   it("keeps final drawings and answers when duplicate answers or late drawings arrive", () => {
     const state = fixture();

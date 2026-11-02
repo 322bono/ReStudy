@@ -865,10 +865,7 @@ export function createSolve(questions: any[]): any {
     const question = find(questions, id, "문제를 찾을 수 없습니다.");
     const regions = list(question.regions),
       paths = list(question.imagePaths);
-    if (!question.confirmed)
-      throw new LearningError(
-        `${question.number}번의 저장된 영역을 콘텐츠 관리에서 먼저 확인해 주세요.`,
-      );
+      if(question.autoRetired||question.mergedInto)throw new LearningError('현재 사용하는 원본 문항을 선택해 주세요.');
     if (!regions.length || paths.length !== regions.length)
       throw new LearningError(
         "미리 저장된 원본 크롭이 없습니다. 사전 처리를 확인해 주세요.",
@@ -887,6 +884,29 @@ export function createSolve(questions: any[]): any {
     createdAt: now(),
     status: "active",
   };
+}
+
+/** Revealed only after the learner explicitly asks to check the original. */
+export function originalReview(question:any,state:LearningState,relations:any[]=[]):any {
+ const ids=list(question.conceptIds),concepts=state.concepts.filter(c=>ids.includes(c.id)).map(clone);
+ const bank=state.bank.filter(i=>approved(i)&&itemConcepts(i).some(id=>ids.includes(id)));
+ const bankCounts={concept:0,practice:0,similar:0,memory:0};
+ for(const item of bank){
+  const purposes=unique([item.purpose,...list(item.purposes)].filter(Boolean));
+  if(purposes.includes('concept')||!purposes.length)bankCounts.concept++;
+  if(purposes.includes('practice'))bankCounts.practice++;
+  if(purposes.includes('similar')&&relatedOriginalIds(item,[question]).length)bankCounts.similar++;
+  if(list(item.modes).includes('memory'))bankCounts.memory++;
+ }
+ const match=(ref:any,q:any)=>ref&&String(Number(ref.q_number))===String(q.number)&&ref.pdf_page===q.page&&(!ref.chapter_id||!q.chapterId||ref.chapter_id===q.chapterId);
+ const wrong=new Set(state.mistakes.map(m=>m.questionId));
+ const similar=state.questions.filter(q=>q.id!==question.id&&!q.mergedInto&&!q.autoRetired).flatMap(q=>{
+  const saved=relations.find(r=>r.document_id===question.materialId&&q.materialId===question.materialId&&((match(r.a,question)&&match(r.b,q))||(match(r.b,question)&&match(r.a,q))));
+  const shared=ids.filter(id=>list(q.conceptIds).includes(id));
+  if(!saved&&(!wrong.has(q.id)||!shared.length))return[];
+  return[{id:q.id,number:q.number,page:q.page,materialId:q.materialId,score:saved?Number(saved.score):shared.length/Math.max(1,new Set([...ids,...list(q.conceptIds)]).size),basis:saved?'prepared_similarity':'shared_concepts',reason:saved?saved.reason:`공통 개념 ${shared.length}개`,canSolve:list(q.regions).length>0&&list(q.imagePaths).length===list(q.regions).length}];
+ }).sort((a,b)=>b.score-a.score).slice(0,8);
+ return{concepts,analysis:clone(question.analysis??null),memorize:unique([...list(question.memorize),...list(question.analysis?.memorize),...concepts.flatMap(c=>list(c.memorize))]),bankCounts,similar};
 }
 export function answerSolve(
   input: any,

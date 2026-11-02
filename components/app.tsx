@@ -85,6 +85,7 @@ export default function RestudyApp({
     [studyIds, setStudyIds] = useState<string[]>([]);
   const [bankScope, setBankScope] = useState<any>({});
   const returnView = useRef<View>({ name: "materials" });
+  const bankReturn=useRef<View>({name:'study'});
   const notify = useCallback((message: string) => setToast(message), []);
   const refresh = useCallback(async () => {
     setState(await api<AppState>("state"));
@@ -113,6 +114,7 @@ export default function RestudyApp({
     return () => clearInterval(timer);
   }, [state?.materials, refresh, notify]);
   const navigate = (next: View) => {
+    if(next.name==='bank')bankReturn.current=view;
     setView(next);
     const p = new URLSearchParams();
     if (next.name !== "home") p.set("screen", next.name);
@@ -474,7 +476,7 @@ export default function RestudyApp({
             {view.name === "bank" && (
               <Bank
                 initial={bankScope}
-                onBack={() => navigate({ name: "study" })}
+                onBack={() => navigate(bankReturn.current)}
                 onStart={(id) => {
                   void refresh();
                   navigate({ name: "study-session", id });
@@ -503,6 +505,9 @@ export default function RestudyApp({
                 onRefresh={refresh}
                 onError={notify}
                 onConcept={concept}
+                onBank={(scope)=>{setBankScope(scope);navigate({name:'bank'});}}
+                onSolve={solve}
+                onDetails={(id)=>navigate({name:'wrong',id})}
               />
             )}
             {view.name === "wrong" && view.id && (

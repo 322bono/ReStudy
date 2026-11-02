@@ -50,7 +50,7 @@ export async function runTask(input: TaskInput, context: RouterContext): Promise
         // Never persist provider bodies, exception messages, prompts or request headers.
         const failure = error instanceof ProviderError ? error : new ProviderError("provider_error");
         lastError=failure.code;
-        await context.log({ provider,credential_id:state.credentialId,key_label:state.label, model: model.id, kind: input.kind, success: false, attempt: attempt + 1, duration_ms: Math.max(0, now() - start), error: failure.code, http_status: failure.status ?? null });
+        await context.log({ provider,credential_id:state.credentialId,key_label:state.label, model: model.id, kind: input.kind, success: false, attempt: attempt + 1, duration_ms: Math.max(0, now() - start), error: failure.code, diagnostic:failure.diagnostic??null,http_status: failure.status ?? null });
         if (["provider_error", "network_error"].includes(failure.code) && attempt === 0) { await sleep(1000); continue; }
         const until = failure.retryAt ?? (["provider_error", "network_error","timeout"].includes(failure.code) ? now() + 5000 : now()+600000);
         if (until) retryTimes.push(until);

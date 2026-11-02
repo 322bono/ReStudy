@@ -3,7 +3,34 @@ import { modelFor } from "./catalog.ts";
 import { outputSchema, type TaskKind } from "./schemas.ts";
 
 export class ProviderError extends Error {
-  constructor(public code: "rate_limited" | "auth_error" | "provider_error" | "network_error" | "timeout" | "invalid_response" | "model_unavailable" | "request_invalid" | "model_access_denied", public retryAt?: number, public status?: number,public quotaScope:'group'|'model'='group') { super(code); }
+  constructor(public code: "rate_limited" | "auth_error" | "provider_error" | "network_error" | "timeout" | "invalid_response" | "model_unavailable" | "request_invalid" | "model_access_denied", public retryAt?: number, public status?: number,public quotaScope:'group'|'model'='group',public diagnostic?:string) { super(code); }
+}
+/** Only fixed categories leave this module; never expose provider messages or values. */
+export function requestDiagnostic(body:any):string {
+  if(body===undefined)return 'unreadable_error_response';
+  const message=JSON.stringify(body);
+  if(/FAILED_PRECONDITION|billing|free tier.*(?:available|supported)|location.*supported/i.test(message))return 'account_precondition';
+  if(/model.*(?:not supported|not found|not available)|unsupported.*model/i.test(message))return 'model_configuration';
+  if(/schema|allOf|additionalProperties|propertyNames|uniqueItems|anyOf/i.test(message))return 'schema_rejected';
+  if(/response.?format|response.?mime/i.test(message))return 'response_format_rejected';
+  if(/thinking|reasoning/i.test(message))return 'thinking_rejected';
+  if(/max.?output.?tokens|max.?tokens/i.test(message))return 'output_limit_rejected';
+  if(/\bstore\b/i.test(message))return 'store_rejected';
+  return 'invalid_argument';
+}
+/** Gemini accepts a schema subset. The complete contract is still validated
+ * after generation; conditional MCQ rules remain in the prompt and validator. */
+export function geminiSchema(value:any):any {
+  if(!value||typeof value!=='object'||Array.isArray(value))return value;
+  const out:any={};
+  for(const key of ['type','title','description','enum','required','format','minimum','maximum','minItems','maxItems'])if(value[key]!==undefined)out[key]=value[key];
+  if(value.const!==undefined)out.enum=[value.const];
+  if(value.exclusiveMinimum!==undefined)out.minimum=value.type==='integer'?Math.floor(value.exclusiveMinimum)+1:value.exclusiveMinimum;
+  if(value.properties)out.properties=Object.fromEntries(Object.entries(value.properties).map(([key,schema])=>[key,geminiSchema(schema)]));
+  if(value.items)out.items=geminiSchema(value.items);
+  if(value.anyOf)out.anyOf=value.anyOf.map(geminiSchema);
+  if(value.additionalProperties!==undefined)out.additionalProperties=typeof value.additionalProperties==='boolean'?value.additionalProperties:geminiSchema(value.additionalProperties);
+  return out;
 }
 export type ImageInput = { mimeType: string; data: string };
 export type ProviderInput = { kind: TaskKind; prompt: string; images?: ImageInput[] };
@@ -23,7 +50,7 @@ async function httpError(response: Response, now: number, model:string): Promise
     const scope=violations.length&&violations.every((v:any)=>v?.quotaDimensions?.model===model)?'model':'group';
     return new ProviderError("rate_limited", retryAfter(response.headers.get("retry-after"), now) ?? now + 60000, 429,scope);
   }
-  return new ProviderError(response.status >= 500 ? "provider_error" : response.status===404?"model_unavailable":"request_invalid", undefined, response.status);
+  return new ProviderError(response.status >= 500 ? "provider_error" : response.status===404?"model_unavailable":"request_invalid", undefined, response.status,'group',response.status===400?requestDiagnostic(body):undefined);
 }
 async function boundedJson(response: Response): Promise<any> {
   if (!response.body) throw new ProviderError("invalid_response");
@@ -58,7 +85,7 @@ export async function generate(provider: Provider, model: string, key: string, i
     tools: [{ type: "function", function: { name: "submit_result", description: "Submit validated study content", parameters: schema } }], max_tokens: Math.min(input.kind==='restudy_v1'?16384:4096,definition.maxOutputTokens??4096), temperature: 0.2, stream: false,...(definition.nvidiaReasoningEffort?{reasoning_effort:definition.nvidiaReasoningEffort}:{}),
   } : {
     systemInstruction: { parts: [{ text: instruction }] }, contents: [{ role: "user", parts: [{ text: input.prompt }, ...(input.images ?? []).map((image) => ({ inlineData: { mimeType: image.mimeType, data: image.data } }))] }],
-    generationConfig: { temperature: 0.2, maxOutputTokens: 8192, thinkingConfig: { thinkingLevel: "LOW" }, responseFormat: { text: { mimeType: "APPLICATION_JSON", schema } } },store:false,
+    generationConfig: { temperature: 0.2, maxOutputTokens: 8192, thinkingConfig: { thinkingLevel: "LOW" }, responseFormat: { text: { mimeType: "APPLICATION_JSON", ...(input.kind==='restudy_v1'?{}:{schema:geminiSchema(schema)}) } } },store:false,
   };
   let response: Response;
   try { response = await transport(url, { method: "POST", headers, body: JSON.stringify(body), redirect: "error", signal: AbortSignal.timeout(timeoutMs) }); }
