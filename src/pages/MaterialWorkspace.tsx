@@ -84,6 +84,10 @@ export default function MaterialWorkspace({
       printedPageOffset: "",
     });
   const currentJob = useRef<string | undefined>(undefined);
+  useEffect(()=>{
+    const fresh=state.materials.find(material=>material.id===id);
+    if(fresh)setDoc(current=>({...current,...fresh}));
+  },[id,state.materials]);
   const stopApi=useRef(false);
   useEffect(()=>()=>{stopApi.current=true;},[]);
   useEffect(()=>{if(!apiRunning)return;let stopped=false,polling=false;const timer=setInterval(()=>{setApiElapsed(Math.floor((Date.now()-apiStartedAt)/1000));if(currentJob.current&&!polling){polling=true;void standard('get',{jobId:currentJob.current}).then(value=>{if(!stopped&&currentJob.current===value.id)setJob(value);}).catch(()=>{}).finally(()=>{polling=false;});}},2000);return()=>{stopped=true;clearInterval(timer);};},[apiRunning,apiStartedAt]);
