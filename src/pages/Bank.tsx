@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { api } from "../../lib/client";
 import { Button, Dialog, Empty } from "../../components/ui";
 type Scope = {
+  originalId?:string;
   materialIds?: string[];
   chapterIds?: string[];
   conceptIds?: string[];
@@ -66,9 +67,9 @@ export default function Bank({
       !i.archived &&
       (showPending || i.active) &&
       (i.modes || []).includes(mode) &&
+      (!initial.originalId||i.relatedQuestionIds?.includes(initial.originalId)||
+        [i.conceptId,...(i.conceptIds||[])].some((id:string)=>data?.originals?.find((q:any)=>q.id===initial.originalId)?.conceptIds?.includes(id))) &&
       (!initial.questionIds?.length ||
-        purposes.length !== 1 ||
-        purposes[0] !== "similar" ||
         i.relatedQuestionIds?.some((id: string) =>
           initial.questionIds!.includes(id),
         )) &&
@@ -122,6 +123,7 @@ export default function Bank({
         order,
         mode,
         questionIds: initial.questionIds || [],
+        originalId:initial.originalId,
         ...(selected.length ? { bankItemIds: selected } : {}),
       });
       onStart(session.id);

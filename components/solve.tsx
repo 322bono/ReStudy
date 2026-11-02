@@ -439,11 +439,11 @@ export function Solve({
             {review.memorize.length>0&&<><h3>암기사항</h3><ul>{review.memorize.map((v:string,i:number)=><li key={i}>{v}</li>)}</ul></>}
             <div className="row" style={{flexWrap:'wrap',marginTop:20}}>
               <Button disabled={!q.hasContent} onClick={()=>onConcept(q.id)}>개념 복습</Button>
-              <Button variant="secondary" disabled={!review.bankCounts.concept} onClick={()=>onBank({conceptIds:q.conceptIds,purposes:['concept'],mode:'check',count:5})}>개념 퀴즈 {review.bankCounts.concept}개</Button>
-              <Button variant="secondary" disabled={!review.bankCounts.practice} onClick={()=>onBank({conceptIds:q.conceptIds,purposes:['practice'],count:10})}>문제 은행 {review.bankCounts.practice}개</Button>
+              <Button variant="secondary" disabled={!review.bankCounts.concept} onClick={()=>onBank({...review.bankScope,purposes:['concept'],mode:'check',count:5})}>개념 퀴즈 {review.bankCounts.concept}개</Button>
+              <Button variant="secondary" disabled={!review.bankCounts.practice} onClick={()=>onBank({...review.bankScope,purposes:['practice'],count:10})}>문제 은행 {review.bankCounts.practice}개</Button>
               <Button variant="secondary" disabled={!review.bankCounts.similar} onClick={()=>onBank({materialIds:[q.materialId],questionIds:[q.id],purposes:['similar'],count:5})}>유사 문제 {review.bankCounts.similar}개</Button>
-              <Button variant="secondary" disabled={!review.bankCounts.memory} onClick={()=>onBank({conceptIds:q.conceptIds,mode:'memory',count:10})}>암기하기 {review.bankCounts.memory}개</Button>
-              {review.bankCounts.pending>0&&<Button variant="secondary" onClick={()=>onBank({conceptIds:q.conceptIds,showPending:true})}>준비된 문항 검토 {review.bankCounts.pending}개</Button>}
+              <Button variant="secondary" disabled={!review.bankCounts.memory} onClick={()=>onBank({...review.bankScope,mode:'memory',count:10})}>암기하기 {review.bankCounts.memory}개</Button>
+              {review.bankCounts.pending>0&&<Button variant="secondary" onClick={()=>onBank({...review.bankScope,showPending:true})}>준비된 문항 검토 {review.bankCounts.pending}개</Button>}
               <Button variant="ghost" onClick={()=>onDetails(q.id)}>이 문항 학습 자료</Button>
             </div>
             <h3 style={{marginTop:24}}>함께 복습할 오답·유사 원본</h3>

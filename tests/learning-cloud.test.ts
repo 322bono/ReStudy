@@ -5,6 +5,8 @@ import {
   createReview,
   createSolve,
   originalReview,
+  preparedBankLinks,
+  relatedOriginalIds,
   createStudy,
   createBankStudy,
   publicStudy,
@@ -468,6 +470,20 @@ describe("material selection and honest grading", () => {
 });
 
 describe("saved clean original solving", () => {
+  it('links every part of a single-original preparation without modifying stored concept mappings',()=>{
+    const state=fixture(),q=state.questions[0];
+    const links=preparedBankLinks([{id:'j',task_type:'problem',document_id:'doc',first_target:'q',second_target:null},{id:'multi',task_type:'problem',document_id:'doc',first_target:'q',second_target:'q2'},{id:'foreign',task_type:'problem',document_id:'another-doc',first_target:'q'}],[{job_id:'j',kind:'question',actual_id:'prepared'},{job_id:'multi',kind:'question',actual_id:'ambiguous'},{job_id:'foreign',kind:'question',actual_id:'not-owned-source'}],state.questions);
+    expect([...links]).toEqual([['prepared',['q']]]);
+    state.concepts.push({...structuredClone(state.concepts[0]),id:'new-concept',name:'후속 분할 개념'});
+    state.bank.push({...structuredClone(state.bank[0]),id:'prepared',conceptId:'new-concept',purpose:'practice',preparedQuestionIds:links.get('prepared')});
+    expect(relatedOriginalIds(state.bank.at(-1),state.questions)).toEqual(['q']);
+    const review=originalReview(q,state);
+    expect(review.bankCounts.practice).toBe(1);expect(review.concepts.map(c=>c.id)).toContain('new-concept');
+    const session=createBankStudy({...review.bankScope,purposes:['practice'],count:1},state);
+    expect(session.items[0].bankItemId).toBe('prepared');expect(session.linkedQuestionIds).toEqual(['q']);
+    expect(q.conceptIds).toEqual(['c0']);
+    expect(()=>createBankStudy({originalId:'missing',count:1},state)).toThrow('원본');
+  });
   it("opens saved private crops including unconfirmed OCR candidates and freezes clean source/answer data", () => {
     const state = fixture();
     const session = createSolve(state.questions);

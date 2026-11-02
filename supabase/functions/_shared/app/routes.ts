@@ -51,7 +51,7 @@ export async function handle(ctx:Ctx,input:any):Promise<any>{
    if(!Array.isArray(b.ids)||!b.ids.length||b.ids.length>1000)throw new AppError('검토한 문항을 선택하세요.');
    for(const qid of [...new Set<string>(b.ids)]){const q=await row(ctx,'concept_questions',qid);const result=await ctx.admin.from('concept_questions').update({review_status:'approved',data:{...q.data,active:true,reviewStatus:'approved',reviewedAt:now(),reviewedBy:ctx.user.id}}).eq('id',qid).eq('user_id',ctx.user.id);if(result.error)throw new AppError('검토 결과를 저장하지 못했습니다.');}return {reviewed:b.ids.length};
   }
-  if(id==='list')return {items:s.bank.map((i:any)=>{const {answer,explanation,acceptedAnswers,choiceFeedback,correction,standardQuestion,...safe}=i;return {...safe,relatedQuestionIds:relatedOriginalIds(i,s.questions)}}),concepts:s.concepts,chapters:s.chapters,materials:s.materials,results:s.results};
+  if(id==='list')return {items:s.bank.map((i:any)=>{const {answer,explanation,acceptedAnswers,choiceFeedback,correction,standardQuestion,...safe}=i;return {...safe,relatedQuestionIds:relatedOriginalIds(i,s.questions)}}),originals:s.questions.map((q:any)=>({id:q.id,conceptIds:q.conceptIds})),concepts:s.concepts,chapters:s.chapters,materials:s.materials,results:s.results};
  }
  if(route==='chapters'&&method==='PATCH'){
   const c=await row(ctx,'document_chapters',id),doc=await row(ctx,'documents',c.document_id);if(!b.title?.trim()||!Number.isInteger(b.startPage)||!Number.isInteger(b.endPage)||b.startPage<1||b.endPage<b.startPage||b.endPage>doc.data.pageCount)throw new AppError('단원 이름과 실제 PDF 페이지 범위를 확인하세요.');

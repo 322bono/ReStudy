@@ -583,9 +583,9 @@ export default function WrongWorkspace({
   ) {
     return {
       materialIds: question ? [question.materialId] : [],
-      questionIds: [id],
-      conceptIds,
-      purposes: [purpose],
+      originalId: purpose==="similar"?undefined:id,
+      questionIds: purpose==="similar"?[id]:[],
+      purposes: mode==="memory"?[]:[purpose],
       count,
       mode,
     };

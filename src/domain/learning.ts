@@ -229,6 +229,7 @@ function studySession(
 export function relatedOriginalIds(item: any, questions: any[]): string[] {
   return questions
     .filter((q) => {
+        if(list(item.preparedQuestionIds).includes(q.id))return true;
       const refs = [
         ...(item.origins || []).map((o: any) => ({
           ref: o.data?.source_problem || o.data?.sourceProblem,
@@ -249,6 +250,14 @@ export function relatedOriginalIds(item: any, questions: any[]): string[] {
       );
     })
     .map((q) => q.id);
+}
+/** Explicit single-original preparation is provenance, not a concept guess.
+ * Content refs also retain the link when a bank item was deduplicated. */
+export function preparedBankLinks(jobs:any[],refs:any[],questions:any[]):Map<string,string[]> {
+ const targets=new Map(jobs.filter(j=>j.task_type==='problem'&&j.first_target&&!j.second_target&&questions.some(q=>q.id===j.first_target&&q.materialId===j.document_id)).map(j=>[j.id,j.first_target]));
+ const links=new Map<string,string[]>();
+ for(const ref of refs){const target=targets.get(ref.job_id);if(target&&['question','flashcard'].includes(ref.kind))links.set(ref.actual_id,unique([...(links.get(ref.actual_id)??[]),target]));}
+ return links;
 }
 export function createBankStudy(options: any, state: LearningState): any {
   const count = Number(options.count ?? 20),
@@ -301,11 +310,8 @@ export function createBankStudy(options: any, state: LearningState): any {
   );
   if (Array.isArray(options.bankItemIds) && options.bankItemIds.length)
     pool = pool.filter((i) => options.bankItemIds.includes(i.id));
-  if (
-    list(options.questionIds).length &&
-    purposes.length === 1 &&
-    purposes[0] === "similar"
-  )
+  if(options.originalId){const original=find(state.questions,options.originalId,'원본 문항을 찾을 수 없습니다.');pool=pool.filter(i=>relatedOriginalIds(i,[original]).length>0||itemConcepts(i).some(id=>list(original.conceptIds).includes(id)));}
+  if (list(options.questionIds).length)
     pool = pool.filter((i) =>
       relatedOriginalIds(i, state.questions).some((id) =>
         options.questionIds.includes(id),
@@ -366,7 +372,7 @@ export function createBankStudy(options: any, state: LearningState): any {
       unique(chosen.flatMap(itemConcepts)),
     );
   session.bankStudy = true;
-  session.linkedQuestionIds = list(options.questionIds);
+  session.linkedQuestionIds = unique([...list(options.questionIds),...(options.originalId?[options.originalId]:[])]);
   if (chosen.length < count)
     session.notice = `조건에 맞는 ${chosen.length}문제로 시작합니다. 추가 생성은 별도로 선택할 수 있습니다.`;
   return session;
@@ -888,15 +894,17 @@ export function createSolve(questions: any[]): any {
 
 /** Revealed only after the learner explicitly asks to check the original. */
 export function originalReview(question:any,state:LearningState,relations:any[]=[]):any {
- const ids=list(question.conceptIds),concepts=state.concepts.filter(c=>ids.includes(c.id)).map(clone);
- const relatedBank=state.bank.filter(i=>itemConcepts(i).some(id=>ids.includes(id)));
+ const ids=list(question.conceptIds);
+ const relatedBank=state.bank.filter(i=>itemConcepts(i).some(id=>ids.includes(id))||relatedOriginalIds(i,[question]).length>0);
+ const concepts=state.concepts.filter(c=>unique([...ids,...relatedBank.flatMap(itemConcepts)]).includes(c.id)).map(clone);
  const bank=relatedBank.filter(approved);
  const bankCounts={concept:0,practice:0,similar:0,memory:0,pending:relatedBank.filter(i=>(i.reviewStatus??i.review_status)==='needs_review'&&!i.archived).length};
  for(const item of bank){
   const purposes=unique([item.purpose,...list(item.purposes)].filter(Boolean));
-  if(purposes.includes('concept')||!purposes.length)bankCounts.concept++;
-  if(purposes.includes('practice'))bankCounts.practice++;
-  if(purposes.includes('similar')&&relatedOriginalIds(item,[question]).length)bankCounts.similar++;
+  const quiz=list(item.modes).some(mode=>['quiz','check'].includes(mode));
+  if(quiz&&(purposes.includes('concept')||!purposes.length))bankCounts.concept++;
+  if(quiz&&purposes.includes('practice'))bankCounts.practice++;
+  if(quiz&&purposes.includes('similar')&&relatedOriginalIds(item,[question]).length)bankCounts.similar++;
   if(list(item.modes).includes('memory'))bankCounts.memory++;
  }
  const match=(ref:any,q:any)=>ref&&String(Number(ref.q_number))===String(q.number)&&ref.pdf_page===q.page&&(!ref.chapter_id||ref.chapter_id===q.chapterId);
@@ -907,7 +915,7 @@ export function originalReview(question:any,state:LearningState,relations:any[]=
   if(!saved&&(!wrong.has(q.id)||!shared.length))return[];
   return[{id:q.id,number:q.number,page:q.page,materialId:q.materialId,score:saved?Number(saved.score):shared.length/Math.max(1,new Set([...ids,...list(q.conceptIds)]).size),basis:saved?'prepared_similarity':'shared_concepts',reason:saved?saved.reason:`공통 개념 ${shared.length}개`,canSolve:list(q.regions).length>0&&list(q.imagePaths).length===list(q.regions).length}];
  }).sort((a,b)=>b.score-a.score).slice(0,8);
- return{concepts,analysis:clone(question.analysis??null),memorize:unique([...list(question.memorize),...list(question.analysis?.memorize),...concepts.flatMap(c=>list(c.memorize))]),bankCounts,similar};
+ return{concepts,bankScope:{originalId:question.id},analysis:clone(question.analysis??null),memorize:unique([...list(question.memorize),...list(question.analysis?.memorize),...concepts.flatMap(c=>list(c.memorize))]),bankCounts,similar};
 }
 export function answerSolve(
   input: any,
