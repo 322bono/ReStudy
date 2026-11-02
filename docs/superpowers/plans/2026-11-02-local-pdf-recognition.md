@@ -26,7 +26,7 @@ Keep login, learning/history, external restudy.v1 import and explicit AI actions
 - Full selected ranges completed in production: workbook 55 pages and textbook 46 pages. Raw originals, page checkpoints, old crops and learning IDs remain preserved.
 - Production reindex v3: visually verified pages 50/54/55/56/57/60 have exactly 0/4/4/6/4/4 candidates (22 original numbers). Overlapping 2974/2975/270 false markers were retired without deleting rows.
 - Real Korean scanned workbook coordinates and native textbook text were used; private PDFs and fixtures remain ignored under test-results.
-- 181 Vitest regressions passed; final feedback/routing refinements have additional focused verification; typecheck, build and Deno checks passed. Do not claim every math/table/multipage layout has been validated on a real source: those cases currently include synthetic fixtures.
+- 184 Vitest regressions passed; final feedback/routing refinements have additional focused verification; typecheck, build and Deno checks passed. Do not claim every math/table/multipage layout has been validated on a real source: those cases currently include synthetic fixtures.
 - Manual merge/split RPC migration applied; SQL rollback/history preservation and region geometry tests passed. Manual user content was not edited for testing.
 - Local OCR/number mask/TOC/index paths do not call external AI. AI-generated learning content is a separate explicit action.
 
@@ -34,4 +34,4 @@ Keep login, learning/history, external restudy.v1 import and explicit AI actions
 
 Saved OCR crops can be solved before management confirmation; the review flag is preserved. On explicit answer check the session's original answer is revealed together with prepared concept data, memory notes, reviewed banks and related originals. Stored similarity and shared-concept overlap are labeled separately. Missing concept/answer data remain missing. Test sessions must not grade user answers or fabricate history.
 
-Production review UI: the user-registered 381 original opened from Home → Review. Answer check revealed the review panel without grading or altering wrong-answer history. This original has zero concept mappings; its missing content is reported honestly.
+Production review UI was verified from Home → Review using a saved original. Answer check revealed the review panel without grading or altering wrong-answer history. Private learning records and generated outputs remain outside version control.
