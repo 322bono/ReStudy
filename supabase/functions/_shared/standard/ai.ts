@@ -9,6 +9,7 @@ import {readProfile,checked}from'../ai/credentials.ts';
 import {sanitizeSettings}from'../ai/settings.ts';
 import {encode64}from'../ai/crypto.ts';
 import type{TaskInput}from'../ai/router.ts';
+import{bankReferences}from'./references.ts';
 
 export async function prepareStandardPart(ctx:Ctx,master:any,part:number){
  const job=standardJob(master),document=await row(ctx,'documents',job.documentId),versions:any[]=[{table:'documents',id:document.id,updated_at:document.updated_at}],images:any[]=[];let source:any,allowedPages:number[]=[];
@@ -50,8 +51,9 @@ export async function prepareStandardPart(ctx:Ctx,master:any,part:number){
  const previous=part>1?(await rows(ctx,'content_parts')).filter((p:any)=>p.job_id===job.id&&p.part<part):[];
  // Preserve the exact IDs accepted in earlier parts of this same job. Names
  // alone cannot recreate references and may collide across chapters.
- const savedChapters=[...(master.data.knownChapters??job.chapters??[]),...previous.flatMap((p:any)=>p.raw?.chapters??[])];
- const savedConcepts=[...(master.data.knownConcepts??[]),...previous.flatMap((p:any)=>p.raw?.concepts??[])];
+ const bank=job.taskType==='bank'?await bankReferences(ctx,job):null;
+ const savedChapters=[...(bank?.chapters??[]),...(master.data.knownChapters??job.chapters??[]),...previous.flatMap((p:any)=>p.raw?.chapters??[])];
+ const savedConcepts=[...(bank?.concepts??[]),...(master.data.knownConcepts??[]),...previous.flatMap((p:any)=>p.raw?.concepts??[])];
  source.saved_references={chapters:[...new Map(savedChapters.map((c:any)=>[c.id,c])).values()],concepts:[...new Map(savedConcepts.map((c:any)=>[c.id,c])).values()].map((c:any)=>({id:c.id,chapter_id:c.chapter_id,name:c.name,source_pages:c.source_pages??[]}))};
  const contextText=JSON.stringify(source);if(contextText.length>100000)throw new AppError('한 작업의 본문이 큽니다. 범위를 나누거나 외부 PDF 분석을 이용하세요.');
  const count=job.partCounts?.[part-1]??splitCount(job.questionCount,job.partSize)[part-1]??0;

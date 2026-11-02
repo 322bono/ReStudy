@@ -6,6 +6,7 @@ import {selectPages,tocPages} from '../../../../src/domain/pages.ts';
 import{apiProgress}from'../../../../src/domain/ai-status.ts';
 import{readProfile}from'../ai/credentials.ts';
 import{sanitizeSettings}from'../ai/settings.ts';
+import{bankReferences}from'./references.ts';
 
 export const standardJob=(r:any):StandardJob=>({...r.data,id:r.id,documentId:r.document_id});
 function dbError(error:any,message:string){if(error)throw new AppError(message);}
@@ -69,7 +70,8 @@ export async function previewPart(ctx:Ctx,jobId:string,input:unknown){
  const rowJob=await row(ctx,'content_jobs',jobId),job=standardJob(rowJob);let incoming;
  try{incoming=parseRestudy(input)}catch(error){throw new AppError((error as Error).message)}
  const {data:parts,error}=await ctx.db.from('content_parts').select('*').eq('user_id',ctx.user.id).eq('job_id',jobId).order('part');dbError(error,'이전 분할을 읽지 못했습니다.');
- const merged=validateRestudyParts([...parts.map((p:any)=>p.raw),incoming],job,{chapters:rowJob.data.knownChapters||[],concepts:rowJob.data.knownConcepts||[]});
+ const saved=job.taskType==='bank'?await bankReferences(ctx,job):null;
+ const merged=validateRestudyParts([...parts.map((p:any)=>p.raw),incoming],job,{chapters:[...new Map([...(saved?.chapters??[]),...(rowJob.data.knownChapters??[])].map(c=>[c.id,c])).values()],concepts:[...new Map([...(saved?.concepts??[]),...(rowJob.data.knownConcepts??[])].map(c=>[c.id,c])).values()]});
  const perPart=job.partCounts?.[incoming.part-1]??splitCount(job.questionCount,job.partSize)[incoming.part-1];if(incoming.questions.length>perPart)merged.errors.push(`이번 분할은 ${perPart}문제 이하로 입력하세요.`);
  if(['toc','concepts'].includes(job.taskType)&&incoming.questions.length)merged.errors.push('개념·목차 작업에는 문제를 가져오지 않습니다. 기본 문제 또는 문제 은행을 선택하세요.');
  if(job.taskType==='concepts'&&incoming.problem_analyses.length)merged.errors.push('개념 정리에는 원본 문제 분석을 가져오지 않습니다.');
@@ -80,11 +82,11 @@ export async function previewPart(ctx:Ctx,jobId:string,input:unknown){
  const samePart=parts.find((p:any)=>p.part===incoming.part&&canonicalJson(p.raw)===canonicalJson(incoming));
  // Preserve legacy hashes when an unchanged existing part is reimported.
  const hash=samePart?.content_hash??await sha256(canonicalJson(incoming));
- return {job,rowJob,incoming,existingCount:parts.length,hash,merged,preview:{valid:merged.valid,ready:merged.ready,complete:merged.complete,errors:merged.errors,warnings:merged.warnings,unresolved:merged.unresolved,duplicates:merged.duplicates,counts:merged.counts,part:incoming.part,totalParts:incoming.total_parts,hash,review:{chapters:merged.chapters,concepts:merged.concepts,questions:merged.questions,flashcards:merged.flashcards,problemAnalyses:merged.problemAnalyses}}};
+ return {job,rowJob,incoming,existingCount:parts.length,hash,merged,bindings:saved?.bindings??{},preview:{valid:merged.valid,ready:merged.ready,complete:merged.complete,errors:merged.errors,warnings:merged.warnings,unresolved:merged.unresolved,duplicates:merged.duplicates,counts:merged.counts,part:incoming.part,totalParts:incoming.total_parts,hash,review:{chapters:merged.chapters,concepts:merged.concepts,questions:merged.questions,flashcards:merged.flashcards,problemAnalyses:merged.problemAnalyses}}};
 }
 export async function commitPart(ctx:Ctx,jobId:string,input:unknown,reviewed=false,child?:{id:string,lease:string}){
  const checked=await previewPart(ctx,jobId,input);if(!checked.merged.valid)throw new AppError(checked.merged.errors.join('\n'));
- const compiled=await compileRestudy(checked.merged,checked.job);
+ const compiled=await compileRestudy(checked.merged,checked.job,checked.bindings);
  const {data,error}=await ctx.admin.rpc('commit_restudy_part',{p_user_id:ctx.user.id,p_job_id:jobId,p_part:checked.incoming,p_hash:checked.hash,p_existing_count:checked.existingCount,p_compiled:compiled,p_reviewed:reviewed===true,p_ai_job_id:child?.id||null,p_ai_lease:child?.lease||null});
  dbError(error,'분할을 저장하지 못했습니다. 다른 화면의 변경 여부를 확인하고 다시 검사하세요.');
  if(!data)throw new AppError('원본이나 작업 상태가 변경되어 결과를 보류했습니다.',409);

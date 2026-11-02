@@ -5,6 +5,7 @@ import {
   validateRestudyParts,
 } from "./restudy.ts";
 type Validated = ReturnType<typeof validateRestudyParts>;
+export type ConceptBindings=Record<string,{key:string;subject:string;major:string;minor:string}>;
 async function hash(value: string) {
   return [
     ...new Uint8Array(
@@ -14,7 +15,7 @@ async function hash(value: string) {
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
 }
-export async function compileRestudy(merged: Validated, job: StandardJob) {
+export async function compileRestudy(merged: Validated, job: StandardJob,bindings:ConceptBindings={}) {
   if (!merged.valid)
     throw new Error("검증 오류가 있는 콘텐츠는 저장할 수 없습니다.");
   if (!merged.ready)
@@ -30,6 +31,7 @@ export async function compileRestudy(merged: Validated, job: StandardJob) {
   const chapterMap = new Map(merged.chapters.map((c) => [c.id, c])),
     conceptMap = new Map(merged.concepts.map((c) => [c.id, c]));
   const conceptKey = (id: string) => {
+    if(bindings[id]?.key)return bindings[id].key;
     const c = conceptMap.get(id)!;
     return normalize(
       [job.subject, chapterMap.get(c.chapter_id)!.title, "", c.name].join("|"),
@@ -65,14 +67,14 @@ export async function compileRestudy(merged: Validated, job: StandardJob) {
       ...c,
       externalId: c.id,
       key: conceptKey(c.id),
-      subject: job.subject,
-      major: chapterMap.get(c.chapter_id)!.title,
-      minor: "",
+      subject: bindings[c.id]?.subject??job.subject,
+      major: bindings[c.id]?.major??chapterMap.get(c.chapter_id)!.title,
+      minor: bindings[c.id]?.minor??"",
       data: {
         name: c.name,
-        subject: job.subject,
-        major: chapterMap.get(c.chapter_id)!.title,
-        minor: "",
+        subject: bindings[c.id]?.subject??job.subject,
+        major: bindings[c.id]?.major??chapterMap.get(c.chapter_id)!.title,
+        minor: bindings[c.id]?.minor??"",
         definition: c.summary,
         properties: [...c.formulas, ...c.memorize],
         formulas: c.formulas,
@@ -88,7 +90,7 @@ export async function compileRestudy(merged: Validated, job: StandardJob) {
         importJobId: job.id,
         externalId: c.id,
         evidence:
-          job.taskType === "toc"
+          bindings[c.id] ? "saved_concepts" : job.taskType === "toc"
             ? "toc_only"
             : job.taskType === "bank" && job.method !== "external"
               ? "saved_concepts"

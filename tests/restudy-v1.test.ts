@@ -8,6 +8,7 @@ import {
   RestudyJSONSchema,
 } from "../src/domain/restudy";
 import { createJob,previewPart,jobView } from "../supabase/functions/_shared/standard/service";
+import {compileRestudy} from '../src/domain/restudy-compile';
 import ContentReview from "../src/components/ContentReview";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -390,6 +391,21 @@ function jobContext() {
   };
 }
 describe("original-analysis job preparation", () => {
+  it('recovers a bank response referencing saved concept IDs without cloning concepts or recalling AI',async()=>{
+    const {ctx,records,documentId}=jobContext();
+    records.document_chapters=[{id:'saved-ch',user_id:ctx.user.id,document_id:documentId,title:'함수',start_page:22,end_page:23}];
+    records.concepts=[{id:'saved-c',user_id:ctx.user.id,name:'일대일대응',subject:'수학',major:'기존 대단원',minor:'기존 소단원',canonical_key:'existing|canonical|key',data:{definition:'보존한 개념',formulas:[],memorize:['보존'],pitfalls:[]}}];
+    records.chapter_concepts=[{user_id:ctx.user.id,chapter_id:'saved-ch',concept_id:'saved-c'}];
+    // Legacy jobs had an empty reference snapshot, but their valid AI output is retained.
+    records.content_jobs=[{id:job.id,user_id:ctx.user.id,document_id:documentId,data:{...job,documentId,totalParts:1,questionCount:1,chapters:[],knownConcepts:[]}}];
+    const raw={...part(),document_id:documentId,total_parts:1,chapters:[],concepts:[],questions:[{...part().questions[0],chapter_id:'saved-ch',concept_ids:['saved-c']}]};
+    const result=await previewPart(ctx,job.id,raw);
+    expect(result.merged.ready).toBe(true);expect(result.merged.errors).toEqual([]);
+    const compiled=await compileRestudy(result.merged,result.job,result.bindings);
+    expect(compiled.concepts).toEqual([expect.objectContaining({externalId:'saved-c',key:'existing|canonical|key',major:'기존 대단원',minor:'기존 소단원'})]);
+    expect(compiled.questions[0].concept_ids).toEqual(['saved-c']);
+    expect(records.concepts).toHaveLength(1);
+  });
   it('reports an exhausted app budget separately from provider failures without changing saved content',async()=>{
     const {ctx,records}=jobContext();
     records.profiles=[{user_id:ctx.user.id,data:{ai_settings:{daily_limit:20}}}];
