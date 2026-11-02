@@ -1,6 +1,13 @@
 import {expect,test} from 'vitest';
 import {requestDiagnostic,generate,ProviderError,geminiSchema} from '../supabase/functions/_shared/ai/providers';
 import {RestudySchema,RestudyJSONSchema}from'../src/domain/restudy';
+test('standard generation sends one contract in JSON mode without duplicate tool schema',async()=>{
+ const transport=(async(_url,init)=>{
+  const body=JSON.parse(String(init?.body));expect(body.response_format).toEqual({type:'json_object'});expect(body.tools).toBeUndefined();expect(body.messages[1].content).toBe('one-contract');
+  return new Response(JSON.stringify({choices:[{message:{content:'{}'},finish_reason:'stop'}]}));
+ })as typeof fetch;
+ expect((await generate('nvidia','nvidia/nemotron-3-super-120b-a12b','test-only',{kind:'restudy_v1',prompt:'one-contract'},transport,Date.now())).raw).toEqual({});
+});
 test('provider schema uses supported constraints while application validation retains conditional answer rules',()=>{
  const schema=geminiSchema(RestudyJSONSchema);
  expect(schema.properties.schema_version.enum).toEqual(['restudy.v1']);

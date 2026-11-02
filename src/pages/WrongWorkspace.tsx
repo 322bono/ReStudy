@@ -1129,7 +1129,7 @@ export default function WrongWorkspace({
             <Button
               variant="secondary"
               disabled={
-                !question.confirmed || !question.regions.length || !!busy
+                !question.regions.length || !question.imagePaths?.length || !!busy
               }
               busy={busy === "원본 다시 풀기"}
               onClick={() =>
@@ -1141,8 +1141,8 @@ export default function WrongWorkspace({
               <RotateCcw size={15} />
               원본 다시 풀기
             </Button>
-            {!question.confirmed ? (
-              <p className="ww-help">원본 영역을 먼저 확인해 주세요.</p>
+            {!question.regions.length || !question.imagePaths?.length ? (
+              <p className="ww-help">저장된 원본 크롭이 없습니다. 문항 영역을 저장해 주세요.</p>
             ) : null}
             <details>
               <summary>저장된 원본 보기</summary>

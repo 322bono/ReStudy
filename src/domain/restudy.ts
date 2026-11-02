@@ -458,7 +458,7 @@ export function formatPages(pages: number[]) {
   }
   return out.join(", ");
 }
-export function createExternalPrompt(job: StandardJob, part: number) {
+export function standardManifest(job: StandardJob, part: number) {
   if (!Number.isInteger(part) || part < 1 || part > job.totalParts)
     throw new Error("분할 번호를 확인하세요.");
   const count =
@@ -520,6 +520,11 @@ export function createExternalPrompt(job: StandardJob, part: number) {
       })),
     },
   };
+  return manifest;
+}
+export function createExternalPrompt(job: StandardJob, part: number) {
+  const manifest=standardManifest(job,part);
+  const {questions:count,purposes,kinds,levels}=manifest.part_quotas;
   const task =
     job.taskType === "problem" || job.taskType === "complete"
       ? `요청: ${job.taskType==='complete'?'통합 준비입니다. 한 결과 안에 목차·단원, 핵심 개념·정의·공식·암기사항·오개념, 문제별 분석, 개념 퀴즈, 연습·유사문제 은행, 플래시카드를 모두 함께 작성하세요. 학습지·교과서에 원본 문항이 없는 부분은 concepts와 questions·flashcards로 준비하고 가짜 원본 번호를 만들지 마세요.':''} 문제별 개념 연결·개념 퀴즈·연습/유사문제 은행을 함께 준비합니다.

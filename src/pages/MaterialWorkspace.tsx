@@ -85,7 +85,7 @@ export default function MaterialWorkspace({
   const currentJob = useRef<string | undefined>(undefined);
   const stopApi=useRef(false);
   useEffect(()=>()=>{stopApi.current=true;},[]);
-  useEffect(()=>{if(!apiRunning)return;let stopped=false;const timer=setInterval(()=>{setApiElapsed(Math.floor((Date.now()-apiStartedAt)/1000));if(currentJob.current)void standard('get',{jobId:currentJob.current}).then(value=>{if(!stopped&&currentJob.current===value.id)setJob(value);}).catch(()=>{});},2000);return()=>{stopped=true;clearInterval(timer);};},[apiRunning,apiStartedAt]);
+  useEffect(()=>{if(!apiRunning)return;let stopped=false,polling=false;const timer=setInterval(()=>{setApiElapsed(Math.floor((Date.now()-apiStartedAt)/1000));if(currentJob.current&&!polling){polling=true;void standard('get',{jobId:currentJob.current}).then(value=>{if(!stopped&&currentJob.current===value.id)setJob(value);}).catch(()=>{}).finally(()=>{polling=false;});}},2000);return()=>{stopped=true;clearInterval(timer);};},[apiRunning,apiStartedAt]);
   const chapters = (state.chapters || []).filter((c) => c.materialId === id),
     concepts = state.concepts.filter(
       (c: any) =>
@@ -111,9 +111,8 @@ export default function MaterialWorkspace({
         ? scopedOriginals.filter((q) => originalIds.includes(q.id))
         : scopedOriginals,
     hasSavedImages = (q: (typeof state.questions)[number]) =>
-      q.confirmed &&
       Array.isArray((q as any).imagePaths) &&
-      (q as any).imagePaths.length > 0,
+      q.regions.length>0 && (q as any).imagePaths.length === q.regions.length,
     apiProblemReady =
       targetOriginals.length > 0 &&
       targetOriginals.length <= 100 &&
@@ -132,9 +131,8 @@ export default function MaterialWorkspace({
     setDoc(d.material);
     setJobs(list.jobs);
     const found = selectedId || currentJob.current;
-    if (found) setJob(await standard("get", { jobId: found }));
-    else if (list.jobs[0])
-      setJob(await standard("get", { jobId: list.jobs[0].id }));
+    const selected=found||list.jobs[0]?.id;
+    if(selected){currentJob.current=selected;setJob(await standard("get", { jobId:selected }));}
     return d.material as Material;
   }
   useEffect(() => {
@@ -203,7 +201,7 @@ export default function MaterialWorkspace({
       );
     if (task === "problem" && method === "api" && !apiProblemReady)
       throw new Error(
-        "API 분석에는 확인된 원본 이미지가 있는 문제를 1~100개 선택하세요. 인덱스가 없으면 원본 PDF를 외부 AI에 첨부하세요.",
+        "API 분석에는 저장된 원본 이미지가 있는 문제를 1~100개 선택하세요. 인덱스가 없으면 원본 PDF를 외부 AI에 첨부하세요.",
       );
     const totalQuestions =
       (task === "problem" || task === "complete")
@@ -255,6 +253,7 @@ export default function MaterialWorkspace({
   }
   async function run(current = job) {
     if (!current) return;
+    currentJob.current=current.id;
     setApiError('');setApiRunning(true);setApiStartedAt(Date.now());setApiElapsed(0);
     stopApi.current=false;
     try{
