@@ -13,6 +13,13 @@ function context(rotationIndex = 0, providers = states(), transport?: typeof fet
   return { rotationIndex, providers, mode: "round_robin" as const, allowPaid: false, getKey: async () => "test-only-key", now: () => 1000000, sleep: async () => {}, updateProvider: async (_p: string, data: unknown) => { events.push(data); }, log: async (data: unknown) => { events.push(data); }, fetch: transport ?? (async (url: string | URL | Request) => new Response(JSON.stringify(String(url).includes("nvidia") ? { choices: [{ message: { content: JSON.stringify(output) }, finish_reason: "stop" }], usage: { total_tokens: 20 } } : { candidates: [{ content: { parts: [{ text: JSON.stringify(output) }] }, finishReason: "STOP" }], usageMetadata: { totalTokenCount: 20 } }), { status: 200 })) as typeof fetch, events };
 }
 describe("persistent rotation routing", () => {
+  it('reserves time for another provider when several keys on the first provider time out',async()=>{
+    let clock=1000000;const seen:string[]=[],good=context().fetch;
+    const providers=[...['a','b','c'].map(credentialId=>({...states()[1],credentialId})),states()[0]];
+    const ctx=context(1,providers,(async(...args:Parameters<typeof fetch>)=>{seen.push(String(args[0]));if(String(args[0]).includes('googleapis')){clock+=39000;throw new DOMException('timeout','TimeoutError');}return good(...args);})as typeof fetch);ctx.now=()=>clock;
+    expect(await runTask(input,ctx)).toMatchObject({status:'succeeded',provider:'nvidia'});
+    expect(seen).toHaveLength(2);
+  });
   it("rotates keys and models and isolates an inaccessible model", async () => {
     const p=states()[0];
     const slots=[{...p,credentialId:'key-a',quotaGroup:'shared',selectedModels:['nvidia/nemotron-3-super-120b-a12b','openai/gpt-oss-20b']},{...p,credentialId:'key-b',quotaGroup:'other',selectedModels:['nvidia/nemotron-3-super-120b-a12b']}];

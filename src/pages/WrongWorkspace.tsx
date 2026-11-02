@@ -22,6 +22,7 @@ import {
 import { downloadSelectedPdf } from "../services/documents";
 import { edgeCall } from "../services/supabase";
 import "../styles/wrong-workspace.css";
+import ApiPreparationStatus from '../components/ApiPreparationStatus';
 
 type SavedConcept = Concept & {
   formulas?: string[];
@@ -47,6 +48,8 @@ export type WrongWorkspaceProps = {
 };
 type Job = {
   id: string;
+  method?:string;
+  partSize?:number;
   taskType: string;
   status?: string;
   targetQuestions?: { id: string }[];
@@ -337,7 +340,7 @@ export default function WrongWorkspace({
   const [busy, setBusy] = useState(""),
     [error, setError] = useState(""),
     [message, setMessage] = useState("");
-  const [preparationKind, setPreparationKind] = useState("review");
+  const [preparationKind, setPreparationKind] = useState("complete");
   const [preparationOpen, setPreparationOpen] = useState(false),
     [loadingJobs, setLoadingJobs] = useState(false);
   const [part, setPart] = useState(1),
@@ -354,6 +357,19 @@ export default function WrongWorkspace({
     mounted = useRef(true),
     selectedJob = useRef<string | undefined>(undefined);
   activeId.current = id;
+  const stopApi=useRef(false),apiStart=useRef(0);
+  const [apiElapsed,setApiElapsed]=useState(0);
+  useEffect(()=>{
+    if(!busy.includes('API'))return;
+    let stopped=false,polling=false;
+    const timer=setInterval(async()=>{
+      setApiElapsed(Math.floor((Date.now()-apiStart.current)/1000));
+      if(polling||!selectedJob.current)return;
+      polling=true;
+      try{const next=await standard<Job>('get',{jobId:selectedJob.current});if(!stopped&&mounted.current&&activeId.current===id)setJob(next);}catch{/* The final request reports errors without discarding prior progress. */}finally{polling=false;}
+    },2000);
+    return()=>{stopped=true;clearInterval(timer);};
+  },[busy,id]);
 
   async function loadJobs(preferred?: string): Promise<Job | undefined> {
     if (!question) return;
@@ -421,6 +437,7 @@ export default function WrongWorkspace({
     if (locked.current) return;
     const forId = id;
     locked.current = true;
+    if(name.includes('API')){apiStart.current=Date.now();setApiElapsed(0);}
     setBusy(name);
     setError("");
     setMessage("");
@@ -446,8 +463,11 @@ export default function WrongWorkspace({
   }
   async function runApi(current: Job) {
     const forId = id;
+    stopApi.current=false;
+    if(current.method!=='api'||(current.partSize??20)>5){current=await standard<Job>('api_continuation',{jobId:current.id});setJob(current);selectedJob.current=current.id;}
     let latest = current;
     for (let next = 1; next <= current.totalParts; next++) {
+      if(stopApi.current){setMessage('완료된 분할을 보관하고 멈췄습니다. 이어서 준비할 수 있습니다.');return;}
       if (activeId.current !== forId || !mounted.current) return;
       if (latest.parts?.some((item) => item.part === next && item.applied))
         continue;
@@ -466,7 +486,7 @@ export default function WrongWorkspace({
         !latest.parts?.some((item) => item.part === next && item.applied)
       ) {
         setMessage(
-          "작업을 보관했습니다. AI 연결·사용 한도를 확인한 뒤 직접 재개하거나 같은 작업의 외부 JSON을 가져올 수 있습니다.",
+          "API 준비를 완료하지 못했습니다. 완료된 결과는 보관했습니다. 자료의 API 준비 결과에서 모델별 오류를 확인하고 이어서 실행할 수 있습니다.",
         );
         await loadJobs(current.id);
         return;
@@ -489,11 +509,11 @@ export default function WrongWorkspace({
       questionIds: [id],
       selectedPages: pages,
       tocPages: material.tocPages || [],
-      questionCount: preparationKind === "similar" ? 5 : 15,
+      questionCount: preparationKind === "similar" ? 5 : preparationKind==='complete'?20:15,
       purposeCounts:
         preparationKind === "similar"
           ? { concept: 0, practice: 0, similar: 5 }
-          : { concept: 5, practice: 10, similar: 0 },
+          : { concept: 5, practice: 10, similar: preparationKind==='complete'?5:0 },
       questionTypes: ["mcq", "ox", "short", "blank"],
       difficultyDistribution: { easy: 20, medium: 50, hard: 30 },
     });
@@ -623,6 +643,7 @@ export default function WrongWorkspace({
           출처 보기
         </Button>
       </header>
+      <ApiPreparationStatus job={job} running={busy.includes('API')} elapsed={apiElapsed} error={busy.includes('API')?'':error} onStop={()=>{stopApi.current=true;setMessage('현재 요청이 끝나면 완료된 결과를 보관하고 멈춥니다.');}}/>
       <div className="ww-layout">
         <div className="ww-main">
           <section className="ww-saved" aria-labelledby={`${fieldId}-concepts`}>
@@ -724,6 +745,7 @@ export default function WrongWorkspace({
                   disabled={!!busy}
                   onChange={(e) => setPreparationKind(e.target.value)}
                 >
+                  <option value="complete">한 번에 · 개념 5개 · 연습 10개 · 유사 5개</option>
                   <option value="review">개념 퀴즈 5개 · 연습문제 10개</option>
                   <option value="similar">이 원본과 연결된 유사문제 5개</option>
                 </select>

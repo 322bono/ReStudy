@@ -19,9 +19,12 @@ export async function runTask(input: TaskInput, context: RouterContext): Promise
   if (context.preferredProvider && !context.mode.endsWith("_only")) order = [context.preferredProvider, ...order.filter((provider) => provider !== context.preferredProvider)];
   let tried = false,lastError:string|undefined; const retryTimes: number[] = [], blockedKeys=new Set<string>(),groupCooldowns=new Map<string,number>();
   const rotate=<T>(values:T[],index:number)=>values.length?[...values.slice(index%values.length),...values.slice(0,index%values.length)]:[];
+  const eligible=(state:ProviderState,id:string)=>{const m=modelFor(state.provider,id);return state.enabled&&state.status!=='auth_error'&&(context.allowPaid||state.access==='free_confirmed')&&m?.text&&m.structured&&(!input.images?.length||m.image)&&input.prompt.length<=m.maxInputChars;};
   for (const provider of order) {
     const slots=context.providers.filter(s=>s.provider===provider);
-    for(const state of rotate(slots,Math.floor(context.rotationIndex/2))){
+    const hasAlternative=order.slice(order.indexOf(provider)+1).some(p=>context.providers.some(s=>s.provider===p&&(s.selectedModels??[s.model]).some(m=>eligible(s,m))));
+    const providerDeadline=hasAlternative?Math.min(deadline,now()+40000):deadline;
+    providerCandidates:for(const state of rotate(slots,Math.floor(context.rotationIndex/2))){
     const keyId=state.credentialId??provider,groupId=`${provider}:${state.quotaGroup??'shared'}`;
     let selected=rotate(state.selectedModels??[state.model],Math.floor(context.rotationIndex/(2*Math.max(1,slots.length))));
     if(context.preferredModel&&selected.includes(context.preferredModel))selected=[context.preferredModel,...selected.filter(m=>m!==context.preferredModel)];
@@ -36,10 +39,11 @@ export async function runTask(input: TaskInput, context: RouterContext): Promise
     try { key = await context.getKey(provider,state.credentialId); } catch { blockedKeys.add(keyId);await context.updateProvider(provider, { status: "key_error", last_error: "credential_unavailable" },state.credentialId); continue; }
     for (let attempt = 0; attempt < 2; attempt++) {
       if(now()+1000>=deadline)return {status:'paused',reason:'all_providers_failed',lastError,retryAt:now()+30000};
+      if(now()+1000>=providerDeadline)break providerCandidates;
       const start = now();
       let successful: Extract<TaskResult, { status: "succeeded" }> | undefined;
       try {
-        const response = await generate(provider, model.id, key, input, context.fetch ?? fetch, now(),Math.max(1000,Math.min(input.kind==='restudy_v1'?40000:20000,deadline-now()-1000)));
+        const response = await generate(provider, model.id, key, input, context.fetch ?? fetch, now(),Math.max(1000,Math.min(input.kind==='restudy_v1'?40000:20000,providerDeadline-now()-1000)));
         let output: Json;
         try { output = validateOutput(input.kind, response.raw, input.sourceIds, input.count); } catch { throw new ProviderError("invalid_response"); }
         if(input.kind==='restudy_v1'&&input.allowedPages&&(output.questions.some((q:Json)=>q.source_pages.some((n:number)=>!input.allowedPages!.includes(n)))||output.problem_analyses.some((q:Json)=>!input.allowedPages!.includes(q.pdf_page))))throw new ProviderError('invalid_response');
