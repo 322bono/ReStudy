@@ -69,6 +69,7 @@ export function StudySetup({
     [count, setCount] = useState(5),
     [difficulty, setDifficulty] = useState("전체"),
     [inventory,setInventory]=useState<any[]|null>(null),
+    [showAllConcepts,setShowAllConcepts]=useState(false),
     [busy, setBusy] = useState(false),
     [weak, setWeak] = useState(0);
   useEffect(() => {
@@ -215,7 +216,7 @@ export function StudySetup({
               </small>
             </p>
           </div>
-          <section className="panel study-saved-concepts"><div className="section-heading"><h2>개념 정리 {concepts.length}개</h2></div>{concepts.length?concepts.map(c=><details key={c.id}><summary>{c.name}</summary><p>{c.definition}</p>{c.properties?.length>0&&<ul>{c.properties.map((v,i)=><li key={i}>{v}</li>)}</ul>}</details>):<p className="field-help">선택한 자료의 개념 정리를 준비하면 여기에 표시됩니다.</p>}<div className="row">{materials.filter(m=>selected.includes(m.id)).map(m=><Button key={m.id} variant="ghost" onClick={()=>onMaterial(m.id)}>{m.title} · 콘텐츠 준비</Button>)}</div></section>
+          <section className="panel study-saved-concepts"><div className="section-heading"><h2>개념 정리 {concepts.length}개</h2></div>{concepts.length?concepts.slice(0,showAllConcepts?concepts.length:6).map(c=><details key={c.id}><summary>{c.name}</summary><p>{c.definition}</p>{c.properties?.length>0&&<ul>{c.properties.map((v,i)=><li key={i}>{v}</li>)}</ul>}</details>):<p className="field-help">선택한 자료의 개념 정리를 준비하면 여기에 표시됩니다.</p>}{concepts.length>6&&<Button variant="ghost" onClick={()=>setShowAllConcepts(!showAllConcepts)}>{showAllConcepts?"간단히 보기":`개념 ${concepts.length}개 모두 보기`}</Button>}<div className="row">{materials.filter(m=>selected.includes(m.id)).map(m=><Button key={m.id} variant="ghost" onClick={()=>onMaterial(m.id)}>{m.title} · 콘텐츠 준비</Button>)}</div></section>
         </section>
         <section>
           <div className="section-heading">

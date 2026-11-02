@@ -4,6 +4,7 @@ export default function ApiPreparationStatus({job,running=false,error='',elapsed
  if(!running&&!error&&!job?.apiJobs?.length&&job?.apiStatus?.state!=='paused')return null;
  return <section className="panel" aria-live="polite" style={{padding:16,marginBottom:16}}>
   <h2>API 준비 결과</h2>
+  {job?.apiBudget&&<p>오늘 앱 작업 {job.apiBudget.used}/{job.apiBudget.limit}회 · 남은 {job.apiBudget.remaining}회{job.apiBudget.remaining===0&&<> · <a className="text-button" href="#settings">AI 설정에서 하루 제한 확인</a></>}</p>}
   <p role={error?'alert':'status'} className={error?'error':''}>{error||(running&&job?.apiStatus?.state!=='running'?'API 요청을 준비하고 있습니다. 완료된 결과는 보관됩니다.':job?.apiStatus?.message)||'API 요청을 시작하고 있습니다.'}</p>
   <p>저장된 결과 {job?.apiStatus?.completed??0}/{job?.totalParts??0}분할 · 응답 보관 {job?.preparedQuestions??0}문항 · 은행 등록 {job?.importedQuestions??0}문항{running?` · 경과 ${elapsed}초`:''}</p>
   {running&&<progress aria-label="API 분할 진행률" max={job?.totalParts||1} value={job?.apiStatus?.completed||0}/>}

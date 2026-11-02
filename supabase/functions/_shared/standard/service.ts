@@ -4,15 +4,22 @@ import {compileRestudy} from '../../../../src/domain/restudy-compile.ts';
 import {createExternalPrompt,parseRestudy,splitCount,validateRestudyParts,canonicalJson,type StandardJob} from '../../../../src/domain/restudy.ts';
 import {selectPages,tocPages} from '../../../../src/domain/pages.ts';
 import{apiProgress}from'../../../../src/domain/ai-status.ts';
+import{readProfile}from'../ai/credentials.ts';
+import{sanitizeSettings}from'../ai/settings.ts';
 
 export const standardJob=(r:any):StandardJob=>({...r.data,id:r.id,documentId:r.document_id});
 function dbError(error:any,message:string){if(error)throw new AppError(message);}
 export async function jobView(ctx:Ctx,id:string){
  const job=await row(ctx,'content_jobs',id),parts=(await rows(ctx,'content_parts')).filter((p:any)=>p.job_id===id);
+ const day=new Date(Date.now()+9*3600000).toISOString().slice(0,10);
+ const [profile,budget]=await Promise.all([readProfile(ctx),ctx.admin.from('ai_daily_budgets').select('count').eq('user_id',ctx.user.id).eq('day',day).maybeSingle()]);dbError(budget.error,'API 일일 사용량을 읽지 못했습니다.');
+ const limit=sanitizeSettings(profile.ai_settings).daily_limit,used=budget.data?.count??0,apiBudget={used,limit,remaining:Math.max(0,limit-used)};
  const {data:apiJobs,error}=await ctx.admin.from('ai_jobs').select('id,status,attempts,max_attempts:data->settings->max_attempts,available_at,lease_until,updated_at,part:data->standardPart,label:data->label,last_error:data->last_error,provider_error:data->last_provider_error,detail:data->last_error_detail').eq('user_id',ctx.user.id).eq('data->>standardJobId',id).order('created_at').limit(1000);dbError(error,'API 진행 상황을 읽지 못했습니다.');
  let attempts:any[]=[];
  if(apiJobs?.length){const logs=await ctx.admin.from('ai_usage_logs').select('job_id,created_at,data').eq('user_id',ctx.user.id).in('job_id',apiJobs.map((j:any)=>j.id)).order('created_at',{ascending:false}).limit(8);dbError(logs.error,'API 시도 내역을 읽지 못했습니다.');attempts=(logs.data??[]).map((r:any)=>({jobId:r.job_id,at:r.created_at,...Object.fromEntries(['provider','model','key_label','success','error','http_status','duration_ms','diagnostic'].filter(k=>r.data?.[k]!==undefined).map(k=>[k,r.data[k]]))}));}
- return {...standardJob(job),status:job.status,parts:parts.map((p:any)=>({part:p.part,totalParts:p.total_parts,questions:p.raw.questions?.length||0,applied:p.applied})),preparedConcepts:new Set(parts.flatMap((p:any)=>(p.raw.concepts??[]).map((c:any)=>c.id))).size,preparedFlashcards:new Set(parts.flatMap((p:any)=>(p.raw.flashcards??[]).map((c:any)=>c.id))).size,preparedQuestions:parts.reduce((sum:number,p:any)=>sum+(p.raw.questions?.length??0),0),preparedPreview:parts.filter((p:any)=>p.raw.questions?.length).slice(-1).flatMap((p:any)=>(p.raw.questions??[]).slice(0,5).map((q:any)=>({part:p.part,prompt:q.prompt,answer:q.answer,options:q.options,source_pages:q.source_pages,explanation:q.explanation}))),createdAt:job.created_at,apiJobs:apiJobs??[],apiStatus:apiProgress(apiJobs??[],job.data.totalParts,job.data.importedQuestions??0,job.data.apiFailure),apiAttempts:attempts};
+ const progress=apiProgress(apiJobs??[],job.data.totalParts,job.data.importedQuestions??0,job.data.apiFailure);
+ if(apiBudget.remaining===0&&progress.pending>0&&progress.state!=='running')Object.assign(progress,{state:'paused',errorCode:'daily_limit',message:`앱에 설정된 하루 ${limit}회 작업을 모두 사용했습니다. AI 설정에서 하루 제한을 확인하거나 내일 이어서 준비하세요. 제공자 오류가 아닙니다.`});
+ return {...standardJob(job),apiBudget,status:job.status,parts:parts.map((p:any)=>({part:p.part,totalParts:p.total_parts,questions:p.raw.questions?.length||0,applied:p.applied})),preparedConcepts:new Set(parts.flatMap((p:any)=>(p.raw.concepts??[]).map((c:any)=>c.id))).size,preparedFlashcards:new Set(parts.flatMap((p:any)=>(p.raw.flashcards??[]).map((c:any)=>c.id))).size,preparedQuestions:parts.reduce((sum:number,p:any)=>sum+(p.raw.questions?.length??0),0),preparedPreview:parts.filter((p:any)=>p.raw.questions?.length).slice(-1).flatMap((p:any)=>(p.raw.questions??[]).slice(0,5).map((q:any)=>({part:p.part,prompt:q.prompt,answer:q.answer,options:q.options,source_pages:q.source_pages,explanation:q.explanation}))),createdAt:job.created_at,apiJobs:apiJobs??[],apiStatus:progress,apiAttempts:attempts};
 }
 export async function createJob(ctx:Ctx,body:any){
  const document=await row(ctx,'documents',String(body.documentId||''));if(document.data.archived)throw new AppError('보관된 자료를 먼저 복원하세요.');

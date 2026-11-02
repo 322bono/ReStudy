@@ -390,6 +390,17 @@ function jobContext() {
   };
 }
 describe("original-analysis job preparation", () => {
+  it('reports an exhausted app budget separately from provider failures without changing saved content',async()=>{
+    const {ctx,records}=jobContext();
+    records.profiles=[{user_id:ctx.user.id,data:{ai_settings:{daily_limit:20}}}];
+    records.ai_daily_budgets=[{user_id:ctx.user.id,day:new Date(Date.now()+9*3600000).toISOString().slice(0,10),count:20}];
+    records.content_jobs.push({id:job.id,user_id:ctx.user.id,document_id:job.documentId,status:'partial',data:job});
+    const summary=await jobView(ctx,job.id);
+    expect(summary.apiBudget).toEqual({used:20,limit:20,remaining:0});
+    expect(summary.apiStatus).toMatchObject({state:'paused',errorCode:'daily_limit'});
+    expect(summary.apiStatus.message).toContain('제공자 오류가 아닙니다');
+    expect(records.content_parts).toEqual([]);
+  });
   it('accepts the later API batches of a 1000-question bank without changing its job identity',()=>{
     const raw={...part(),part:101,total_parts:200};
     expect(parseRestudy(raw)).toMatchObject({part:101,total_parts:200});
