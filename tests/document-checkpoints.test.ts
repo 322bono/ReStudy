@@ -137,10 +137,10 @@ describe("private browser document checkpoints", () => {
     expect(mocked.db.tables.problems[0]).toMatchObject({ id: Q, data: { answer: "3", confirmed: true } });
     expect(mocked.db.tables.documents[0].data.warnings.some((warning: string) => /문항 번호/.test(warning))).toBe(false);
   });
-  it("refreshes layout metadata while preserving saved PNGs, IDs and answer history", async () => {
+  it("reuses saved PNGs when PostgreSQL JSONB returns reordered region keys", async () => {
     seedDoc();seedPage(1);seedPage(2);
     const path=`${mocked.user}/${DOC}/original-crop.png`;
-    mocked.db.tables.problems.push({id:Q,user_id:mocked.user,document_id:DOC,number:17,page:1,updated_at:'old',data:{regions:[region],source:'text',confirmed:false,text:'old OCR',revision:'old',answer:'3',cropEngineVersion:PDF_ENGINE_VERSION,layoutVersion:'old-layout'}});
+    mocked.db.tables.problems.push({id:Q,user_id:mocked.user,document_id:DOC,number:17,page:1,updated_at:'old',data:{regions:[{h:.5,w:.8,y:.1,x:.05,page:1}],source:'text',confirmed:false,text:'old OCR',revision:'old',answer:'3',cropEngineVersion:PDF_ENGINE_VERSION,layoutVersion:'old-layout'}});
     mocked.db.tables.problem_regions.push({id:crypto.randomUUID(),user_id:mocked.user,problem_id:Q,part:0,page:1,image_path:path,data:region});
     await resumeMaterial(DOC);await finished();
     expect(mocked.db.tables.documents[0].status).toBe('needs_review');
@@ -239,6 +239,27 @@ describe("private browser document checkpoints", () => {
     expect(mocked.openPdf).not.toHaveBeenCalled(); expect(doc.data.paused).toBe(true);
     await pauseMaterial(DOC);
     expect(mocked.db.tables.documents[0].data.paused).toBe(true);
+  });
+
+  it("does not steal a fresh processing token when another tab auto-resumes", async () => {
+    const doc = seedDoc("processing");
+    doc.data.processingToken = "another-tab";
+    doc.updated_at = new Date().toISOString();
+    const delay = await resumePending();
+    expect(mocked.openPdf).not.toHaveBeenCalled();
+    expect(mocked.db.tables.documents[0]).toMatchObject({ status: "processing", data: { processingToken: "another-tab" } });
+    expect(delay).toBeGreaterThan(0);
+    expect(delay).toBeLessThanOrEqual(120000);
+  });
+
+  it("recovers processing left stale by a closed tab", async () => {
+    const doc = seedDoc("processing");
+    doc.data.processingToken = "closed-tab";
+    doc.updated_at = new Date(Date.now() - 121000).toISOString();
+    await resumePending(); await finished();
+    expect(mocked.db.tables.documents[0].status).toBe("needs_review");
+    expect(mocked.db.tables.documents[0].data.processingToken).toBeNull();
+    expect(mocked.db.tables.document_pages).toHaveLength(2);
   });
 
   it("concurrent resume requests schedule one OCR run and one problem ID", async () => {

@@ -35,6 +35,15 @@ type Job = {
   retryPage?: number;
 };
 const jobs = new Map<string, Job>();
+const PROCESSING_LEASE_MS=120000;
+function processingDelay(doc:Row):number {
+  if(!['uploaded','processing'].includes(doc.status)||!doc.data?.processingToken)return 0;
+  const updated=Date.parse(doc.updated_at);
+  return Number.isFinite(updated)?Math.max(0,Math.min(PROCESSING_LEASE_MS,updated+PROCESSING_LEASE_MS-Date.now())):0;
+}
+function sameRegions(a:unknown,b:Region[]):boolean {
+  return Array.isArray(a)&&a.length===b.length&&a.every((r,i)=>r&&['page','x','y','w','h'].every(k=>r[k]===b[i][k as keyof Region]));
+}
 let workQueue: Promise<void> = Promise.resolve();
 let activeJob: Job | undefined;
 const watchedClients = new WeakSet<object>();
@@ -704,7 +713,8 @@ async function runDocument(ctx: Context, job: Job): Promise<void> {
     if (
       job.controller.signal.aborted ||
       starting.data.paused ||
-      starting.data.archived
+      starting.data.archived ||
+      starting.data.processingToken!==job.token
     )
       return;
     await patchDocument(
@@ -718,6 +728,7 @@ async function runDocument(ctx: Context, job: Job): Promise<void> {
         message: "원본 PDF를 열고 저장된 체크포인트를 확인하고 있어요.",
       },
       "processing",
+      job,
     );
     await ensureJob(ctx, job);
     pdf = await processingPdf(ctx, starting);
@@ -859,7 +870,7 @@ async function runDocument(ctx: Context, job: Job): Promise<void> {
       // saved geometry. Keep those original PNGs and update metadata atomically.
       if (!job.force && !regions.some(r=>r.page===job.retryPage) &&
         current?.data.cropEngineVersion === PDF_ENGINE_VERSION &&
-        JSON.stringify(current.data.regions) === JSON.stringify(regions) &&
+        sameRegions(current.data.regions,regions) &&
         completeParts(ctx,job.id,regions,parts)) {
         if (Object.entries(fields).some(([key,value])=>JSON.stringify(current.data[key])!==JSON.stringify(value))) {
           await ensureJob(ctx,job);
@@ -993,7 +1004,7 @@ async function runDocument(ctx: Context, job: Job): Promise<void> {
   }
 }
 /** Returns after scheduling, rather than waiting for the OCR workload. */
-export async function resumeMaterial(id: string, force = false,options:{reindex?:boolean;retryPage?:number}={}): Promise<void> {
+export async function resumeMaterial(id: string, force = false,options:{reindex?:boolean;retryPage?:number;automatic?:boolean}={}): Promise<void> {
   const ctx = await context(),
     doc = (await one(ctx, "documents", id))!;
   if(options.retryPage!==undefined&&(!Number.isInteger(options.retryPage)||options.retryPage<1||options.retryPage>doc.data.pageCount||![...(doc.data.selectedPages??[]),...(doc.data.tocPages??[])].includes(options.retryPage)))throw failure('분석 범위 안의 PDF 페이지를 선택하세요.');
@@ -1017,24 +1028,41 @@ export async function resumeMaterial(id: string, force = false,options:{reindex?
   };
   jobs.set(key, job);
   try {
+    if(options.automatic){
+      let claimed=false;
+      for(let attempt=0;attempt<5;attempt++){
+        const latest=(await one(ctx,'documents',id))!;
+        if(latest.data.paused||latest.data.archived||!['uploaded','processing'].includes(latest.status)||processingDelay(latest)>0){jobs.delete(key);return;}
+        const result=await ctx.db.from('documents').update({status:'uploaded',data:{...latest.data,paused:false,error:null,processingToken:job.token,message:'저장된 페이지부터 분석을 이어서 준비하고 있어요.'}}).eq('user_id',ctx.user.id).eq('id',id).eq('updated_at',latest.updated_at).select('*').maybeSingle();
+        if(result.error)throw failure('자료의 처리 상태를 확보하지 못했습니다.');
+        if(result.data){claimed=true;break;}
+      }
+      if(!claimed){jobs.delete(key);return;}
+    }else{
     await patchDocument(
       ctx,
       id,
       {
         paused: false,
         error: null,
+        processingToken:job.token,
         message: "저장된 페이지부터 분석을 이어서 준비하고 있어요.",
       },
       "uploaded",
     );
+    }
   } catch (error) {
     if (jobs.get(key) === job) jobs.delete(key);
     throw error;
   }
+  let heartbeatBusy=false;
+  const heartbeat=setInterval(()=>{if(heartbeatBusy||job.controller.signal.aborted)return;heartbeatBusy=true;void ensureJob(ctx,job).then(()=>patchDocument(ctx,id,{processingHeartbeatAt:new Date().toISOString()},undefined,job)).catch(()=>job.controller.abort()).finally(()=>{heartbeatBusy=false;});},30000);
+  job.controller.signal.addEventListener('abort',()=>clearInterval(heartbeat),{once:true});
   workQueue = workQueue
     .catch(() => {})
     .then(async () => {
       if (job.controller.signal.aborted) {
+        clearInterval(heartbeat);
         if (jobs.get(key) === job) jobs.delete(key);
         return;
       }
@@ -1042,6 +1070,7 @@ export async function resumeMaterial(id: string, force = false,options:{reindex?
       try {
         await runDocument(ctx, job);
       } finally {
+        clearInterval(heartbeat);
         if (activeJob === job) {
           activeJob = undefined;
           await closeOcr().catch(() => {});
@@ -1068,16 +1097,24 @@ export async function pauseMaterial(id: string): Promise<void> {
     "uploaded",
   );
 }
-export async function resumePending(): Promise<void> {
+export async function resumePending(): Promise<number|null> {
   const ctx = await context(),
     docs = await list(ctx, "documents");
+  let retry:number|null=null;
   for (const doc of docs)
     if (
       ["uploaded", "processing"].includes(doc.status) &&
       !doc.data.paused &&
       !doc.data.archived
     )
-      await resumeMaterial(doc.id);
+    {
+      if(jobs.has(`${ctx.user.id}:${doc.id}`))continue;
+      const delay=processingDelay(doc);
+      if(delay>0){retry=retry===null?delay:Math.min(retry,delay);continue;}
+      await resumeMaterial(doc.id,false,{automatic:true});
+      if(!jobs.has(`${ctx.user.id}:${doc.id}`))retry=retry===null?PROCESSING_LEASE_MS:Math.min(retry,PROCESSING_LEASE_MS);
+    }
+  return retry;
 }
 export async function updateMaterialRange(
   id: string,
