@@ -1,12 +1,43 @@
 import {expect,test} from 'vitest';
-import {requestDiagnostic,generate,ProviderError,geminiSchema} from '../supabase/functions/_shared/ai/providers';
+import {requestDiagnostic,generate,checkConnection,ProviderError,geminiSchema} from '../supabase/functions/_shared/ai/providers';
 import {RestudySchema,RestudyJSONSchema}from'../src/domain/restudy';
 test('standard generation sends one contract in JSON mode without duplicate tool schema',async()=>{
  const transport=(async(_url,init)=>{
   const body=JSON.parse(String(init?.body));expect(body.response_format).toEqual({type:'json_object'});expect(body.tools).toBeUndefined();expect(body.messages[1].content).toBe('one-contract');
+  expect(body.messages[0].content).toContain('restudy.v1');expect(body.messages[0].content).not.toMatch(/concept_keys|multiple_choice|option id|submit_result/);
   return new Response(JSON.stringify({choices:[{message:{content:'{}'},finish_reason:'stop'}]}));
  })as typeof fetch;
  expect((await generate('nvidia','nvidia/nemotron-3-super-120b-a12b','test-only',{kind:'restudy_v1',prompt:'one-contract'},transport,Date.now())).raw).toEqual({});
+});
+test('Nemotron requests explicitly disable chat-template thinking while GPT OSS uses only its documented effort parameter',async()=>{
+ const requests:any[]=[];
+ const transport=(async(_url,init)=>{requests.push(JSON.parse(String(init?.body)));return new Response(JSON.stringify({choices:[{message:{content:'{}'},finish_reason:'stop'}]}));})as typeof fetch;
+ for(const model of ['nvidia/nemotron-3.5-lightning-30b-a3b','nvidia/nemotron-3-super-120b-a12b','nvidia/nemotron-3-ultra-550b-a55b','nvidia/nemotron-3.5-super-vl-120b-a12b','nvidia/nemotron-3.5-bolt-e4b'])await generate('nvidia',model,'test-only',{kind:'restudy_v1',prompt:'fixture'},transport,Date.now());
+ expect(requests.every(request=>request.chat_template_kwargs?.enable_thinking===false)).toBe(true);
+ expect(requests.at(-1).model).toBe('stg/nvidia/nemotron-3.5-bolt-e4b');
+ await generate('nvidia','openai/gpt-oss-20b','test-only',{kind:'restudy_v1',prompt:'fixture'},transport,Date.now());
+ expect(requests.at(-1)).toMatchObject({reasoning_effort:'low'});expect(requests.at(-1).chat_template_kwargs).toBeUndefined();
+});
+test('NVIDIA key verification requires a completed minimal JSON inference rather than merely a choices array',async()=>{
+ const transport=(async(_url,init)=>{const request=JSON.parse(String(init?.body));expect(request.chat_template_kwargs).toEqual({enable_thinking:false});expect(request.max_tokens).toBeGreaterThanOrEqual(64);return new Response(JSON.stringify({choices:[{message:{content:'{"ok":true}'},finish_reason:'stop'}]}));})as typeof fetch;
+ await expect(checkConnection('nvidia','nvidia/nemotron-3.5-lightning-30b-a3b','test-only',transport)).resolves.toBeUndefined();
+ await expect(checkConnection('nvidia','nvidia/nemotron-3.5-lightning-30b-a3b','test-only',(async()=>new Response(JSON.stringify({choices:[{message:{content:null,reasoning:'private'},finish_reason:'length'}]})))as typeof fetch)).rejects.toMatchObject({code:'invalid_response'});
+});
+test('response diagnostics retain bounded counts and finish categories without private content or reasoning',async()=>{
+ const transport=(async()=>new Response(JSON.stringify({choices:[{message:{content:null,reasoning_content:'private-reasoning'},finish_reason:'length'}],usage:{completion_tokens:8192,completion_tokens_details:{reasoning_tokens:8192}}})))as typeof fetch;
+ const error=await generate('nvidia','nvidia/nemotron-3.5-lightning-30b-a3b','private-key',{kind:'restudy_v1',prompt:'private-prompt'},transport,Date.now()).catch(e=>e);
+ expect(error.responseMetadata).toMatchObject({finish_reason:'length',content_chars:0,reasoning_chars:17,usage:{completion_tokens:8192,reasoning_tokens:8192}});
+ expect(JSON.stringify(error)).not.toMatch(/private/);
+});
+test('Gemma 4 uses its documented MINIMAL thinking level and NVIDIA images use standard base64 content parts',async()=>{
+ const image={mimeType:'image/png',data:'dGVzdA=='};
+ const transport=(async(url,init)=>{const request=JSON.parse(String(init?.body));
+  if(String(url).includes('googleapis')){expect(request.generationConfig.thinkingConfig.thinkingLevel).toBe('MINIMAL');return new Response(JSON.stringify({candidates:[{content:{parts:[{text:'{}'}]},finishReason:'STOP'}]}));}
+  expect(request.messages[1].content).toEqual([{type:'image_url',image_url:{url:'data:image/png;base64,dGVzdA=='}},{type:'text',text:'fixture'}]);
+  return new Response(JSON.stringify({choices:[{message:{content:'{}'},finish_reason:'stop'}]}));
+ })as typeof fetch;
+ await generate('gemini','gemma-4-26b-a4b-it','test-only',{kind:'restudy_v1',prompt:'fixture'},transport,Date.now());
+ await generate('nvidia','nvidia/nemotron-3.5-super-vl-120b-a12b','test-only',{kind:'restudy_v1',prompt:'fixture',images:[image]},transport,Date.now());
 });
 test('provider schema uses supported constraints while application validation retains conditional answer rules',()=>{
  const schema=geminiSchema(RestudyJSONSchema);

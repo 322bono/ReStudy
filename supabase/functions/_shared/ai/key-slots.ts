@@ -1,4 +1,4 @@
-import { models } from "./catalog.ts";
+import { models,catalogVersion,generationContractVersion,nvidiaModelRank } from "./catalog.ts";
 import { decryptKey, encryptKey, type Provider } from "./crypto.ts";
 import { checkConnection, ProviderError } from "./providers.ts";
 import { discoverProviderModels, ModelDiscoveryError } from "./providers-discovery.ts";
@@ -16,6 +16,7 @@ export function slotModels(slot: Json): typeof models {
 }
 export function publicSlot(slot: Json): Json {
   const d=slot.data??{},state=providerState(slot.provider,d,true);
+  if(slot.provider==='nvidia'&&d.generation_contract_version!==generationContractVersion)state.generation_verified=false;
   return {...state,id:slot.id,label:d.label??'API 키',legacy:d.legacy===true,quotaGroup:d.quotaGroup??'shared',models:slotModels(slot),selectedModels:Array.isArray(d.selectedModels)?d.selectedModels:[],notice:slot.provider==='nvidia'?'공개 모델 목록입니다. 계정 접근은 연결 확인 또는 실제 생성으로 확인합니다.':undefined};
 }
 function group(value: unknown): string {
@@ -46,7 +47,7 @@ export async function credentialAction(body: Json, ctx: AuthContext, master: str
     const [profile,jobs,usage]=await Promise.all([readProfile(ctx),ctx.admin.from('ai_jobs').select('id,kind,status,attempts,available_at,created_at,updated_at,data').eq('user_id',ctx.user.id).order('created_at',{ascending:false}).limit(30).then(checked),ctx.admin.from('ai_usage_logs').select('id,job_id,data,created_at').eq('user_id',ctx.user.id).order('created_at',{ascending:false}).limit(50).then(checked)]);
     return{providers: (['nvidia','gemini'] as Provider[]).map(provider=>{const credentials=slots.filter(s=>s.provider===provider).map(publicSlot);return{...providerState(provider,credentials[0]??{},credentials.length>0),provider,credentials};}),models,settings:sanitizeSettings(profile.ai_settings),encryption_configured:!!master,
       jobs:jobs.map((r:Json)=>({id:r.id,kind:r.kind,status:r.status,attempts:r.attempts,available_at:r.available_at,created_at:r.created_at,updated_at:r.updated_at,last_error:r.data?.last_error??null})),
-      usage:usage.map((r:Json)=>({id:r.id,job_id:r.job_id,created_at:r.created_at,...Object.fromEntries(['provider','credential_id','key_label','model','kind','success','attempt','duration_ms','error','http_status','usage'].filter(k=>r.data?.[k]!==undefined).map(k=>[k,r.data[k]]))}))};
+      usage:usage.map((r:Json)=>({id:r.id,job_id:r.job_id,created_at:r.created_at,...Object.fromEntries(['provider','credential_id','key_label','model','kind','success','attempt','duration_ms','error','diagnostic','response_metadata','http_status','usage'].filter(k=>r.data?.[k]!==undefined).map(k=>[k,r.data[k]]))}))};
   }
   if(!['nvidia','gemini'].includes(body.provider))throw new AiError('invalid_provider');
   const provider=body.provider as Provider;
@@ -92,7 +93,8 @@ export async function credentialAction(body: Json, ctx: AuthContext, master: str
     if(!found.models.length)throw new AiError('no_compatible_models');
     if(provider==='nvidia'&&action!=='discover'){
       let last:unknown;
-      for(const model of eligible.slice(0,3)){
+      const probes=eligible.filter(model=>slot?.data.poolConfigured!==true||slot.data.selectedModels?.includes(model.id)).sort((a,b)=>nvidiaModelRank(a.id)-nvidiaModelRank(b.id));
+      for(const model of probes.slice(0,3)){
         try{await checkConnection(provider,model.id,key,transport);verified=true;break;}catch(error){last=error;if(!(error instanceof ProviderError)||!['model_unavailable','model_access_denied','request_invalid'].includes(error.code))throw error;}
       }
       if(!verified)throw last??new AiError('no_compatible_models');
@@ -103,7 +105,7 @@ export async function credentialAction(body: Json, ctx: AuthContext, master: str
     throw new AiError(code,422);
   }
   const ids=found.models.map(m=>m.id),defaultSelected=found.models.filter(m=>settings.allow_paid||access==='free_confirmed'&&(provider==='nvidia'?!m.legacy:m.freeEligible)).map(m=>m.id);
-  const data:Json={...slot?.data,label:label.trim(),quotaGroup,access,modelIds:ids,selectedModels:slot?.data.poolConfigured!==true?defaultSelected:slot!.data.selectedModels.filter((id:string)=>ids.includes(id)),listed_at:found.listedAt,checked_at:new Date().toISOString(),
+  const data:Json={...slot?.data,label:label.trim(),quotaGroup,access,modelIds:ids,selectedModels:slot?.data.poolConfigured!==true?defaultSelected:slot!.data.selectedModels.filter((id:string)=>ids.includes(id)),catalog_version:catalogVersion,...(verified?{generation_contract_version:generationContractVersion}:{}),listed_at:found.listedAt,checked_at:new Date().toISOString(),
     ...(action==='discover'?{connection_verified:found.authenticationVerified||slot?.data.connection_verified===true}:{enabled:true,status:'connected',connection_verified:true,generation_verified:verified,last_error:null,cooldown_until:null})};
   const id=slot?.id??crypto.randomUUID();
   if(action==='save'){
@@ -112,5 +114,5 @@ export async function credentialAction(body: Json, ctx: AuthContext, master: str
     else checked(await ctx.admin.from('ai_key_slots').insert(values));
     if(slot)checked(await ctx.admin.from('ai_key_model_states').delete().eq('user_id',ctx.user.id).eq('credential_id',id));
   }else await patchSlot(ctx,slot!,data);
-  return{provider,credentialId:id,configured:true,status:data.status??'unverified',connection_verified:data.connection_verified===true,generation_verified:data.generation_verified===true};
+  return{provider,credentialId:id,configured:true,status:data.status??'unverified',connection_verified:data.connection_verified===true,generation_verified:publicSlot({id,provider,data}).generation_verified};
 }

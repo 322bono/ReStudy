@@ -1,6 +1,7 @@
 import {expect,test} from 'vitest';
 import {defaultModel,modelFor} from '../supabase/functions/_shared/ai/catalog.ts';
 import {discoverProviderModels,filterDiscoveredModels} from '../supabase/functions/_shared/ai/providers-discovery.ts';
+import {publicSlot}from'../supabase/functions/_shared/ai/key-slots.ts';
 
 test('current documented NVIDIA default has a bounded hosted output budget',()=>{
  expect(defaultModel('nvidia')).toBe('nvidia/nemotron-3-super-120b-a12b');
@@ -21,6 +22,18 @@ test('public NVIDIA discovery intersects returned IDs without authenticating a k
 test('pure Gemini filter requires generateContent, real known IDs and complete metadata shape',()=>{
  expect(filterDiscoveredModels('gemini',{models:[{name:'models/gemini-3.8-flash',supportedGenerationMethods:['generateContent']},{name:'models/gemini-3.6-flash',supportedGenerationMethods:['embedContent']},{name:'models/new-unknown',supportedGenerationMethods:['generateContent']}]}).map(m=>m.id)).toEqual(['gemini-3.8-flash']);
  expect(()=>filterDiscoveredModels('nvidia',{models:[]})).toThrow();
+});
+test('new documented models are offered only when the provider actually lists their exact logical IDs',()=>{
+ const nim=filterDiscoveredModels('nvidia',{data:[{id:'nvidia/nemotron-3.5-bolt-e4b'},{id:'nvidia/nemotron-3.5-super-vl-120b-a12b'},{id:'invented-latest/model'}]});
+ expect(nim.map(m=>m.id)).toEqual(['nvidia/nemotron-3.5-bolt-e4b','nvidia/nemotron-3.5-super-vl-120b-a12b']);
+ expect(nim[0].requestModel).toBe('stg/nvidia/nemotron-3.5-bolt-e4b');
+ const gemma=filterDiscoveredModels('gemini',{models:[{name:'models/gemma-4-26b-a4b-it',supportedGenerationMethods:['generateContent']},{name:'models/gemma-4-31b-it',supportedGenerationMethods:['generateContent']}]});
+ expect(gemma.map(m=>m.id)).toEqual(['gemma-4-26b-a4b-it','gemma-4-31b-it']);expect(gemma.every(m=>m.freeEligible===true)).toBe(true);
+});
+test('legacy four-token NVIDIA probes do not claim verified structured generation',()=>{
+ const slot={provider:'nvidia',id:'slot',data:{generation_verified:true,connection_verified:true,modelIds:['nvidia/nemotron-3.5-lightning-30b-a3b'],selectedModels:['nvidia/nemotron-3.5-lightning-30b-a3b'],access:'free_confirmed'}};
+ expect(publicSlot(slot)).toMatchObject({connection_verified:true,generation_verified:false});
+ expect(publicSlot({...slot,data:{...slot.data,generation_contract_version:'validated-json-v1'}})).toMatchObject({generation_verified:true});
 });
 test('Gemini discovery follows page tokens and sends the key only in its header',async()=>{
  const calls:any[]=[];

@@ -115,15 +115,20 @@ export default function App() {
       return;
     }
     let alive = true;
+    let previousOwner:string|null|undefined;
     const client = getSupabase();
     client.auth.getSession().then(({ data }) => {
-      if (alive) setUser(data.session?.user.id || null);
+      if (alive&&previousOwner===undefined){previousOwner=data.session?.user.id||null;setUser(previousOwner);}
     });
     const {
       data: { subscription },
     } = client.auth.onAuthStateChange((_event, session) => {
-      clearAssetCache();
-      if (alive) setUser(session?.user.id || null);
+      const nextOwner=session?.user.id||null;
+      // Token refresh keeps the same owner. Revoking its live PDF blob URLs
+      // here used to break an active viewer/export in Safari.
+      if(previousOwner!==nextOwner)clearAssetCache();
+      previousOwner=nextOwner;
+      if (alive) setUser(nextOwner);
     });
     return () => {
       alive = false;
@@ -131,10 +136,14 @@ export default function App() {
     };
   }, []);
   useEffect(() => {
-    if (user)
-      import("./services/documents")
-        .then((m) => m.resumePending())
-        .catch((e) => setError(e.message));
+    if(!user)return;
+    let alive=true,timer:ReturnType<typeof setTimeout>|undefined;
+    const resume=async()=>{
+      try{const pending=await import('./services/documents');const retry=await pending.resumePending();if(alive&&typeof retry==='number')timer=setTimeout(resume,Math.max(1000,retry));}
+      catch(e){if(alive)setError((e as Error).message);}
+    };
+    void resume();
+    return()=>{alive=false;if(timer)clearTimeout(timer);};
   }, [user]);
   if (!configured)
     return (

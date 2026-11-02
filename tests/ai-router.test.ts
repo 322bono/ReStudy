@@ -119,6 +119,14 @@ describe("persistent rotation routing", () => {
     const ctx = context(0, states(), (async () => new Response(JSON.stringify({ choices: [{ message: { content: "{}" }, finish_reason: "length" }], candidates: [{ content: { parts: [{ text: "{}" }] }, finishReason: "MAX_TOKENS" }] }))) as typeof fetch);
     expect(await runTask(input, ctx)).toMatchObject({ status: "paused", reason: "all_providers_failed" });
   });
+  it('logs schema paths and response sizes without logging malformed provider content',async()=>{
+    const malformed={schema_version:'restudy.v1',document_id:'private-document',job_id:'private-job',part:1,total_parts:1,chapters:[],concepts:[],problem_analyses:[],flashcards:[],similarities:[],questions:[{prompt:'private-prompt',answer:'private-answer'}]};
+    const ctx=context(0,[states()[0]],(async()=>new Response(JSON.stringify({choices:[{message:{content:JSON.stringify(malformed),reasoning:'private-reasoning'},finish_reason:'stop'}],usage:{completion_tokens:100}})))as typeof fetch);
+    expect(await runTask({...input,kind:'restudy_v1'},ctx)).toMatchObject({status:'paused'});
+    const failure=ctx.events.find((event:any)=>event.success===false)as any;
+    expect(failure.response_metadata).toMatchObject({finish_reason:'stop',reasoning_chars:17,schema:{expected_questions:1,counts:{questions:1},issues:expect.arrayContaining([expect.objectContaining({path:'questions.0.id',code:'invalid_type'})])}});
+    expect(JSON.stringify(ctx.events)).not.toMatch(/private-document|private-job|private-prompt|private-answer|private-reasoning/);
+  });
   it("does not buy another generation if persisting a successful call fails", async () => {
     const ctx = context(); let calls = 0; const transport = ctx.fetch;
     ctx.fetch = (async (...args: Parameters<typeof fetch>) => { calls++; return transport(...args); }) as typeof fetch;

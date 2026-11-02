@@ -73,6 +73,29 @@ function database() {
   } };
 }
 describe("server-only credential operations", () => {
+  it('probes a selected compact NVIDIA model before a larger listed model',async()=>{
+    const db=database(),ctx={user:{id:'owner-a'},db,admin:db},encrypted=await encryptKey('test-only-key','owner-a','nvidia',master);
+    const selected=['nvidia/nemotron-3-super-120b-a12b','nvidia/nemotron-3.5-lightning-30b-a3b'];
+    db.tables.ai_key_slots.push({id:'slot-a',user_id:'owner-a',provider:'nvidia',...encrypted,data:{access:'free_confirmed',modelIds:selected,selectedModels:selected,poolConfigured:true}});
+    const seen:string[]=[];
+    const transport=(async(_url,init)=>{
+      if(init?.method!=='POST')return new Response(JSON.stringify({data:[...selected,{id:'nvidia/nemotron-3.5-bolt-e4b'}].map(value=>typeof value==='string'?{id:value}:value)}));
+      const request=JSON.parse(String(init.body));seen.push(request.model);expect(request.chat_template_kwargs).toEqual({enable_thinking:false});
+      return new Response(JSON.stringify({choices:[{message:{content:'{"ok":true}'},finish_reason:'stop'}]}));
+    })as typeof fetch;
+    expect(await credentialAction({action:'check',provider:'nvidia',credentialId:'slot-a'},ctx,master,transport)).toMatchObject({generation_verified:true});
+    expect(seen).toEqual(['nvidia/nemotron-3.5-lightning-30b-a3b']);
+  });
+  it('refreshes default model pools with documented additions while preserving explicit selections',async()=>{
+    for(const custom of [false,true]){
+      const db=database(),ctx={user:{id:'owner-a'},db,admin:db};
+      const encrypted=await encryptKey('test-only-key','owner-a','nvidia',master);
+      db.tables.ai_key_slots.push({id:'slot-a',user_id:'owner-a',provider:'nvidia',...encrypted,data:{access:'free_confirmed',modelIds:['nvidia/nemotron-3.5-lightning-30b-a3b'],selectedModels:['nvidia/nemotron-3.5-lightning-30b-a3b'],poolConfigured:custom}});
+      const transport=(async(_url,init)=>{expect(init?.method).toBeUndefined();return new Response(JSON.stringify({data:[{id:'nvidia/nemotron-3.5-lightning-30b-a3b'},{id:'nvidia/nemotron-3.5-bolt-e4b'},{id:'nvidia/nemotron-3.5-super-vl-120b-a12b'}]}));})as typeof fetch;
+      await credentialAction({action:'discover',provider:'nvidia',credentialId:'slot-a'},ctx,master,transport);
+      expect(db.tables.ai_key_slots[0].data.selectedModels).toEqual(custom?['nvidia/nemotron-3.5-lightning-30b-a3b']:['nvidia/nemotron-3.5-lightning-30b-a3b','nvidia/nemotron-3.5-bolt-e4b','nvidia/nemotron-3.5-super-vl-120b-a12b']);
+    }
+  });
   it("adds separate encrypted slots, preserves a failed replacement and allows empty model pools",async()=>{
     const db=database(),ctx={user:{id:'owner-a'},db,admin:db};
     const good=(async()=>new Response(JSON.stringify({models:[{name:'models/gemini-3.8-flash',supportedGenerationMethods:['generateContent']},{name:'models/gemini-3.6-flash',supportedGenerationMethods:['generateContent']}]})))as typeof fetch;

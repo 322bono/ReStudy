@@ -1,6 +1,18 @@
-import {parseRestudy,RestudyJSONSchema}from'../../../../src/domain/restudy.ts';
+import {parseRestudy,RestudySchema,RestudyJSONSchema}from'../../../../src/domain/restudy.ts';
 export type TaskKind = "analyze_problem" | "generate_questions" | "generate_material" | "restudy_v1";
 export type Json = Record<string, any>;
+const schemaFields=new Set<string>();
+function collectSchemaFields(value:any){if(!value||typeof value!=='object')return;for(const [key,entry]of Object.entries(value)){if(key==='properties'&&entry&&typeof entry==='object')for(const field of Object.keys(entry))schemaFields.add(field);if(Array.isArray(entry))entry.forEach(collectSchemaFields);else collectSchemaFields(entry);}}
+collectSchemaFields(RestudyJSONSchema);
+/** Schema field names, array indices and counts only; never provider values,
+ * record keys, issue messages, expected literals or source identifiers. */
+export function validationMetadata(kind:TaskKind,raw:unknown,count?:number):Json{
+ const value=raw&&typeof raw==='object'&&!Array.isArray(raw)?raw as Json:{};
+ const counts=Object.fromEntries(['chapters','concepts','problem_analyses','questions','flashcards','similarities'].map(key=>[key,Array.isArray(value[key])?Math.min(value[key].length,1000000):-1]));
+ const checked=kind==='restudy_v1'?RestudySchema.safeParse(raw):null;
+ const codes=new Set(['invalid_type','too_big','too_small','invalid_format','not_multiple_of','unrecognized_keys','invalid_union','invalid_key','invalid_element','invalid_value','custom']);
+ return{expected_questions:count??null,counts,...(checked?{schema_valid:checked.success,issues:checked.success?[]:checked.error.issues.slice(0,12).map(issue=>({path:issue.path.map(part=>typeof part==='number'?Math.max(0,Math.min(1000000,part)):typeof part==='string'&&schemaFields.has(part)?part:'*').join('.'),code:codes.has(issue.code)?issue.code:'other'}))}:{})};
+}
 function invalid(): never { throw new Error("invalid_ai_output"); }
 function object(value: unknown): Json { if (!value || typeof value !== "object" || Array.isArray(value)) invalid(); return value as Json; }
 function text(value: unknown, max = 6000): string { if (typeof value !== "string" || !value.trim() || value.length > max) invalid(); return value.trim(); }

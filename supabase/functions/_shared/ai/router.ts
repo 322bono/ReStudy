@@ -1,7 +1,7 @@
 import type { Provider } from "./crypto.ts";
-import { modelFor } from "./catalog.ts";
+import { modelFor,generationContractVersion,nvidiaModelRank } from "./catalog.ts";
 import { generate, ProviderError, type ImageInput } from "./providers.ts";
-import { validateOutput, type TaskKind, type Json } from "./schemas.ts";
+import { validateOutput,validationMetadata, type TaskKind, type Json } from "./schemas.ts";
 export type Mode = "round_robin" | "nvidia_first" | "gemini_first" | "nvidia_only" | "gemini_only";
 export type ProviderState = { provider: Provider; enabled: boolean; model: string; access: "unknown" | "free_confirmed" | "paid"; status: string; cooldown_until?: string; credentialId?:string; label?:string; quotaGroup?:string; selectedModels?:string[]; modelStates?:Record<string,Json>; quotaCooldowns?:Record<string,string>; [key: string]: unknown };
 export type TaskInput = { kind: TaskKind; prompt: string; sourceIds: string[]; count?: number; images?: ImageInput[]; types?: string[]; difficulty?: string;allowedPages?:number[] };
@@ -36,9 +36,7 @@ export async function runTask(input: TaskInput, context: RouterContext): Promise
     // Prefer compact hosted NVIDIA models before the larger reasoning models,
     // but retain every explicit selection in the durable round-robin pool.
     if(provider==='nvidia'){
-      const priority=['nvidia/nemotron-3.5-lightning-30b-a3b','openai/gpt-oss-20b','nvidia/nemotron-3-super-120b-a12b','nvidia/nemotron-3-ultra-550b-a55b'];
-      const rank=(id:string)=>priority.includes(id)?priority.indexOf(id):priority.length;
-      pool.sort((a,b)=>rank(a)-rank(b));
+      pool.sort((a,b)=>nvidiaModelRank(a)-nvidiaModelRank(b));
     }
     // Keys do not multiply the number of turns spent on one model. A slow
     // model must not receive four full timeouts just because four keys exist.
@@ -71,7 +69,7 @@ export async function runTask(input: TaskInput, context: RouterContext): Promise
       try {
         const response = await generate(provider, model.id, key, input, context.fetch ?? fetch, now(),inferenceTimeout);
         let output: Json;
-        try { output = validateOutput(input.kind, response.raw, input.sourceIds, input.count); } catch { throw new ProviderError("invalid_response",undefined,undefined,'group','output_schema_invalid'); }
+        try { output = validateOutput(input.kind, response.raw, input.sourceIds, input.count); } catch { throw new ProviderError("invalid_response",undefined,undefined,'group','output_schema_invalid',{...response.metadata,schema:validationMetadata(input.kind,response.raw,input.count)}); }
         if(input.kind==='restudy_v1'&&input.allowedPages&&(output.questions.some((q:Json)=>q.source_pages.some((n:number)=>!input.allowedPages!.includes(n)))||output.problem_analyses.some((q:Json)=>!input.allowedPages!.includes(q.pdf_page))))throw new ProviderError('invalid_response');
         if (input.kind !== "analyze_problem" && input.kind!=='restudy_v1' && output.questions.some((question: Json) => input.types?.length && !input.types.includes(question.type) || input.difficulty && input.difficulty !== question.difficulty)) throw new ProviderError("invalid_response");
         const duration_ms = Math.max(0, now() - start);
@@ -80,7 +78,7 @@ export async function runTask(input: TaskInput, context: RouterContext): Promise
         // Never persist provider bodies, exception messages, prompts or request headers.
         const failure = error instanceof ProviderError ? error : new ProviderError("provider_error");
         lastError=failure.code;
-        await context.log({ provider,credential_id:state.credentialId,key_label:state.label, model: model.id, kind: input.kind, success: false, attempt: attempt + 1, duration_ms: Math.max(0, now() - start), error: failure.code, diagnostic:failure.diagnostic??null,http_status: failure.status ?? null });
+        await context.log({ provider,credential_id:state.credentialId,key_label:state.label, model: model.id, kind: input.kind, success: false, attempt: attempt + 1, duration_ms: Math.max(0, now() - start), error: failure.code, diagnostic:failure.diagnostic??null,response_metadata:failure.responseMetadata??null,http_status: failure.status ?? null });
         if (["provider_error", "network_error","invalid_response"].includes(failure.code) && attempt === 0) { await sleep(1000); continue; }
         const until = failure.retryAt ?? (failure.code==='timeout'?now()+300000:["provider_error", "network_error","invalid_response"].includes(failure.code) ? now() + 5000 : now()+600000);
         if(failure.code==='timeout')timeoutHealth.set(`${groupId}:${modelId}`,until);
@@ -93,7 +91,7 @@ export async function runTask(input: TaskInput, context: RouterContext): Promise
         // Persistence failures must escape; retrying inference here could incur duplicate charges.
         try {
           await context.log({ provider,credential_id:state.credentialId,key_label:state.label, model: model.id, kind: input.kind, success: true, attempt: attempt + 1, duration_ms: successful.duration_ms, usage: successful.usage });
-          await context.updateProvider(provider, { status: "connected", generation_verified: true, last_error: null, cooldown_until: null, last_success_at: new Date(now()).toISOString() },state.credentialId,model.id);
+          await context.updateProvider(provider, { status: "connected", generation_verified: true,generation_contract_version:generationContractVersion, last_error: null, cooldown_until: null, last_success_at: new Date(now()).toISOString() },state.credentialId,model.id);
         } catch { throw new SuccessfulTaskPersistenceError(successful); }
         return successful;
       }
