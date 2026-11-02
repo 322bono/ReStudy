@@ -104,6 +104,11 @@ export default function App() {
   const [user, setUser] = useState<string | null | undefined>(),
     [settings, setSettings] = useState(location.hash.startsWith("#settings")),
     [error, setError] = useState("");
+  useEffect(()=>{
+    const sync=()=>setSettings(location.hash.startsWith('#settings'));
+    window.addEventListener('hashchange',sync);
+    return()=>window.removeEventListener('hashchange',sync);
+  },[]);
   useEffect(() => {
     if (!configured) {
       setUser(null);
