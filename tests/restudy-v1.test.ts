@@ -391,6 +391,13 @@ function jobContext() {
   };
 }
 describe("original-analysis job preparation", () => {
+  it('clears an obsolete PDF-wait message after its source finishes without hiding other failures',async()=>{
+    const {ctx,records,documentId}=jobContext();records.documents[0].status='needs_review';
+    records.content_jobs=[{id:job.id,user_id:ctx.user.id,document_id:documentId,status:'draft',data:{...job,apiFailure:{code:'preparation_failed',message:'PDF 자체 인식·크롭 저장이 진행 중입니다. 완료 후 API 준비를 실행하세요.'}}}];
+    const ready=await jobView(ctx,job.id);expect(ready.apiStatus.message).not.toContain('진행 중');
+    records.content_jobs[0].data.apiFailure.message='다른 저장 오류';
+    expect((await jobView(ctx,job.id)).apiStatus.message).toBe('다른 저장 오류');
+  });
   it('recovers a bank response referencing saved concept IDs without cloning concepts or recalling AI',async()=>{
     const {ctx,records,documentId}=jobContext();
     records.document_chapters=[{id:'saved-ch',user_id:ctx.user.id,document_id:documentId,title:'함수',start_page:22,end_page:23}];
