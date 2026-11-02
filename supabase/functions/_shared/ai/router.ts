@@ -12,7 +12,8 @@ export class SuccessfulTaskPersistenceError extends Error {
 }
 export async function runTask(input: TaskInput, context: RouterContext): Promise<TaskResult> {
   const now = context.now ?? Date.now; const sleep = context.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
-  const deadline=now()+85000;
+  // Finish before the two-minute DB lease, leaving time to persist the result.
+  const deadline=now()+110000;
   let order: Provider[] = context.mode === "gemini_first" || context.mode === "gemini_only" ? ["gemini", "nvidia"] : ["nvidia", "gemini"];
   if (context.mode === "round_robin" && context.rotationIndex % 2 === 1) order.reverse();
   if (context.mode.endsWith("_only")) order = order.slice(0, 1);
@@ -23,7 +24,7 @@ export async function runTask(input: TaskInput, context: RouterContext): Promise
   for (const provider of order) {
     const slots=context.providers.filter(s=>s.provider===provider);
     const hasAlternative=order.slice(order.indexOf(provider)+1).some(p=>context.providers.some(s=>s.provider===p&&(s.selectedModels??[s.model]).some(m=>eligible(s,m))));
-    const providerDeadline=hasAlternative?Math.min(deadline,now()+40000):deadline;
+    const providerDeadline=hasAlternative?Math.min(deadline,now()+55000):deadline;
     providerCandidates:for(const state of rotate(slots,Math.floor(context.rotationIndex/2))){
     const keyId=state.credentialId??provider,groupId=`${provider}:${state.quotaGroup??'shared'}`;
     let selected=rotate(state.selectedModels??[state.model],Math.floor(context.rotationIndex/(2*Math.max(1,slots.length))));
@@ -43,7 +44,7 @@ export async function runTask(input: TaskInput, context: RouterContext): Promise
       const start = now();
       let successful: Extract<TaskResult, { status: "succeeded" }> | undefined;
       try {
-        const response = await generate(provider, model.id, key, input, context.fetch ?? fetch, now(),Math.max(1000,Math.min(input.kind==='restudy_v1'?40000:20000,providerDeadline-now()-1000)));
+        const response = await generate(provider, model.id, key, input, context.fetch ?? fetch, now(),Math.max(1000,Math.min(input.kind==='restudy_v1'?55000:20000,providerDeadline-now()-1000)));
         let output: Json;
         try { output = validateOutput(input.kind, response.raw, input.sourceIds, input.count); } catch { throw new ProviderError("invalid_response"); }
         if(input.kind==='restudy_v1'&&input.allowedPages&&(output.questions.some((q:Json)=>q.source_pages.some((n:number)=>!input.allowedPages!.includes(n)))||output.problem_analyses.some((q:Json)=>!input.allowedPages!.includes(q.pdf_page))))throw new ProviderError('invalid_response');

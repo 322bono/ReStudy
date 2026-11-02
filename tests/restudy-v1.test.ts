@@ -7,7 +7,7 @@ import {
   questionFingerprint,
   RestudyJSONSchema,
 } from "../src/domain/restudy";
-import { createJob } from "../supabase/functions/_shared/standard/service";
+import { createJob,previewPart,jobView } from "../supabase/functions/_shared/standard/service";
 import ContentReview from "../src/components/ContentReview";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -80,6 +80,14 @@ function part(n = 1): any {
     similarities: [],
   };
 }
+it('accepts the same stored chapter/concept after PostgreSQL jsonb reorders object keys',()=>{
+ const incoming=part(),chapter=incoming.chapters[0],concept=incoming.concepts[0];
+ const reorder=(value:any):any=>Array.isArray(value)?value.map(reorder):value&&typeof value==='object'?Object.fromEntries(Object.entries(value).reverse().map(([k,v])=>[k,reorder(v)])):value;
+ const result=validateRestudyParts([incoming],job,{chapters:[reorder(chapter)],concepts:[reorder(concept)]});
+ expect(result.errors).toEqual([]);
+ const changed=validateRestudyParts([incoming],job,{chapters:[{...chapter,title:'다른 단원'}]});
+ expect(changed.errors.join(' ')).toContain('서로 다른 내용');
+});
 describe("restudy.v1 shared pipeline", () => {
   it("allocates whole-job purpose and type quotas into actual part sizes", () => {
     const prompt = createExternalPrompt(
@@ -344,6 +352,7 @@ function jobContext() {
         return this;
       },
       order(){return this;},
+      then(resolve:any,reject:any){return this.range(0,Number.MAX_SAFE_INTEGER).then(resolve,reject);},
       limit(n:number){return this.range(0,n-1);},
       insert(value: any) {
         incoming = { id: "70000000-0000-4000-8000-000000000007", ...value };
@@ -381,6 +390,17 @@ function jobContext() {
   };
 }
 describe("original-analysis job preparation", () => {
+  it('preserves legacy hashes when unchanged jsonb content is reimported and retains the last question preview',async()=>{
+    const {ctx,records}=jobContext(),incoming=part();
+    records.content_jobs.push({id:job.id,user_id:ctx.user.id,document_id:job.documentId,data:{...job,knownChapters:incoming.chapters,knownConcepts:incoming.concepts}});
+    const reordered=Object.fromEntries(Object.entries(incoming).reverse());
+    records.content_parts.push({job_id:job.id,user_id:ctx.user.id,part:1,total_parts:5,raw:reordered,content_hash:'legacy-hash'});
+    const preview=await previewPart(ctx,job.id,incoming);
+    expect(preview.hash).toBe('legacy-hash');expect(preview.preview.valid).toBe(true);
+    records.content_parts.push({job_id:job.id,user_id:ctx.user.id,part:2,total_parts:5,raw:{...part(2),questions:[]},content_hash:'another'});
+    const summary=await jobView(ctx,job.id);
+    expect(summary.preparedQuestions).toBe(1);expect(summary.preparedPreview[0]).toMatchObject({part:1,prompt:incoming.questions[0].prompt,options:incoming.questions[0].options,source_pages:[22]});
+  });
   it('prepares all-in-one API content in small validated units without crop targets',async()=>{
    const {ctx,documentId}=jobContext();
    const created=await createJob(ctx,{documentId,method:'api',taskType:'complete',questionCount:12,purposeCounts:{concept:4,practice:4,similar:4}});

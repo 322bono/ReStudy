@@ -1,7 +1,7 @@
 import {AppError,sha256} from '../context.ts';
 import {row,rows,type Ctx} from '../app/repository.ts';
 import {compileRestudy} from '../../../../src/domain/restudy-compile.ts';
-import {createExternalPrompt,parseRestudy,splitCount,validateRestudyParts,type StandardJob} from '../../../../src/domain/restudy.ts';
+import {createExternalPrompt,parseRestudy,splitCount,validateRestudyParts,canonicalJson,type StandardJob} from '../../../../src/domain/restudy.ts';
 import {selectPages,tocPages} from '../../../../src/domain/pages.ts';
 import{apiProgress}from'../../../../src/domain/ai-status.ts';
 
@@ -9,10 +9,10 @@ export const standardJob=(r:any):StandardJob=>({...r.data,id:r.id,documentId:r.d
 function dbError(error:any,message:string){if(error)throw new AppError(message);}
 export async function jobView(ctx:Ctx,id:string){
  const job=await row(ctx,'content_jobs',id),parts=(await rows(ctx,'content_parts')).filter((p:any)=>p.job_id===id);
- const {data:apiJobs,error}=await ctx.admin.from('ai_jobs').select('id,status,attempts,available_at,updated_at,part:data->standardPart,label:data->label,last_error:data->last_error,provider_error:data->last_provider_error').eq('user_id',ctx.user.id).eq('data->>standardJobId',id).order('created_at').limit(1000);dbError(error,'API 진행 상황을 읽지 못했습니다.');
+ const {data:apiJobs,error}=await ctx.admin.from('ai_jobs').select('id,status,attempts,available_at,updated_at,part:data->standardPart,label:data->label,last_error:data->last_error,provider_error:data->last_provider_error,detail:data->last_error_detail').eq('user_id',ctx.user.id).eq('data->>standardJobId',id).order('created_at').limit(1000);dbError(error,'API 진행 상황을 읽지 못했습니다.');
  let attempts:any[]=[];
  if(apiJobs?.length){const logs=await ctx.admin.from('ai_usage_logs').select('job_id,created_at,data').eq('user_id',ctx.user.id).in('job_id',apiJobs.map((j:any)=>j.id)).order('created_at',{ascending:false}).limit(8);dbError(logs.error,'API 시도 내역을 읽지 못했습니다.');attempts=(logs.data??[]).map((r:any)=>({jobId:r.job_id,at:r.created_at,...Object.fromEntries(['provider','model','key_label','success','error','http_status','duration_ms'].filter(k=>r.data?.[k]!==undefined).map(k=>[k,r.data[k]]))}));}
- return {...standardJob(job),status:job.status,parts:parts.map((p:any)=>({part:p.part,totalParts:p.total_parts,questions:p.raw.questions?.length||0,applied:p.applied})),preparedQuestions:parts.reduce((sum:number,p:any)=>sum+(p.raw.questions?.length??0),0),preparedPreview:parts.slice(-1).flatMap((p:any)=>(p.raw.questions??[]).slice(0,5).map((q:any)=>({part:p.part,prompt:q.prompt,answer:q.answer,explanation:q.explanation}))),createdAt:job.created_at,apiJobs:apiJobs??[],apiStatus:apiProgress(apiJobs??[],job.data.totalParts,job.data.importedQuestions??0,job.data.apiFailure),apiAttempts:attempts};
+ return {...standardJob(job),status:job.status,parts:parts.map((p:any)=>({part:p.part,totalParts:p.total_parts,questions:p.raw.questions?.length||0,applied:p.applied})),preparedQuestions:parts.reduce((sum:number,p:any)=>sum+(p.raw.questions?.length??0),0),preparedPreview:parts.filter((p:any)=>p.raw.questions?.length).slice(-1).flatMap((p:any)=>(p.raw.questions??[]).slice(0,5).map((q:any)=>({part:p.part,prompt:q.prompt,answer:q.answer,options:q.options,source_pages:q.source_pages,explanation:q.explanation}))),createdAt:job.created_at,apiJobs:apiJobs??[],apiStatus:apiProgress(apiJobs??[],job.data.totalParts,job.data.importedQuestions??0,job.data.apiFailure),apiAttempts:attempts};
 }
 export async function createJob(ctx:Ctx,body:any){
  const document=await row(ctx,'documents',String(body.documentId||''));if(document.data.archived)throw new AppError('보관된 자료를 먼저 복원하세요.');
@@ -68,7 +68,9 @@ export async function previewPart(ctx:Ctx,jobId:string,input:unknown){
  const index=(await rows(ctx,'problems')).filter((q:any)=>q.document_id===job.documentId);
  for(const a of incoming.problem_analyses){const matches=index.filter((q:any)=>String(q.number)===String(Number(a.q_number))&&q.page===a.pdf_page);if(matches.length!==1)merged.warnings.push(`${a.q_number}번(${a.pdf_page}쪽)은 원본 영역을 지정하거나 중복 번호를 구분해야 합니다. 분석 데이터는 보존합니다.`)}
  merged.valid=!merged.errors.length;merged.ready=merged.valid&&!merged.unresolved.length;
- const hash=await sha256(JSON.stringify(incoming));
+ const samePart=parts.find((p:any)=>p.part===incoming.part&&canonicalJson(p.raw)===canonicalJson(incoming));
+ // Preserve legacy hashes when an unchanged existing part is reimported.
+ const hash=samePart?.content_hash??await sha256(canonicalJson(incoming));
  return {job,rowJob,incoming,existingCount:parts.length,hash,merged,preview:{valid:merged.valid,ready:merged.ready,complete:merged.complete,errors:merged.errors,warnings:merged.warnings,unresolved:merged.unresolved,duplicates:merged.duplicates,counts:merged.counts,part:incoming.part,totalParts:incoming.total_parts,hash,review:{chapters:merged.chapters,concepts:merged.concepts,questions:merged.questions,flashcards:merged.flashcards,problemAnalyses:merged.problemAnalyses}}};
 }
 export async function commitPart(ctx:Ctx,jobId:string,input:unknown,reviewed=false,child?:{id:string,lease:string}){

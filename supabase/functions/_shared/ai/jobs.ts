@@ -1,5 +1,6 @@
 import { runTask, SuccessfulTaskPersistenceError, type RouterContext, type TaskInput, type TaskResult } from "./router.ts";
 import { validateOutput, type Json } from "./schemas.ts";
+import{AppError}from'../context.ts';
 export type Job = { id: string; user_id: string; kind: string; status: string; attempts: number; lease_token?: string; data: Json; [key: string]: unknown };
 export type JobStore = { claim(id: string, dailyLimit: number, maxAttempts: number): Promise<{ job: Job; rotation_index: number } | null>; finish(id: string, token: string, status: string, data: Json, availableAt: string): Promise<any>; commit(id: string, token: string, result: Json): Promise<any> };
 function stable(value: any): string { if (Array.isArray(value)) return `[${value.map(stable).join(",")}]`; if (value && typeof value === "object") return `{${Object.keys(value).sort().filter((key) => value[key] !== undefined).map((key) => `${JSON.stringify(key)}:${stable(value[key])}`).join(",")}}`; return JSON.stringify(value); }
@@ -70,6 +71,6 @@ export async function processJob(job: Job, store: JobStore, routing: Omit<Router
   } catch (error) {
     // A DB/worker error never causes another inference call in this invocation.
     if (error instanceof SuccessfulTaskPersistenceError) completed = error.result;
-    return await store.finish(active.id, token, "paused", { ...active.data, ...(completed ? { pending_result: completed } : {}), last_error: "processing_failed" }, new Date().toISOString()) ?? { id: active.id, status: "running" };
+    return await store.finish(active.id, token, "paused", { ...active.data, ...(completed ? { pending_result: completed } : {}), last_error: "processing_failed",last_provider_error:null,last_error_detail:error instanceof AppError?error.message:null }, new Date().toISOString()) ?? { id: active.id, status: "running" };
   }
 }

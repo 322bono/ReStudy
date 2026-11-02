@@ -4,5 +4,5 @@ export function apiProgress(jobs:any[],totalParts:number,importedQuestions:numbe
  const completed=jobs.filter(j=>j.status==='completed').length,running=jobs.find(j=>j.status==='running'),stopped=jobs.find(j=>['paused','failed','retry_wait'].includes(j.status));
  const state=running?'running':failure||stopped?'paused':completed===totalParts&&totalParts>0?'review_needed':jobs.length?'waiting':'not_started';
  const error=stopped?.provider_error??stopped?.last_error??failure?.code;
- return{state,completed,totalParts,pending:Math.max(0,totalParts-completed),importedQuestions,message:state==='paused'?(failure?.message??aiFailureText(error)):state==='running'?`분할 ${running.part} 응답을 기다리고 있습니다.`:state==='review_needed'?'결과를 저장했습니다. 검토 후 학습에 사용하세요.':state==='waiting'?'다음 API 분할이 대기 중입니다. 이어서 준비를 누르면 진행합니다.':'API로 준비를 실행하면 진행 상황과 결과가 여기에 표시됩니다.',errorCode:error??null};
+ return{state,completed,totalParts,pending:Math.max(0,totalParts-completed),importedQuestions,message:state==='paused'?(failure?.message??stopped?.detail??aiFailureText(error)):state==='running'?`분할 ${running.part} 응답을 기다리고 있습니다.`:state==='review_needed'?'결과를 저장했습니다. 검토 후 학습에 사용하세요.':state==='waiting'?'다음 API 분할이 대기 중입니다. 이어서 준비를 누르면 진행합니다.':'API로 준비를 실행하면 진행 상황과 결과가 여기에 표시됩니다.',errorCode:error??null};
 }

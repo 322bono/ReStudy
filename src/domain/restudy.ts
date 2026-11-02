@@ -271,6 +271,12 @@ export function questionFingerprint(
     [...conceptKeys].sort(),
   ]);
 }
+/** JSON object key order is not content identity (jsonb reorders keys). */
+export function canonicalJson(value:unknown):string {
+ if(Array.isArray(value))return '['+value.map(canonicalJson).join(',')+']';
+ if(value&&typeof value==='object')return '{'+Object.keys(value).filter(key=>(value as Record<string,unknown>)[key]!==undefined).sort().map(key=>JSON.stringify(key)+':'+canonicalJson((value as Record<string,unknown>)[key])).join(',')+'}';
+ return JSON.stringify(value)??'null';
+}
 export function validateRestudyParts(
   inputs: unknown[],
   job: StandardJob,
@@ -298,7 +304,7 @@ export function validateRestudyParts(
     if (p.total_parts !== job.totalParts)
       errors.push("전체 분할 수가 등록된 작업과 다릅니다.");
     const previous = parts.get(p.part);
-    if (previous && JSON.stringify(previous) !== JSON.stringify(p))
+    if (previous && canonicalJson(previous) !== canonicalJson(p))
       errors.push(`${p.part}번 분할의 내용이 기존 분할과 다릅니다.`);
     else parts.set(p.part, p);
   }
@@ -312,7 +318,7 @@ export function validateRestudyParts(
     label: string,
   ) {
     const old = map.get(item.id);
-    if (old && JSON.stringify(old) !== JSON.stringify(item))
+    if (old && canonicalJson(old) !== canonicalJson(item))
       errors.push(`${label} ${item.id}의 ID가 서로 다른 내용에 사용됐습니다.`);
     else map.set(item.id, item);
   }

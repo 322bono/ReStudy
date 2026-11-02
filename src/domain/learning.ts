@@ -898,7 +898,7 @@ export function originalReview(question:any,state:LearningState,relations:any[]=
   if(purposes.includes('similar')&&relatedOriginalIds(item,[question]).length)bankCounts.similar++;
   if(list(item.modes).includes('memory'))bankCounts.memory++;
  }
- const match=(ref:any,q:any)=>ref&&String(Number(ref.q_number))===String(q.number)&&ref.pdf_page===q.page&&(!ref.chapter_id||!q.chapterId||ref.chapter_id===q.chapterId);
+ const match=(ref:any,q:any)=>ref&&String(Number(ref.q_number))===String(q.number)&&ref.pdf_page===q.page&&(!ref.chapter_id||ref.chapter_id===q.chapterId);
  const wrong=new Set(state.mistakes.map(m=>m.questionId));
  const similar=state.questions.filter(q=>q.id!==question.id&&!q.mergedInto&&!q.autoRetired).flatMap(q=>{
   const saved=relations.find(r=>r.document_id===question.materialId&&q.materialId===question.materialId&&((match(r.a,question)&&match(r.b,q))||(match(r.b,question)&&match(r.a,q))));

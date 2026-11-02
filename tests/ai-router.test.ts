@@ -16,7 +16,7 @@ describe("persistent rotation routing", () => {
   it('reserves time for another provider when several keys on the first provider time out',async()=>{
     let clock=1000000;const seen:string[]=[],good=context().fetch;
     const providers=[...['a','b','c'].map(credentialId=>({...states()[1],credentialId})),states()[0]];
-    const ctx=context(1,providers,(async(...args:Parameters<typeof fetch>)=>{seen.push(String(args[0]));if(String(args[0]).includes('googleapis')){clock+=39000;throw new DOMException('timeout','TimeoutError');}return good(...args);})as typeof fetch);ctx.now=()=>clock;
+    const ctx=context(1,providers,(async(...args:Parameters<typeof fetch>)=>{seen.push(String(args[0]));if(String(args[0]).includes('googleapis')){clock+=54000;throw new DOMException('timeout','TimeoutError');}return good(...args);})as typeof fetch);ctx.now=()=>clock;
     expect(await runTask(input,ctx)).toMatchObject({status:'succeeded',provider:'nvidia'});
     expect(seen).toHaveLength(2);
   });

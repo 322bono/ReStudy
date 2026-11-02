@@ -8,3 +8,7 @@ test('completed provider calls still require content review',()=>{
  expect(apiProgress([{part:1,status:'completed'},{part:2,status:'completed'}],2,10)).toMatchObject({state:'review_needed',completed:2,importedQuestions:10});
  expect(aiFailureText('auth_error')).toContain('인증');
 });
+test('a safe persistence error takes precedence over an earlier provider failure',()=>{
+ const result=apiProgress([{part:1,status:'paused',last_error:'processing_failed',detail:'단원 참조를 확인하세요.'}],2,0);
+ expect(result.message).toBe('단원 참조를 확인하세요.');
+});
