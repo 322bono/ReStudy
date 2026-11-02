@@ -35,13 +35,16 @@ test('classifies a response body timeout as a timeout rather than invalid JSON',
  const transport=(async()=>new Response(new ReadableStream({start(controller){controller.error(new DOMException('private upstream message','TimeoutError'));}})))as typeof fetch;
  await expect(generate('gemini','gemini-3.6-flash','test-only',{kind:'restudy_v1',prompt:'fixture'},transport,Date.now())).rejects.toMatchObject({code:'timeout'});
 });
-test('Gemini receives the supported structure for standard content rather than unconstrained JSON mode',async()=>{
+test('standard Gemini content uses the established compact JSON mode while legacy structured tasks retain schemas',async()=>{
+ let calls=0;
  const transport=(async(_url,init)=>{
   const config=JSON.parse(String(init?.body)).generationConfig;
-  expect(config.responseFormat.text.schema.properties.schema_version.enum).toEqual(['restudy.v1']);
-  expect(config.responseFormat.text.schema.properties.questions.items.allOf).toBeUndefined();
+  expect(config.responseFormat.text.mimeType).toBe('APPLICATION_JSON');
+  if(calls++===0)expect(config.responseFormat.text.schema).toBeUndefined();
+  else expect(config.responseFormat.text.schema.properties.questions).toBeDefined();
   expect(config.temperature).toBeUndefined();
   return new Response(JSON.stringify({candidates:[{content:{parts:[{text:'{}'}]},finishReason:'STOP'}]}));
  })as typeof fetch;
  expect((await generate('gemini','gemini-3.6-flash','test-only',{kind:'restudy_v1',prompt:'fixture'},transport,Date.now())).raw).toEqual({});
+ await generate('gemini','gemini-3.6-flash','test-only',{kind:'generate_questions',prompt:'fixture'},transport,Date.now());
 });

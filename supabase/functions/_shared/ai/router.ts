@@ -21,18 +21,34 @@ export async function runTask(input: TaskInput, context: RouterContext): Promise
   if (context.mode.endsWith("_only")) order = order.slice(0, 1);
   if (context.preferredProvider && !context.mode.endsWith("_only")) order = [context.preferredProvider, ...order.filter((provider) => provider !== context.preferredProvider)];
   let tried = false,lastError:string|undefined; const retryTimes: number[] = [], blockedKeys=new Set<string>(),groupCooldowns=new Map<string,number>();
+  const timeoutHealth=new Map<string,number>();
+  for(const state of context.providers)for(const [id,health]of Object.entries(state.modelStates??{})){
+    if(health.last_error!=='timeout')continue;
+    const until=Date.parse(health.cooldown_until??'')||0,key=`${state.provider}:${state.quotaGroup??'shared'}:${id}`;
+    if(until>now())timeoutHealth.set(key,Math.max(until,timeoutHealth.get(key)??0));
+  }
   const rotate=<T>(values:T[],index:number)=>values.length?[...values.slice(index%values.length),...values.slice(0,index%values.length)]:[];
   for (const provider of order) {
     const slots=context.providers.filter(s=>s.provider===provider);
     for(const state of rotate(slots,Math.floor(context.rotationIndex/2))){
     const keyId=state.credentialId??provider,groupId=`${provider}:${state.quotaGroup??'shared'}`;
-    let selected=rotate(state.selectedModels??[state.model],Math.floor(context.rotationIndex/(2*Math.max(1,slots.length))));
+    const pool=[...(state.selectedModels??[state.model])];
+    // Prefer compact hosted NVIDIA models before the larger reasoning models,
+    // but retain every explicit selection in the durable round-robin pool.
+    if(provider==='nvidia'){
+      const priority=['nvidia/nemotron-3.5-lightning-30b-a3b','openai/gpt-oss-20b','nvidia/nemotron-3-super-120b-a12b','nvidia/nemotron-3-ultra-550b-a55b'];
+      const rank=(id:string)=>priority.includes(id)?priority.indexOf(id):priority.length;
+      pool.sort((a,b)=>rank(a)-rank(b));
+    }
+    // Keys do not multiply the number of turns spent on one model. A slow
+    // model must not receive four full timeouts just because four keys exist.
+    let selected=rotate(pool,Math.floor(context.rotationIndex/2));
     if(context.preferredModel&&selected.includes(context.preferredModel))selected=[context.preferredModel,...selected.filter(m=>m!==context.preferredModel)];
     for(const modelId of selected){
     const model=modelFor(provider,modelId);
     if (!state?.enabled || !model?.text || !model.structured || state.status === "auth_error" || !context.allowPaid && state.access !== "free_confirmed" || input.images?.length && !model.image || input.prompt.length > model.maxInputChars) continue;
     if(blockedKeys.has(keyId))continue;
-    const cooldown = Math.max((state.cooldown_until ? Date.parse(state.cooldown_until) : 0)||0,groupCooldowns.get(groupId)??0,groupCooldowns.get(`${groupId}:${modelId}`)??0,Date.parse(state.quotaCooldowns?.['']??'')||0,Date.parse(state.quotaCooldowns?.[modelId]??'')||0,Date.parse(state.modelStates?.[modelId]?.cooldown_until??'')||0);
+    const cooldown = Math.max((state.cooldown_until ? Date.parse(state.cooldown_until) : 0)||0,timeoutHealth.get(`${groupId}:${modelId}`)??0,groupCooldowns.get(groupId)??0,groupCooldowns.get(`${groupId}:${modelId}`)??0,Date.parse(state.quotaCooldowns?.['']??'')||0,Date.parse(state.quotaCooldowns?.[modelId]??'')||0,Date.parse(state.modelStates?.[modelId]?.cooldown_until??'')||0);
     if (cooldown > now()) { retryTimes.push(cooldown); continue; }
     tried = true;
     let key: string;
@@ -66,7 +82,8 @@ export async function runTask(input: TaskInput, context: RouterContext): Promise
         lastError=failure.code;
         await context.log({ provider,credential_id:state.credentialId,key_label:state.label, model: model.id, kind: input.kind, success: false, attempt: attempt + 1, duration_ms: Math.max(0, now() - start), error: failure.code, diagnostic:failure.diagnostic??null,http_status: failure.status ?? null });
         if (["provider_error", "network_error","invalid_response"].includes(failure.code) && attempt === 0) { await sleep(1000); continue; }
-        const until = failure.retryAt ?? (["provider_error", "network_error","timeout","invalid_response"].includes(failure.code) ? now() + 5000 : now()+600000);
+        const until = failure.retryAt ?? (failure.code==='timeout'?now()+300000:["provider_error", "network_error","invalid_response"].includes(failure.code) ? now() + 5000 : now()+600000);
+        if(failure.code==='timeout')timeoutHealth.set(`${groupId}:${modelId}`,until);
         if (until) retryTimes.push(until);
         if(failure.code==='auth_error')blockedKeys.add(keyId);
         if(failure.code==='rate_limited')groupCooldowns.set(failure.quotaScope==='model'?`${groupId}:${model.id}`:groupId,until);

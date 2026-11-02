@@ -22,6 +22,7 @@ describe("persistent rotation routing", () => {
       expect(await runTask(input,ctx)).toMatchObject({status:'paused',lastError:'timeout'});
       expect(timeout).toHaveBeenCalledWith(110000);
       expect(seen).toHaveLength(1);
+      expect(ctx.events).toContainEqual(expect.objectContaining({last_error:'timeout',cooldown_until:new Date(1410000).toISOString()}));
     }finally{timeout.mockRestore();}
   });
   it('applies the shared provider group reservation before every upstream request including retries',async()=>{
@@ -36,8 +37,8 @@ describe("persistent rotation routing", () => {
     const slots=[{...p,credentialId:'key-a',quotaGroup:'shared',selectedModels:['nvidia/nemotron-3-super-120b-a12b','openai/gpt-oss-20b']},{...p,credentialId:'key-b',quotaGroup:'other',selectedModels:['nvidia/nemotron-3-super-120b-a12b']}];
     const seen:string[]=[];const good=context().fetch;
     const ctx=context(0,slots,(async(...args:Parameters<typeof fetch>)=>{const body=JSON.parse(String(args[1]?.body));seen.push(body.model);return seen.length===1?new Response('{}',{status:404}):good(...args);})as typeof fetch);
-    expect(await runTask(input,ctx)).toMatchObject({status:'succeeded',model:'openai/gpt-oss-20b'});
-    expect(seen).toEqual(['nvidia/nemotron-3-super-120b-a12b','openai/gpt-oss-20b']);
+    expect(await runTask(input,ctx)).toMatchObject({status:'succeeded',model:'nvidia/nemotron-3-super-120b-a12b'});
+    expect(seen).toEqual(['openai/gpt-oss-20b','nvidia/nemotron-3-super-120b-a12b']);
   });
   it("does not hop across keys sharing an exhausted project quota", async () => {
     const p=states()[0];const seen:string[]=[];
@@ -62,6 +63,22 @@ describe("persistent rotation routing", () => {
     expect(await runTask(input, context(0))).toMatchObject({ status: "succeeded", provider: "nvidia" });
     expect(await runTask(input, context(1))).toMatchObject({ status: "succeeded", provider: "gemini" });
     expect(await runTask(input, context(2))).toMatchObject({ status: "succeeded", provider: "nvidia" });
+  });
+  it('rotates models on every provider turn even when four credentials share the provider pool',async()=>{
+    const slots=['a','b','c','d'].map(credentialId=>({...states()[1],credentialId,selectedModels:['gemini-3.8-flash','gemini-3.6-flash','gemini-3.5-flash-lite']}));
+    const results=await Promise.all([1,3,5].map(rotationIndex=>runTask(input,context(rotationIndex,slots))));
+    expect(results.map(result=>result.status==='succeeded'?result.model:null)).toEqual(['gemini-3.8-flash','gemini-3.6-flash','gemini-3.5-flash-lite']);
+  });
+  it('shares temporary timeout health across keys in the same account group without blocking other models or groups',async()=>{
+    const first={...states()[1],credentialId:'a',quotaGroup:'account',selectedModels:['gemini-3.8-flash','gemini-3.6-flash']};
+    const unhealthy={...first,credentialId:'b',modelStates:{'gemini-3.8-flash':{last_error:'timeout',cooldown_until:new Date(1300000).toISOString()}}};
+    expect(await runTask(input,context(1,[first,unhealthy]))).toMatchObject({status:'succeeded',model:'gemini-3.6-flash'});
+    expect(await runTask(input,context(1,[first,{...unhealthy,quotaGroup:'other'}]))).toMatchObject({status:'succeeded',model:'gemini-3.8-flash'});
+  });
+  it('starts the NVIDIA pool with compact models while keeping every selected model reachable',async()=>{
+    const slots=[{...states()[0],credentialId:'a',selectedModels:['nvidia/nemotron-3-super-120b-a12b','nvidia/nemotron-3.5-lightning-30b-a3b','nvidia/nemotron-3-ultra-550b-a55b','openai/gpt-oss-20b']}];
+    const results=await Promise.all([0,2,4,6].map(rotationIndex=>runTask(input,context(rotationIndex,slots))));
+    expect(results.map(result=>result.status==='succeeded'?result.model:null)).toEqual(['nvidia/nemotron-3.5-lightning-30b-a3b','openai/gpt-oss-20b','nvidia/nemotron-3-super-120b-a12b','nvidia/nemotron-3-ultra-550b-a55b']);
   });
   it("does not send images to a text-only model", async () => {
     expect(await runTask({ ...input, images: [{ mimeType: "image/png", data: "dGVzdA==" }] }, context())).toMatchObject({ status: "succeeded", provider: "gemini" });

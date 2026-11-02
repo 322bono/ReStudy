@@ -85,7 +85,7 @@ export async function generate(provider: Provider, model: string, key: string, i
     ...(input.kind==='restudy_v1'?{response_format:{type:'json_object'}}:{tools:[{type:'function',function:{name:'submit_result',description:'Submit validated study content',parameters:geminiSchema(schema)}}]}), max_tokens: Math.min(input.kind==='restudy_v1'?8192:4096,definition.maxOutputTokens??4096), temperature: 0.2, stream: false,...(definition.nvidiaReasoningEffort?{reasoning_effort:definition.nvidiaReasoningEffort}:{}),
   } : {
     systemInstruction: { parts: [{ text: instruction }] }, contents: [{ role: "user", parts: [{ text: input.prompt }, ...(input.images ?? []).map((image) => ({ inlineData: { mimeType: image.mimeType, data: image.data } }))] }],
-    generationConfig: { maxOutputTokens: Math.min(8192,definition.maxOutputTokens??8192), thinkingConfig: { thinkingLevel: "LOW" }, responseFormat: { text: { mimeType: "APPLICATION_JSON", schema:geminiSchema(schema) } } },store:false,
+    generationConfig: { maxOutputTokens: Math.min(8192,definition.maxOutputTokens??8192), thinkingConfig: { thinkingLevel: "LOW" }, responseFormat: { text: { mimeType: "APPLICATION_JSON", ...(input.kind==='restudy_v1'?{}:{schema:geminiSchema(schema)}) } } },store:false,
   };
   let response: Response;
   try { response = await transport(url, { method: "POST", headers, body: JSON.stringify(body), redirect: "error", signal: AbortSignal.timeout(timeoutMs) }); }
