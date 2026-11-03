@@ -1,14 +1,27 @@
 import {AppError} from '../context.ts';
 import{preparedBankLinks}from'../../../../src/domain/learning.ts';
 export type Ctx={user:{id:string},db:any,admin:any};
-export async function rows(ctx:Ctx,table:string){const all:any[]=[];for(let offset=0;;offset+=1000){const {data,error}=await ctx.db.from(table).select('*').eq('user_id',ctx.user.id).range(offset,offset+999);if(error)throw new AppError('저장된 자료를 읽지 못했습니다.',500);all.push(...data);if(data.length<1000)return all;}}
+export async function rows(ctx:Ctx,table:string,filters:Record<string,string|number>={}){const all:any[]=[];for(let offset=0;;offset+=1000){let query=ctx.db.from(table).select('*').eq('user_id',ctx.user.id);for(const [column,value]of Object.entries(filters))query=query.eq(column,value);const {data,error}=await query.range(offset,offset+999);if(error)throw new AppError('저장된 자료를 읽지 못했습니다.',500);all.push(...data);if(data.length<1000)return all;}}
+/** Learning and image signing need page metadata, never full OCR coordinates. */
+export async function pageRows(ctx:Ctx,documentId?:string,number?:number){
+ const all:any[]=[];
+ for(let offset=0;;offset+=1000){
+  let query=ctx.db.from('document_pages').select('id,document_id,number,image_path,kind:data->>kind,width:data->width,height:data->height,text:data->>text,source:data->>source,manualKind:data->manualKind').eq('user_id',ctx.user.id);
+  if(documentId!==undefined)query=query.eq('document_id',documentId);
+  if(number!==undefined)query=query.eq('number',number);
+  const {data,error}=await query.range(offset,offset+999);
+  if(error)throw new AppError('저장된 페이지 정보를 읽지 못했습니다.',500);
+  all.push(...data.map((r:any)=>({id:r.id,document_id:r.document_id,number:r.number,image_path:r.image_path,data:{kind:r.kind,width:r.width,height:r.height,text:r.text??'',source:r.source,manualKind:r.manualKind}})));
+  if(data.length<1000)return all;
+ }
+}
 export async function row(ctx:Ctx,table:string,id:string){const {data,error}=await ctx.db.from(table).select('*').eq('user_id',ctx.user.id).eq('id',id).maybeSingle();if(error||!data)throw new AppError('자료 또는 학습 기록을 찾을 수 없습니다.',404);return data;}
 export function value(r:any){return {...r.data,id:r.id,createdAt:r.data?.createdAt||r.created_at,updatedAt:r.updated_at};}
 export async function put(ctx:Ctx,table:string,id:string,data:any,columns:Record<string,unknown>={}){const result=await ctx.db.from(table).upsert({id,user_id:ctx.user.id,...columns,data},{onConflict:table==='concepts'||table==='concept_questions'?'id,user_id':'id'}).select().single();if(result.error)throw new AppError('자료 저장 중 참조 또는 형식을 확인하지 못했습니다.',400);return result.data;}
 export const material=(r:any)=>({...value(r),title:r.title,subject:r.subject,kind:r.kind,status:r.status,hash:r.content_hash});
 export async function state(ctx:Ctx,withPages=false){
  const names=['documents','problems','problem_regions','problem_concepts','concepts','concept_questions','wrong_answers','study_sessions','solve_sessions','study_results','document_chapters','chapter_concepts','bank_question_concepts','bank_question_origins',...(withPages?['document_pages']:[])];
- const lists=await Promise.all(names.map(t=>rows(ctx,t))),tables=Object.fromEntries(names.map((n,i)=>[n,lists[i]]));
+ const lists=await Promise.all(names.map(t=>t==='document_pages'?pageRows(ctx):rows(ctx,t))),tables=Object.fromEntries(names.map((n,i)=>[n,lists[i]]));
  const projection=async(table:string,columns:string)=>{const result:any[]=[];for(let offset=0;;offset+=1000){const page=await ctx.db.from(table).select(columns).eq('user_id',ctx.user.id).range(offset,offset+999);if(page.error)throw new AppError('준비한 문항 연결을 읽지 못했습니다.',500);result.push(...page.data);if(page.data.length<1000)return result;}};
  const [preparedJobs,preparedRefs]=await Promise.all([projection('content_jobs','id,document_id,task_type:data->>taskType,first_target:data->targetQuestions->0->>id,second_target:data->targetQuestions->1->>id'),projection('content_refs','job_id,kind,actual_id')]);
  const preparedLinks=preparedBankLinks(preparedJobs,preparedRefs,tables.problems.map((q:any)=>({id:q.id,materialId:q.document_id})));

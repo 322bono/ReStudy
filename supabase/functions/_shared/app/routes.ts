@@ -1,5 +1,5 @@
 import {AppError} from '../context.ts';
-import {material,publicQuestion,put,row,rows,signed,state,value,type Ctx} from './repository.ts';
+import {material,publicQuestion,put,row,rows,pageRows,signed,state,value,type Ctx} from './repository.ts';
 import {importContent,validate} from './content.ts';
 import {exportData,restoreData} from './backup.ts';
 import{saveOutline,documentIndex}from'./pdf-index.ts';
@@ -25,13 +25,14 @@ async function asset(ctx:Ctx,path:string){
  const p=path.replace(/^\/api\//,'').split('?')[0].split('/'),query=new URLSearchParams(path.split('?')[1]||'');let storagePath='';
  if(p[0]==='materials'){
   const m=await row(ctx,'documents',p[1]);if(p[2]==='file')storagePath=m.data.originalPath;
-  else if(p[2]==='page'){const pages=await rows(ctx,'document_pages');const page=pages.find((r:any)=>r.document_id===m.id&&r.number===Number(p[3]));if(!page)throw new AppError('페이지를 찾을 수 없습니다.',404);storagePath=page.image_path;}
+  else if(p[2]==='page'){const [page]=await pageRows(ctx,m.id,Number(p[3]));if(!page)throw new AppError('페이지를 찾을 수 없습니다.',404);storagePath=page.image_path;}
  }else if(p[0]==='questions'&&p[2]==='image'){
-  const q=await row(ctx,'problems',p[1]);const pages=await rows(ctx,'document_pages');
+  const q=await row(ctx,'problems',p[1]);
   let data=q.data,paths:string[]=[];const sessionId=query.get('session');
   if(sessionId){const session=value(await row(ctx,'solve_sessions',sessionId)),snapshot=session.questionSnapshots?.find((q:any)=>q.id===p[1]);if(!snapshot)throw new AppError('이 풀이의 원본 문항이 아닙니다.',403);data=snapshot;paths=snapshot.imagePaths||[];}
-  else paths=(await rows(ctx,'problem_regions')).filter((r:any)=>r.problem_id===q.id).sort((a:any,b:any)=>a.part-b.part).map((r:any)=>r.image_path);
-  const region=data.regions?.[Number(p[3])];if(!region||pages.find((r:any)=>r.document_id===q.document_id&&r.number===region.page)?.data.kind==='answers')throw new AppError('정답·해설 페이지는 문제로 제공하지 않습니다.',409);
+  else paths=(await rows(ctx,'problem_regions',{problem_id:q.id})).sort((a:any,b:any)=>a.part-b.part).map((r:any)=>r.image_path);
+  const region=data.regions?.[Number(p[3])];if(!region)throw new AppError('준비된 원본 영역이 없습니다.',404);
+  const [page]=await pageRows(ctx,q.document_id,region.page);if(page?.data.kind==='answers')throw new AppError('정답·해설 페이지는 문제로 제공하지 않습니다.',409);
   storagePath=paths[Number(p[3])];
  }
  if(!storagePath)throw new AppError('준비된 원본 이미지가 없습니다.',404);return {url:await signed(ctx,storagePath)};
