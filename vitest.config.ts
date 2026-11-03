@@ -8,5 +8,5 @@ export default defineConfig({
         require.resolve("@supabase/supabase-js"),
     },
   },
-  test: { include: ["tests/**/*.test.ts"] },
+  test: { include: ["tests/**/*.test.{ts,tsx}"] },
 });

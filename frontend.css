@@ -604,11 +604,12 @@
   top: 0;
   z-index: 3;
 }
-.topbar-more {
+.topbar > .topbar-more {
   display: none;
   position: relative;
+  z-index: 45;
 }
-.topbar-more > summary {
+.topbar-more > button {
   display: flex;
   align-items: center;
   gap: 5px;
@@ -619,11 +620,10 @@
   color: #515765;
   font-size: 12px;
   white-space: nowrap;
+  background: transparent;
+  border: 0;
 }
-.topbar-more > summary::-webkit-details-marker {
-  display: none;
-}
-.topbar-more > summary:focus-visible {
+.topbar-more > button:focus-visible {
   outline: 2px solid #8b87d1;
   outline-offset: 2px;
 }
@@ -655,6 +655,9 @@
   background: var(--indigo-light);
 }
 @media (max-width: 1100px) {
+  .topbar-date {
+    display: none;
+  }
   .sidebar {
     display: none;
   }
@@ -665,8 +668,9 @@
     min-width: 0;
     padding-bottom: calc(100px + env(safe-area-inset-bottom, 0px));
   }
-  .topbar-more {
+  .topbar > .topbar-more {
     display: block;
+    margin-left: auto;
   }
   .mobile-nav {
     position: fixed;
@@ -808,4 +812,38 @@
   color: var(--text-secondary);
   font-size: 12px;
   cursor: pointer;
+}
+.page-counter {
+  white-space: nowrap;
+  color: #737986;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+@media (max-width: 800px) {
+  .pdf-toolbar {
+    flex-wrap: wrap;
+    height: auto;
+    padding: 6px 12px;
+  }
+  .pdf-toolbar .page-number input {
+    width: 56px;
+    min-height: 40px;
+    font-size: 16px;
+  }
+  .pdf-toolbar .page-number {
+    color: #737986;
+    font-size: 12px;
+    gap: 5px;
+  }
+}
+@media (max-width: 600px) {
+  .pdf-toolbar .page-counter {
+    margin-left: auto;
+  }
+  .pdf-toolbar .toolbar-divider {
+    flex-basis: 100%;
+    width: 0;
+    height: 0;
+    margin: 0;
+  }
 }

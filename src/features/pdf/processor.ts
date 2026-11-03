@@ -4,6 +4,7 @@ import type { TextItem, TextStyle } from "pdfjs-dist/types/src/display/api";
 import type { PageViewport } from "pdfjs-dist/types/src/display/page_viewport";
 import type { Worker as OcrWorker, Page as OcrPage } from "tesseract.js";
 import { storagePageText } from "../../domain/pdf-text";
+import { installPdfStreamCompatibility } from "./runtime-compat.mjs";
 
 /** Coordinates are fractions of the displayed, rotated PDF page, from top left. */
 export interface PageTextItem {
@@ -64,10 +65,11 @@ function asset(path: string): string {
 export async function openPdf(
   source: Blob | Uint8Array | string,
 ): Promise<PDFDocumentProxy> {
+  installPdfStreamCompatibility();
   // Mozilla supports Safari through its translated/polyfilled legacy bundle.
   // Keep the worker on the same build so it also has the required polyfills.
   const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
-  pdfjs.GlobalWorkerOptions.workerSrc = asset("pdfjs/pdf.worker.legacy.min.mjs");
+  pdfjs.GlobalWorkerOptions.workerSrc = `${asset("pdfjs/pdf.worker.legacy.min.mjs")}?v=6.4.299-stream-iterator-v1`;
   const input =
     typeof source === "string"
       ? { url: source }

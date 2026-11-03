@@ -24,7 +24,7 @@ import type {
   Stroke,
 } from "@/lib/types";
 import { Badge, Button, Empty, IconButton } from "./ui";
-import { SecureImage } from "./secure-assets";
+import { prefetchSecureImages, SecureImage } from "./secure-assets";
 import OriginalAnalysis from "../src/components/OriginalAnalysis";
 import "../src/styles/original-analysis.css";
 import "../src/styles/original-solve.css";
@@ -157,13 +157,37 @@ export function Solve({
     [answerText, setAnswerText] = useState("");
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reviewRef = useRef<HTMLDivElement>(null);
+  const answerKeysRef = useRef<{
+    id: string;
+    promise: Promise<Record<string, any> | null>;
+  } | null>(null);
+  const prepareAnswerKeys = () => {
+    if (answerKeysRef.current?.id !== id) {
+      answerKeysRef.current = {
+        id,
+        promise: api<{ answerKeys: Record<string, any> }>(
+          `solve/${id}/answer-keys`,
+        )
+          .then((result) => result.answerKeys)
+          .catch(() => null),
+      };
+    }
+    return answerKeysRef.current.promise;
+  };
   useEffect(() => {
     if (review && window.matchMedia("(max-width: 900px)").matches)
       reviewRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
   }, [review]);
   useEffect(() => {
+    let alive = true;
+    setLoaded(false);
+    setFailure("");
+    // Warm only this session's immutable snapshots. Nothing is revealed until
+    // the learner presses the answer button.
+    void prepareAnswerKeys();
     api<SolveSession>(`solve/${id}`)
       .then((s) => {
+        if (!alive) return;
         setSession(s);
         const i = s.questionIds.findIndex((q) => !s.answers[q]);
         setIndex(Math.max(0, i));
@@ -171,14 +195,34 @@ export function Solve({
         setLoaded(true);
       })
       .catch((e) => {
+        if (!alive) return;
         setFailure(e.message);
         onError(e.message);
       });
+    return () => {
+      alive = false;
+    };
   }, [id, onError]);
   const qid = session?.questionIds[index],
     q =
       session?.questions?.find((q) => q.id === qid) ||
       state.questions.find((q) => q.id === qid);
+  useEffect(() => {
+    if (!session || summary) return;
+    const nextIds = session.questionIds.slice(index + 1, index + 3);
+    const paths = nextIds.flatMap((questionId) => {
+      const next =
+        session.questions?.find((question) => question.id === questionId) ||
+        state.questions.find((question) => question.id === questionId);
+      return (
+        next?.regions.map(
+          (_, region) =>
+            `questions/${questionId}/image/${region}?session=${id}`,
+        ) || []
+      );
+    });
+    void prefetchSecureImages(paths);
+  }, [id, session, index, state.questions, summary]);
   useEffect(() => {
     setStrokes(qid ? session?.drawings[qid] || [] : []);
     setZoom(1);
@@ -261,7 +305,11 @@ export function Solve({
     setBusy(true);
     setHelpText("");
     try {
-      const key = await api(`solve/${id}/answer-key/${q.id}`);
+      const keys = await prepareAnswerKeys();
+      const key =
+        keys === null
+          ? await api(`solve/${id}/answer-key/${q.id}`)
+          : keys[q.id] || { available: false };
       setReview(key.review);
       setHelpText(
         key.available

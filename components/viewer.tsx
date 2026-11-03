@@ -15,10 +15,12 @@ import {
 } from "lucide-react";
 import type { Concept, Material, Page, Question, Region } from "@/lib/types";
 import { api } from "@/lib/client";
+import { pageNavigation } from "../lib/page-navigation";
+import { NumberInput } from "./number-input";
 import { Badge, Button, Empty, IconButton } from "./ui";
 import { MaterialStatus } from "./materials";
 import { OriginalPage } from "./original-page";
-import { SecureLink } from "./secure-assets";
+import { SecureLink, prefetchSecureImages } from "./secure-assets";
 export function Viewer({
   id,
   initialPage = 1,
@@ -43,7 +45,7 @@ export function Viewer({
       pages: Page[];
       questions: Question[];
     }>(),
-    [page, setPage] = useState(initialPage),
+    [requestedPage, setPage] = useState(initialPage),
     [selected, setSelected] = useState<string>(),
     [zoom, setZoom] = useState(1),
     [edit, setEdit] = useState(false),
@@ -61,6 +63,23 @@ export function Viewer({
     [splitIndex, setSplitIndex] = useState(0),
     [splitAxis, setSplitAxis] = useState<"x" | "y">("y"),
     [splitRatio, setSplitRatio] = useState(50);
+  const navigation = pageNavigation(data?.pages || [], requestedPage);
+  const page = navigation.page ?? requestedPage;
+  useEffect(() => {
+    setPage(initialPage);
+  }, [id, initialPage]);
+  useEffect(() => {
+    if (navigation.page !== undefined && navigation.page !== requestedPage)
+      setPage(navigation.page);
+  }, [navigation.page, requestedPage]);
+  useEffect(() => {
+    const adjacent = [navigation.next, navigation.previous].filter(
+      (number): number is number => number !== undefined,
+    );
+    void prefetchSecureImages(
+      adjacent.map((number) => `materials/${id}/page/${number}`),
+    );
+  }, [id, navigation.next, navigation.previous]);
   const regionPages = [...new Set(regions.map((region) => region.page))].sort(
     (a, b) => a - b,
   );
@@ -235,36 +254,41 @@ export function Viewer({
           <div className="pdf-toolbar">
             <IconButton
               label="이전 페이지"
-              disabled={page <= 1}
-              onClick={() => setPage(page - 1)}
+              disabled={navigation.previous === undefined}
+              onClick={() => {
+                if (navigation.previous !== undefined)
+                  setPage(navigation.previous);
+              }}
             >
               <ChevronLeft size={18} />
             </IconButton>
             <label className="page-number">
-              <input
-                type="number"
-                min={1}
-                max={data.pages.length || 1}
-                value={page}
-                aria-label="페이지"
-                onChange={(e) =>
-                  setPage(
-                    Math.min(
-                      data.pages.length,
-                      Math.max(1, Number(e.target.value)),
-                    ),
-                  )
+              <span>PDF</span>
+              <NumberInput
+                min={navigation.first ?? 1}
+                max={navigation.last ?? 1}
+                value={navigation.page}
+                disabled={!navigation.count}
+                aria-label="PDF 페이지"
+                normalizeValue={(number) =>
+                  pageNavigation(data.pages, number).page ?? number
                 }
+                onValueChange={setPage}
               />
-              <span>/ {data.pages.length || "–"}</span>
+              <span>쪽</span>
             </label>
             <IconButton
               label="다음 페이지"
-              disabled={page >= data.pages.length}
-              onClick={() => setPage(page + 1)}
+              disabled={navigation.next === undefined}
+              onClick={() => {
+                if (navigation.next !== undefined) setPage(navigation.next);
+              }}
             >
               <ChevronRight size={18} />
             </IconButton>
+            <span className="page-counter">
+              분석 {navigation.index + 1} / {navigation.count}쪽
+            </span>
             <div className="toolbar-divider" />
             <IconButton
               label="축소"
@@ -458,11 +482,11 @@ export function Viewer({
               <div className="form-grid">
                 <label>
                   문제 번호
-                  <input
-                    type="number"
+                  <NumberInput
                     min={1}
-                    value={number}
-                    onChange={(e) => setNumber(e.target.value)}
+                    value={number ? Number(number) : undefined}
+                    onValueChange={(value) => setNumber(String(value))}
+                    onEmpty={() => setNumber("")}
                   />
                 </label>
                 <label>
@@ -620,24 +644,21 @@ export function Viewer({
                       </label>
                       <label>
                         나눌 위치 (%)
-                        <input
-                          type="number"
+                        <NumberInput
                           min={10}
                           max={90}
                           value={splitRatio}
-                          onChange={(e) =>
-                            setSplitRatio(Number(e.target.value))
-                          }
+                          onValueChange={setSplitRatio}
                         />
                       </label>
                       <label>
                         분리한 새 문항 번호
-                        <input
-                          type="number"
+                        <NumberInput
                           min={1}
                           max={9999}
-                          value={splitNumber}
-                          onChange={(e) => setSplitNumber(e.target.value)}
+                          value={splitNumber ? Number(splitNumber) : undefined}
+                          onValueChange={(value) => setSplitNumber(String(value))}
+                          onEmpty={() => setSplitNumber("")}
                         />
                       </label>
                     </div>

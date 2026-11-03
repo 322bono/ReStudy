@@ -3,6 +3,7 @@ import type { PDFDocumentProxy } from "pdfjs-dist";
 import { openPdf } from "./processor";
 import { selectPages, tocPages } from "../../domain/pages";
 import { Button } from "../../../components/ui";
+import { NumberInput } from "../../../components/number-input";
 export type FileOptions = {
   title: string;
   analysisRange: string;
@@ -147,17 +148,12 @@ export function UploadPreparation({
                 </Button>
                 <label>
                   PDF 페이지{" "}
-                  <input
+                  <NumberInput
                     aria-label="미리보기 PDF 페이지"
-                    type="number"
                     min={1}
                     max={count || 1}
                     value={page}
-                    onChange={(e) =>
-                      setPage(
-                        Math.min(count || 1, Math.max(1, +e.target.value || 1)),
-                      )
-                    }
+                    onValueChange={setPage}
                   />
                 </label>
                 <span>/ {count || "…"}</span>
@@ -237,22 +233,17 @@ export function UploadPreparation({
             <summary>책에 인쇄된 쪽수 표시</summary>
             <label className="cloud-field">
               현재 PDF {page}쪽에 인쇄된 책 쪽수
-              <input
-                type="number"
+              <NumberInput
                 placeholder="선택 사항"
                 value={
                   value.printedPageOffset === undefined
-                    ? ""
+                    ? undefined
                     : page + value.printedPageOffset
                 }
-                onChange={(e) =>
-                  change({
-                    printedPageOffset:
-                      e.target.value === ""
-                        ? undefined
-                        : Number(e.target.value) - page,
-                  })
+                onValueChange={(number) =>
+                  change({ printedPageOffset: number - page })
                 }
+                onEmpty={() => change({ printedPageOffset: undefined })}
               />
             </label>
           </details>

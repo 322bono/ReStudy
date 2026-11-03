@@ -17,6 +17,7 @@ import {
   Upload,
 } from "lucide-react";
 import { Button } from "../../components/ui";
+import { NumberInput } from "../../components/number-input";
 import "../styles/cloud.css";
 
 type Provider = "nvidia" | "gemini";
@@ -292,7 +293,7 @@ function jobStatus(value: unknown): string {
     succeeded: "완료",
     success: "완료",
     cancelled: "취소됨",
-    needs_review: "검토 필요",
+    needs_review: "학습 가능",
   };
   return labels[text(value)] || text(value) || "상태 확인 필요";
 }
@@ -771,46 +772,42 @@ export default function Settings({
                     <div className="cloud-field"><span>사용 모델</span><strong>Gemma 4 26B · 31B</strong><small>26B를 먼저 사용하고 필요할 때 31B로 이어갑니다.</small></div>
                     <label className="cloud-field" htmlFor={`${id}-daily`}>
                       <span>하루 최대 AI 작업 수</span>
-                      <input
+                      <NumberInput
                         id={`${id}-daily`}
-                        type="number"
                         min={0}
                         step={1}
                         required
                         value={
-                          Number.isNaN(draft.dailyLimit) ? "" : draft.dailyLimit
+                          Number.isNaN(draft.dailyLimit)
+                            ? undefined
+                            : draft.dailyLimit
                         }
                         disabled={!!busy}
-                        onChange={(event) =>
+                        onValueChange={(dailyLimit) =>
                           setDraft({
                             ...draft,
-                            dailyLimit:
-                              event.target.value === ""
-                                ? NaN
-                                : Number(event.target.value),
+                            dailyLimit,
                           })
                         }
                       />
                     </label>
                     <label className="cloud-field" htmlFor={`${id}-retries`}>
                       <span>작업당 최대 재시도 횟수</span>
-                      <input
+                      <NumberInput
                         id={`${id}-retries`}
-                        type="number"
                         min={0}
                         step={1}
                         required
                         value={
-                          Number.isNaN(draft.maxRetries) ? "" : draft.maxRetries
+                          Number.isNaN(draft.maxRetries)
+                            ? undefined
+                            : draft.maxRetries
                         }
                         disabled={!!busy}
-                        onChange={(event) =>
+                        onValueChange={(maxRetries) =>
                           setDraft({
                             ...draft,
-                            maxRetries:
-                              event.target.value === ""
-                                ? NaN
-                                : Number(event.target.value),
+                            maxRetries,
                           })
                         }
                       />

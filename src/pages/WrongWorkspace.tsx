@@ -187,24 +187,11 @@ export default function WrongWorkspace({
   }, [autoAnalyzeIds, loadingJobs, loadingReview]);
   useEffect(() => {
     if (!busy.includes("API")) return;
-    let stopped = false,
-      polling = false;
-    const timer = setInterval(async () => {
+    // The durable runner already polls this job. Keep the display clock local.
+    const timer = setInterval(() => {
       setApiElapsed(Math.floor((Date.now() - apiStart.current) / 1000));
-      if (polling || !selectedJob.current) return;
-      polling = true;
-      try {
-        const next = await standard<Job>("get", { jobId: selectedJob.current });
-        if (!stopped && mounted.current && activeId.current === id)
-          setJob(next);
-      } catch {
-        /* The final request reports errors without discarding prior progress. */
-      } finally {
-        polling = false;
-      }
-    }, 2000);
+    }, 1000);
     return () => {
-      stopped = true;
       clearInterval(timer);
     };
   }, [busy, id]);

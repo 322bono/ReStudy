@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "../../lib/client";
 import { Button, Dialog, Empty } from "../../components/ui";
+import { NumberInput } from "../../components/number-input";
 type Scope = {
   originalId?:string;
   materialIds?: string[];
@@ -170,12 +171,11 @@ export default function Bank({
           </label>
           <label>
             문제 수
-            <input
-              type="number"
+            <NumberInput
               min={1}
               max={1000}
               value={count}
-              onChange={(e) => setCount(+e.target.value)}
+              onValueChange={setCount}
             />
           </label>
           <label>

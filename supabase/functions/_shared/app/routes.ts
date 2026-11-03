@@ -103,6 +103,16 @@ export async function handle(ctx:Ctx,input:any):Promise<any>{
  if(route==='solve'){
   if(!id){const s=learnState(await state(ctx,true)),qs=(b.questionIds||[]).map((id:string)=>s.questions.find((q:any)=>q.id===id));if(!qs.length||qs.some((q:any)=>!q||!q.imagePaths?.length))throw new AppError('저장된 원본 크롭이 있는 문항을 선택하세요.');const session=createSolve(qs);await put(ctx,'solve_sessions',session.id,session);return solvePublic(session);}
   const ss=value(await row(ctx,'solve_sessions',id));
+  if(action==='answer-keys'){
+   // One owner-authorized read prepares the selected session's saved reviews.
+   // It never reveals UI, grades an answer, or writes a learning record.
+   const s=learnState(await state(ctx,true)),relations=await rows(ctx,'problem_similarities');
+   const answerKeys=Object.fromEntries((ss.questionSnapshots??[]).map((q:any)=>{
+    const review=originalReview(q,s,relations);
+    return[q.id,{available:!!review.answer,answer:review.answer,explanation:review.explanation,review}];
+   }));
+   return{answerKeys};
+  }
   if(action==='answer-key'){const q=ss.questionSnapshots.find((q:any)=>q.id===p[3]);if(!q)throw new AppError('이 풀이의 문항이 아닙니다.');const s=learnState(await state(ctx,true)),relations=await rows(ctx,'problem_similarities'),review=originalReview(q,s,relations);return {available:!!review.answer,answer:review.answer,explanation:review.explanation,review};}
   if(action==='answer'||action==='drawing')return learningMutation(ctx,'solve',id,{...b,drawingOnly:action==='drawing'});
   return solvePublic(ss);

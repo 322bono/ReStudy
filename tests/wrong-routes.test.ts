@@ -55,6 +55,27 @@ beforeEach(() => {
   };
 });
 
+test('preloads answer keys only for the selected session snapshots without grading or writing', async () => {
+  fixture.state.questions[0].answer = '저장된 정답';
+  fixture.state.questions[0].explanation = '저장된 해설';
+  const session = createSolve(fixture.state.questions);
+  fixture.state.sessions = [session];
+  fixture.state.questions.push({ ...fixture.state.questions[0], id: 'unselected', answer: '다른 문제 정답' });
+  const result = await handle({ user: { id: 'owner' } } as any, { path: `solve/${session.id}/answer-keys`, method: 'GET' });
+  expect(Object.keys(result.answerKeys)).toEqual(['q']);
+  expect(result.answerKeys.q).toMatchObject({ available: true, answer: '저장된 정답', explanation: '저장된 해설', review: { hasSavedAnalysis: true } });
+  expect(fixture.writes).toEqual([]);
+  expect(session.answers).toEqual({});
+});
+
+test('preloading an original without a saved answer reports unavailable and invents no result', async () => {
+  const session = createSolve(fixture.state.questions);
+  fixture.state.sessions = [session];
+  const result = await handle({ user: { id: 'owner' } } as any, { path: `solve/${session.id}/answer-keys`, method: 'GET' });
+  expect(result.answerKeys.q).toMatchObject({ available: false, answer: '', explanation: '' });
+  expect(fixture.writes).toEqual([]);
+});
+
 test("registration returns the saved original for immediate analysis and creates no graded or study record", async () => {
   const result = await handle({ user: { id: "owner" } } as any, {
     path: "mistakes",

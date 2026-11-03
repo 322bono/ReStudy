@@ -11,9 +11,10 @@ export default function OriginalAnalysis({
   onBank: (scope: any) => void;
 }) {
   const concepts = review?.concepts || [],
-    questions = review?.questions || [];
+    questions = (review?.questions || []).filter(
+      (question: any) => question.active !== false,
+    );
   const memorized = review?.memorize || [];
-  const pending = questions.filter((question: any) => !question.active).length;
   return (
     <div className="original-analysis" aria-busy={loading}>
       {loading && (
@@ -23,9 +24,7 @@ export default function OriginalAnalysis({
       )}
       <section className="analysis-group" aria-label="해설">
         <h2>1. 해설</h2>
-        {review?.analysis && (
-          <Badge tone="amber">AI 분석 · 원본과 확인하세요</Badge>
-        )}
+        {review?.analysis && <Badge tone="indigo">저장된 AI 분석</Badge>}
         {review?.answer && (
           <p className="analysis-answer">
             <strong>정답</strong> {review.answer}
@@ -113,7 +112,6 @@ export default function OriginalAnalysis({
           <details className="analysis-question" key={question.id}>
             <summary>
               {i + 1}. {question.prompt}{" "}
-              {!question.active && <Badge tone="amber">검토 필요</Badge>}
             </summary>
             {question.choices?.length > 0 && (
               <ol type="A">
@@ -140,14 +138,6 @@ export default function OriginalAnalysis({
               }
             >
               확인 문제 풀기
-            </Button>
-          )}
-          {pending > 0 && (
-            <Button
-              variant="secondary"
-              onClick={() => onBank({ ...review.bankScope, showPending: true })}
-            >
-              문항 검토 {pending}개
             </Button>
           )}
         </div>

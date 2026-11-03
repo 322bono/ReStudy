@@ -24,6 +24,7 @@ import type {
 } from "@/lib/types";
 import { Badge, Button, Empty, IconButton } from "./ui";
 import { DownloadLink } from "./secure-assets";
+import { NumberInput } from "./number-input";
 const newConcept = (): Concept => ({
   id: "",
   subject: "",
@@ -88,8 +89,7 @@ function SourceEditor({
           </label>
           <label>
             <span className="sr-only">출처 페이지 {i + 1}</span>
-            <input
-              type="number"
+            <NumberInput
               min={1}
               max={
                 materials.find((m) => m.id === s.materialId)?.pageCount ||
@@ -97,10 +97,10 @@ function SourceEditor({
               }
               aria-label={`출처 페이지 ${i + 1}`}
               value={s.page}
-              onChange={(e) =>
+              onValueChange={(page) =>
                 onChange(
                   sources.map((v, n) =>
-                    n === i ? { ...v, page: Number(e.target.value) } : v,
+                    n === i ? { ...v, page } : v,
                   ),
                 )
               }

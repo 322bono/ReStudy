@@ -85,6 +85,26 @@ export default function RestudyApp({
     [busy, setBusy] = useState(""),
     [studyIds, setStudyIds] = useState<string[]>([]);
   const [bankScope, setBankScope] = useState<any>({});
+  const [moreOpen, setMoreOpen] = useState(false);
+  const moreMenu = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!moreOpen) return;
+    const outside = (event: PointerEvent) => {
+      if (!moreMenu.current?.contains(event.target as Node)) setMoreOpen(false);
+    };
+    const escape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setMoreOpen(false);
+        moreMenu.current?.querySelector<HTMLButtonElement>("button")?.focus();
+      }
+    };
+    document.addEventListener("pointerdown", outside);
+    document.addEventListener("keydown", escape);
+    return () => {
+      document.removeEventListener("pointerdown", outside);
+      document.removeEventListener("keydown", escape);
+    };
+  }, [moreOpen]);
   const [automaticWrongIds, setAutomaticWrongIds] = useState<string[]>([]);
   const returnView = useRef<View>({ name: "materials" });
   const bankReturn = useRef<View>({ name: "study" });
@@ -116,6 +136,7 @@ export default function RestudyApp({
     return () => clearInterval(timer);
   }, [state?.materials, refresh, notify]);
   const navigate = (next: View) => {
+    setMoreOpen(false);
     if (next.name === "bank") bankReturn.current = view;
     setView(next);
     const p = new URLSearchParams();
@@ -266,47 +287,42 @@ export default function RestudyApp({
                 weekday: "short",
               })}
             </span>
-            <details
-              className="topbar-more"
-              onBlur={(event) => {
-                if (!event.currentTarget.contains(event.relatedTarget)) {
-                  event.currentTarget.open = false;
-                }
-              }}
-              onKeyDown={(event) => {
-                if (event.key === "Escape") {
-                  event.currentTarget.open = false;
-                  event.currentTarget.querySelector("summary")?.focus();
-                }
-              }}
-            >
-              <summary>
+            <div className="topbar-more" ref={moreMenu}>
+              <button
+                type="button"
+                aria-expanded={moreOpen}
+                aria-controls="mobile-more-menu"
+                onClick={() => setMoreOpen((open) => !open)}
+              >
                 <MoreHorizontal size={18} />
                 <span>더보기</span>
-              </summary>
-              <div className="topbar-more-menu">
-                <button
-                  onClick={(event) => {
-                    event.currentTarget
-                      .closest("details")
-                      ?.removeAttribute("open");
-                    navigate({ name: "manage" });
-                  }}
+              </button>
+              {moreOpen && (
+                <div
+                  className="topbar-more-menu"
+                  id="mobile-more-menu"
+                  aria-label="추가 메뉴"
                 >
-                  콘텐츠 관리
-                </button>
-                <button
-                  onClick={(event) => {
-                    event.currentTarget
-                      .closest("details")
-                      ?.removeAttribute("open");
-                    onSettings?.();
-                  }}
-                >
-                  설정
-                </button>
-              </div>
-            </details>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      navigate({ name: "manage" });
+                    }}
+                  >
+                    콘텐츠 관리
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMoreOpen(false);
+                      onSettings?.();
+                    }}
+                  >
+                    설정
+                  </button>
+                </div>
+              )}
+            </div>
           </header>
         )}
         <main id="main-content" className={focus ? "focus-main" : "page-main"}>

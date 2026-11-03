@@ -2,6 +2,7 @@ import {cpSync,mkdirSync,existsSync,readFileSync,writeFileSync} from 'node:fs';
 import {createHash} from 'node:crypto';
 import {gzipSync} from 'node:zlib';
 import path from 'node:path';
+import {writePdfWorkerAsset} from './pdf-worker-asset.mjs';
 const font='public/fonts/PretendardVariable.woff2',fontHash='9599f12fd42fc0bce1cd50b47a0c022e108d7aa64dd0d1bb0ed44f3282d900b4';
 if(!existsSync(font)){
  const response=await fetch('https://raw.githubusercontent.com/orioncactus/pretendard/main/packages/pretendard/dist/web/variable/woff2/PretendardVariable.woff2');
@@ -13,7 +14,7 @@ for(const name of ['cmaps','standard_fonts','wasm','iccs']){
   const source=path.resolve('node_modules/pdfjs-dist',name),target=path.resolve('public/pdfjs',name);
   mkdirSync(target,{recursive:true});cpSync(source,target,{recursive:true});
 }
-cpSync('node_modules/pdfjs-dist/legacy/build/pdf.worker.min.mjs','public/pdfjs/pdf.worker.legacy.min.mjs');
+writePdfWorkerAsset('public/pdfjs/pdf.worker.legacy.min.mjs');
 mkdirSync('public/ocr/core',{recursive:true});
 cpSync('node_modules/tesseract.js/dist/worker.min.js','public/ocr/worker.min.js');
 cpSync('node_modules/tesseract.js-core','public/ocr/core',{recursive:true});
