@@ -55,9 +55,9 @@
 .ww-analysis-start {
   margin-top: 14px;
 }
-@media (max-width: 900px) {
+@media (max-width: 1100px) {
   .ww-study-layout {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
     gap: 16px;
   }
   .ww-source {

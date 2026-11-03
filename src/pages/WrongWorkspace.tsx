@@ -70,13 +70,19 @@ type Preview = {
     totalParts: number;
   };
 };
+type Inspection = {
+  preview: Preview;
+  data: RestudyPackage;
+  raw: string;
+  jobId: string;
+};
 const statusLabels: Record<string, string> = {
   draft: "작업 준비됨",
   pending_refs: "참조 대기",
   partial: "일부 분할 보관",
   needs_more: "추가 문항 필요",
   ready: "학습 가능",
-  review_needed: "내용 검토 필요",
+  review_needed: "학습 가능",
   completed: "완료",
   paused: "보류",
   waiting: "대기",
@@ -90,114 +96,6 @@ const messageOf = (cause: unknown) =>
   cause instanceof Error
     ? cause.message
     : "요청을 처리하지 못했습니다. 다시 시도해 주세요.";
-
-function PackageReview({ data }: { data: RestudyPackage }) {
-  return (
-    <div className="ww-package-review">
-      <p className="ww-help">
-        현재 붙여넣은 분할의 개념·분석·문항을 확인하세요. 형식 검사는 내용의
-        정확성 검토와 별개입니다.
-      </p>
-      <div className="ww-review-scroll">
-        {data.concepts.map((concept) => (
-          <details key={`concept-${concept.id}`}>
-            <summary>개념 · {concept.name}</summary>
-            <p>{concept.summary}</p>
-            {[
-              ["공식", concept.formulas],
-              ["암기사항", concept.memorize],
-              ["주의할 점", concept.pitfalls],
-            ].map(([label, values]) =>
-              (values as string[]).length ? (
-                <div key={label as string}>
-                  <strong>{label as string}</strong>
-                  <ul>
-                    {(values as string[]).map((value, index) => (
-                      <li key={index}>{value}</li>
-                    ))}
-                  </ul>
-                </div>
-              ) : null,
-            )}
-          </details>
-        ))}
-        {data.problem_analyses.map((analysis, index) => (
-          <details key={`analysis-${index}`}>
-            <summary>
-              원본 {analysis.q_number}번 · PDF {analysis.pdf_page}쪽
-            </summary>
-            <p>{analysis.key_point}</p>
-            {analysis.memorize.length ? (
-              <>
-                <strong>암기사항</strong>
-                <ul>
-                  {analysis.memorize.map((value, i) => (
-                    <li key={i}>{value}</li>
-                  ))}
-                </ul>
-              </>
-            ) : null}
-            {analysis.mistakes.length ? (
-              <>
-                <strong>확인할 조건·예상 실수</strong>
-                <ul>
-                  {analysis.mistakes.map((value, i) => (
-                    <li key={i}>{value}</li>
-                  ))}
-                </ul>
-              </>
-            ) : null}
-          </details>
-        ))}
-        {data.questions.map((question, index) => (
-          <details key={`question-${question.id}`}>
-            <summary>
-              {index + 1}.{" "}
-              {
-                (
-                  {
-                    concept: "개념 퀴즈",
-                    practice: "연습문제",
-                    similar: "유사문제",
-                  } as const
-                )[question.purpose]
-              }{" "}
-              · {question.prompt}
-            </summary>
-            <p>{question.prompt}</p>
-            {question.options.length ? (
-              <ol type="A">
-                {question.options.map((option, i) => (
-                  <li key={i}>{option}</li>
-                ))}
-              </ol>
-            ) : null}
-            <p>
-              <strong>정답</strong> {question.answer}
-            </p>
-            <p>
-              <strong>해설</strong> {question.explanation}
-            </p>
-            {Object.entries(question.option_explanations).map(
-              ([option, explanation]) => (
-                <p key={option}>
-                  <strong>{option}</strong> {explanation}
-                </p>
-              ),
-            )}
-            <small>출처 PDF {formatPages(question.source_pages)}쪽</small>
-          </details>
-        ))}
-        {data.flashcards.map((card) => (
-          <details key={`card-${card.id}`}>
-            <summary>암기카드 · {card.front}</summary>
-            <p>{card.back}</p>
-          </details>
-        ))}
-      </div>
-    </div>
-  );
-}
 
 export default function WrongWorkspace({
   id,
@@ -239,12 +137,9 @@ export default function WrongWorkspace({
   const [part, setPart] = useState(1),
     [prompt, setPrompt] = useState(""),
     [raw, setRaw] = useState("");
-  const [inspection, setInspection] = useState<{
-      preview: Preview;
-      data: RestudyPackage;
-      raw: string;
-    }>(),
-    [reviewed, setReviewed] = useState(false);
+  const [inspection, setInspection] = useState<Inspection>();
+  const incomingRaw = useRef(raw);
+  incomingRaw.current = raw;
   const locked = useRef(false),
     activeId = useRef(id),
     mounted = useRef(true),
@@ -356,7 +251,6 @@ export default function WrongWorkspace({
     setPrompt("");
     setRaw("");
     setInspection(undefined);
-    setReviewed(false);
     setPart(1);
     setMessage("");
     setError("");
@@ -404,7 +298,6 @@ export default function WrongWorkspace({
   function resetIncoming() {
     setRaw("");
     setInspection(undefined);
-    setReviewed(false);
     setPrompt("");
     setPart(1);
   }
@@ -432,7 +325,7 @@ export default function WrongWorkspace({
       setMessage(
         completed.parts?.filter((part) => part.applied).length ===
           completed.totalParts
-          ? "저장된 결과를 불러왔습니다. 문항의 내용·정답·해설을 검토한 뒤 학습에 사용하세요."
+          ? "저장된 결과를 불러왔습니다. 준비된 문항을 바로 학습할 수 있습니다."
           : "완료된 결과는 보관했습니다. 준비 도구에서 남은 분할과 오류를 확인하고 이어서 실행할 수 있습니다.",
       );
   }
@@ -474,7 +367,7 @@ export default function WrongWorkspace({
             ? "완료된 분석은 저장했습니다. 준비 도구에서 이어서 실행할 수 있습니다."
             : failures.length
               ? "완료된 분석은 저장했습니다. 실패한 문제는 다시 분석할 수 있습니다."
-              : "저장된 분석을 불러왔습니다. 생성된 추가 문항은 내용을 검토한 뒤 풀 수 있습니다.",
+              : "저장된 분석을 불러왔습니다. 준비된 추가 문항을 바로 풀 수 있습니다.",
         );
       }
     } finally {
@@ -524,27 +417,29 @@ export default function WrongWorkspace({
   async function inspect() {
     if (!job) throw new Error("먼저 이 문제의 분석 작업을 준비해 주세요.");
     const forId = id,
+      jobId = job.id,
       submitted = raw,
       data = parseRestudy(submitted);
     const preview = await standard<Preview>("preview", {
-      jobId: job.id,
+      jobId,
       raw: data,
     });
-    if (activeId.current === forId && mounted.current) {
-      setInspection({ preview, data, raw: submitted });
-      setReviewed(false);
-    }
-  }
-  async function importData() {
-    if (!job || !inspection?.preview.valid || inspection.raw !== raw)
-      throw new Error("현재 결과를 먼저 검사하고 미리보기를 확인해 주세요.");
     if (
-      reviewed &&
-      inspection.preview.counts.questions !== inspection.data.questions.length
+      activeId.current !== forId || !mounted.current ||
+      selectedJob.current !== jobId || incomingRaw.current !== submitted
+    ) return;
+    const result = { preview, data, raw: submitted, jobId };
+    setInspection(result);
+    if (preview.valid) await importData(result);
+  }
+  async function importData(resultInspection: Inspection) {
+    if (
+      !job || !resultInspection.preview.valid ||
+      resultInspection.raw !== incomingRaw.current ||
+      resultInspection.jobId !== job.id || selectedJob.current !== job.id ||
+      activeId.current !== id || !mounted.current
     )
-      throw new Error(
-        "이전 분할을 포함한 문항은 검토 대기로 등록한 뒤 문제 은행에서 전체 내용을 검토해 주세요.",
-      );
+      throw new Error("현재 결과가 변경되었습니다. 다시 등록해 주세요.");
     const forId = id;
     const result = await standard<{
       job: Job;
@@ -553,18 +448,20 @@ export default function WrongWorkspace({
       ready: boolean;
     }>("import", {
       jobId: job.id,
-      raw: inspection.data,
-      previewHash: inspection.preview.hash,
-      reviewed,
+      raw: resultInspection.data,
+      previewHash: resultInspection.preview.hash,
     });
     await onRefresh();
-    if (activeId.current !== forId || !mounted.current) return;
+    if (
+      activeId.current !== forId || !mounted.current ||
+      selectedJob.current !== resultInspection.jobId ||
+      incomingRaw.current !== resultInspection.raw
+    ) return;
     setJob(result.job);
     setRaw("");
     setInspection(undefined);
-    setReviewed(false);
     setMessage(
-      `${result.receivedParts}/${job.totalParts}분할 보관 · ${result.questions}문항 등록${!result.ready ? " · 다른 분할의 참조 대기" : reviewed ? " · 검토 완료" : " · 내용 검토 대기"}`,
+      `${result.receivedParts}/${job.totalParts}분할 보관 · ${result.questions}문항 등록${!result.ready ? " · 다른 분할의 참조 대기" : " · 학습 가능"}`,
     );
     await loadJobs(job.id);
   }
@@ -899,7 +796,7 @@ export default function WrongWorkspace({
                     </Button>
                   </section>
                   <section className="ww-import-step">
-                    <h3>3. 결과 붙여넣기·검사</h3>
+                    <h3>3. 결과 붙여넣기·등록</h3>
                     <label className="ww-field" htmlFor={`${fieldId}-json`}>
                       <span>출력된 값을 그대로 복사해 붙여넣으세요.</span>
                       <textarea
@@ -912,17 +809,16 @@ export default function WrongWorkspace({
                         onChange={(event) => {
                           setRaw(event.target.value);
                           setInspection(undefined);
-                          setReviewed(false);
                         }}
                       />
                     </label>
                     <Button
                       variant="secondary"
                       disabled={!!busy || !raw.trim()}
-                      busy={busy === "JSON 검사"}
-                      onClick={() => act("JSON 검사", inspect)}
+                      busy={busy === "분석 결과 등록"}
+                      onClick={() => act("분석 결과 등록", inspect)}
                     >
-                      검사·미리보기
+                      분석 결과 등록
                     </Button>
                     {preview && inspection ? (
                       <div className="ww-import-preview">
@@ -955,59 +851,12 @@ export default function WrongWorkspace({
                             다른 분할의 단원·개념 참조를 기다리고 있습니다.
                           </p>
                         ) : null}
-                        {preview.valid ? (
-                          <>
-                            <PackageReview data={inspection.data} />
-                            <label
-                              className="ww-review-check"
-                              htmlFor={`${fieldId}-reviewed`}
-                            >
-                              <input
-                                id={`${fieldId}-reviewed`}
-                                type="checkbox"
-                                checked={reviewed}
-                                disabled={
-                                  !!busy ||
-                                  !preview.ready ||
-                                  preview.counts.questions !==
-                                    inspection.data.questions.length
-                                }
-                                onChange={(event) =>
-                                  setReviewed(event.target.checked)
-                                }
-                              />
-                              <span>
-                                미리보기에 표시된{" "}
-                                {inspection.data.questions.length}문항의
-                                내용·정답·해설을 모두 검토했습니다.
-                              </span>
-                            </label>
-                            {preview.counts.questions !==
-                            inspection.data.questions.length ? (
-                              <p className="ww-help">
-                                이전 분할을 포함한 문항은 검토 대기로 등록한 뒤
-                                문제 은행에서 전체 내용을 검토하세요.
-                              </p>
-                            ) : null}
-                            <Button
-                              disabled={!!busy}
-                              busy={busy === "분석 결과 등록"}
-                              onClick={() => act("분석 결과 등록", importData)}
-                            >
-                              {!preview.ready
-                                ? "분할 보관 · 참조 대기"
-                                : reviewed
-                                  ? "검토 완료로 등록·학습에 사용"
-                                  : "검토 대기로 등록"}
-                            </Button>
-                          </>
-                        ) : null}
                       </div>
                     ) : null}
                   </section>
                   <p className="ww-import-note">
                     붙여넣기·검사·등록은 AI API를 호출하지 않습니다. API 결과도
-                    같은 restudy.v1 검증과 검토 절차를 사용합니다.
+                    같은 restudy.v1 형식 검사를 거쳐 바로 학습에 사용합니다.
                   </p>
                   <div className="ww-actions">
                     <Button
@@ -1024,11 +873,10 @@ export default function WrongWorkspace({
                         onBank({
                           ...bankScope("concept", 15, "quiz"),
                           purposes: ["concept", "practice", "similar"],
-                          showPending: true,
                         })
                       }
                     >
-                      등록 문항 검토
+                      등록 문항 보기·수정
                       <ArrowRight size={13} />
                     </Button>
                   </div>

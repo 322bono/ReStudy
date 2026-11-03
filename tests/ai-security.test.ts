@@ -1,7 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { encryptKey, decryptKey } from "../supabase/functions/_shared/ai/crypto.ts";
 import { validateOutput } from "../supabase/functions/_shared/ai/schemas.ts";
 import { credentialAction } from "../supabase/functions/_shared/ai/credentials.ts";
+import { providerContext } from "../supabase/functions/_shared/ai/service.ts";
+import { sanitizeSettings } from "../supabase/functions/_shared/ai/settings.ts";
 
 // Isolated test values: never sent to a provider or inserted in a user database.
 const master = btoa(String.fromCharCode(...new Uint8Array(32).fill(7)));
@@ -73,32 +75,30 @@ function database() {
   } };
 }
 describe("server-only credential operations", () => {
-  it('probes a selected compact NVIDIA model before a larger listed model',async()=>{
+  it('blocks NVIDIA checks before any inference and preserves encrypted historic selections',async()=>{
     const db=database(),ctx={user:{id:'owner-a'},db,admin:db},encrypted=await encryptKey('test-only-key','owner-a','nvidia',master);
     const selected=['nvidia/nemotron-3-super-120b-a12b','nvidia/nemotron-3.5-lightning-30b-a3b'];
     db.tables.ai_key_slots.push({id:'slot-a',user_id:'owner-a',provider:'nvidia',...encrypted,data:{access:'free_confirmed',modelIds:selected,selectedModels:selected,poolConfigured:true}});
-    const seen:string[]=[];
-    const transport=(async(_url,init)=>{
-      if(init?.method!=='POST')return new Response(JSON.stringify({data:[...selected,{id:'nvidia/nemotron-3.5-bolt-e4b'}].map(value=>typeof value==='string'?{id:value}:value)}));
-      const request=JSON.parse(String(init.body));seen.push(request.model);expect(request.chat_template_kwargs).toEqual({enable_thinking:false});
-      return new Response(JSON.stringify({choices:[{message:{content:'{"ok":true}'},finish_reason:'stop'}]}));
-    })as typeof fetch;
-    expect(await credentialAction({action:'check',provider:'nvidia',credentialId:'slot-a'},ctx,master,transport)).toMatchObject({generation_verified:true});
-    expect(seen).toEqual(['nvidia/nemotron-3.5-lightning-30b-a3b']);
+    let calls=0;
+    const transport=(async()=>{calls++;throw Error('must not call');})as typeof fetch;
+    await expect(credentialAction({action:'check',provider:'nvidia',credentialId:'slot-a'},ctx,master,transport)).rejects.toThrow('free_only_policy');
+    expect(calls).toBe(0);expect(db.tables.ai_key_slots[0]).toMatchObject({...encrypted,data:{selectedModels:selected}});
   });
-  it('refreshes default model pools with documented additions while preserving explicit selections',async()=>{
+  it('refreshes NVIDIA metadata while keeping historic pools preserved and generation disabled',async()=>{
     for(const custom of [false,true]){
       const db=database(),ctx={user:{id:'owner-a'},db,admin:db};
       const encrypted=await encryptKey('test-only-key','owner-a','nvidia',master);
       db.tables.ai_key_slots.push({id:'slot-a',user_id:'owner-a',provider:'nvidia',...encrypted,data:{access:'free_confirmed',modelIds:['nvidia/nemotron-3.5-lightning-30b-a3b'],selectedModels:['nvidia/nemotron-3.5-lightning-30b-a3b'],poolConfigured:custom}});
       const transport=(async(_url,init)=>{expect(init?.method).toBeUndefined();return new Response(JSON.stringify({data:[{id:'nvidia/nemotron-3.5-lightning-30b-a3b'},{id:'nvidia/nemotron-3.5-bolt-e4b'},{id:'nvidia/nemotron-3.5-super-vl-120b-a12b'}]}));})as typeof fetch;
       await credentialAction({action:'discover',provider:'nvidia',credentialId:'slot-a'},ctx,master,transport);
-      expect(db.tables.ai_key_slots[0].data.selectedModels).toEqual(custom?['nvidia/nemotron-3.5-lightning-30b-a3b']:['nvidia/nemotron-3.5-lightning-30b-a3b','nvidia/nemotron-3.5-bolt-e4b','nvidia/nemotron-3.5-super-vl-120b-a12b']);
+      expect(db.tables.ai_key_slots[0].data.selectedModels).toEqual(['nvidia/nemotron-3.5-lightning-30b-a3b']);
+      const status=await credentialAction({action:'status'},ctx,master);
+      expect(status.providers[0].credentials[0]).toMatchObject({enabled:false,selectedModels:[],models:[]});
     }
   });
   it("adds separate encrypted slots, preserves a failed replacement and allows empty model pools",async()=>{
     const db=database(),ctx={user:{id:'owner-a'},db,admin:db};
-    const good=(async()=>new Response(JSON.stringify({models:[{name:'models/gemini-3.8-flash',supportedGenerationMethods:['generateContent']},{name:'models/gemini-3.6-flash',supportedGenerationMethods:['generateContent']}]})))as typeof fetch;
+    const good=(async()=>new Response(JSON.stringify({models:[{name:'models/gemma-4-26b-a4b-it',supportedGenerationMethods:['generateContent']},{name:'models/gemma-4-31b-it',supportedGenerationMethods:['generateContent']}]})))as typeof fetch;
     const first=await credentialAction({action:'save',provider:'gemini',key:'test-first',access:'free_confirmed',label:'첫 키'},ctx,master,good);
     await credentialAction({action:'save',provider:'gemini',key:'test-second',access:'free_confirmed',label:'둘째 키'},ctx,master,good);
     expect(db.tables.ai_key_slots).toHaveLength(2);
@@ -117,7 +117,7 @@ describe("server-only credential operations", () => {
   });
   it("returns only connection metadata and never stores the plaintext submitted key", async () => {
     const db = database(); const ctx = { user: { id: "owner-a" }, db, admin: db };
-    const transport = (async () => new Response(JSON.stringify({models:[{ name: "models/gemini-3.8-flash", supportedGenerationMethods: ["generateContent"] }]}))) as typeof fetch;
+    const transport = (async () => new Response(JSON.stringify({models:[{ name: "models/gemma-4-26b-a4b-it", supportedGenerationMethods: ["generateContent"] }]}))) as typeof fetch;
     const response = await credentialAction({ action: "save", provider: "gemini", key: "test-only-plaintext-secret", access: "free_confirmed" }, ctx, master, transport);
     expect(response).toMatchObject({ configured: true, generation_verified: false });
     expect(JSON.stringify(db.tables)).not.toContain("test-only-plaintext-secret");
@@ -139,19 +139,41 @@ describe("server-only credential operations", () => {
     await credentialAction({ action: "delete", provider: "gemini" }, ctx, master);
     expect(db.tables.ai_credentials).toEqual([{ user_id: "owner-b", provider: "gemini" }]);
   });
-  it("does not mistake the public NVIDIA model list for valid credentials", async () => {
+  it("rejects new NVIDIA credentials without using a free-account checkbox as payment evidence", async () => {
     const db = database(); const ctx = { user: { id: "owner-a" }, db, admin: db };
     let probes = 0;
     const transport = (async (_url: any, init: any) => {
       if (init.method === "POST") { probes++; return new Response("secret auth failure", { status: 401 }); }
       return new Response(JSON.stringify({ data: [{ id: "nvidia/nemotron-3-super-120b-a12b" }] }));
     }) as typeof fetch;
-    await expect(credentialAction({ action: "save", provider: "nvidia", key: "test-only-key", access: "free_confirmed" }, ctx, master, transport)).rejects.toThrow("auth_error");
-    expect(probes).toBe(1); expect(db.tables.ai_credentials).toEqual([]);
+    await expect(credentialAction({ action: "save", provider: "nvidia", key: "test-only-key", access: "free_confirmed" }, ctx, master, transport)).rejects.toThrow("free_only_policy");
+    expect(probes).toBe(0); expect(db.tables.ai_credentials).toEqual([]);
   });
-  it("does not run a NVIDIA connection generation without billing confirmation", async () => {
+  it("cannot enable NVIDIA generation through forged paid account settings", async () => {
     const db = database(); const ctx = { user: { id: "owner-a" }, db, admin: db }; let calls = 0;
-    await expect(credentialAction({ action: "save", provider: "nvidia", key: "test-only-key" }, ctx, master, (async () => { calls++; throw new Error("must not call"); }) as typeof fetch)).rejects.toThrow("billing_confirmation_required");
+    db.tables.profiles[0].data.ai_settings={allow_paid:true};
+    await expect(credentialAction({ action: "save", provider: "nvidia", key: "test-only-key",access:'paid' }, ctx, master, (async () => { calls++; throw new Error("must not call"); }) as typeof fetch)).rejects.toThrow("free_only_policy");
     expect(calls).toBe(0);
+  });
+  it('reports only no-charge models and refuses unsafe model selections',async()=>{
+    const db=database(),ctx={user:{id:'owner-a'},db,admin:db};
+    db.tables.ai_key_slots.push({id:'slot-a',user_id:'owner-a',provider:'gemini',data:{modelIds:['gemini-3.8-flash','gemma-4-26b-a4b-it','gemma-4-31b-it'],selectedModels:['gemini-3.8-flash']}});
+    const status=await credentialAction({action:'status'},ctx,master);
+    expect(status.models.map((model:any)=>model.id)).toEqual(['gemma-4-26b-a4b-it','gemma-4-31b-it']);
+    await expect(credentialAction({action:'toggle',provider:'gemini',credentialId:'slot-a',enabled:true,selectedModels:['gemini-3.8-flash']},ctx,master)).rejects.toThrow('invalid_model');
+    expect(db.tables.ai_key_slots[0].data.selectedModels).toEqual(['gemini-3.8-flash']);
+    expect((await credentialAction({action:'settings',settings:{allow_paid:true,mode:'nvidia_only'}},ctx,master)).settings).toMatchObject({allow_paid:false,mode:'gemini_only'});
+  });
+  it('refreshes stale model metadata on explicit AI actions and preserves original selection IDs',async()=>{
+    const db=database(),ctx={user:{id:'owner-a'},db,admin:db},encrypted=await encryptKey('test-only-key','owner-a','gemini',master);
+    db.tables.ai_key_slots.push({id:'slot-a',user_id:'owner-a',provider:'gemini',...encrypted,data:{modelIds:['gemini-3.8-flash'],selectedModels:['gemini-3.8-flash'],poolConfigured:true,listed_at:'2026-10-01T00:00:00Z',catalog_version:'historic'}});
+    const calls:string[]=[];
+    vi.stubGlobal('fetch',async(url:string|URL|Request,init?:RequestInit)=>{calls.push(String(url));expect(init?.method).toBeUndefined();return new Response(JSON.stringify({models:[{name:'models/gemma-4-26b-a4b-it',supportedGenerationMethods:['generateContent']},{name:'models/gemma-4-31b-it',supportedGenerationMethods:['generateContent']}]}));});
+    try{
+      const routing=await providerContext(ctx,'job-a',sanitizeSettings({allow_paid:true}),master,{kind:'generate_questions',prompt:'fixture',sourceIds:[]});
+      expect(calls).toHaveLength(1);expect(routing).toMatchObject({allowPaid:false,mode:'gemini_only'});
+      expect(routing.providers[0].selectedModels).toEqual(['gemma-4-26b-a4b-it','gemma-4-31b-it']);
+      expect(db.tables.ai_key_slots[0]).toMatchObject({...encrypted,data:{selectedModels:['gemini-3.8-flash']}});
+    }finally{vi.unstubAllGlobals();}
   });
 });

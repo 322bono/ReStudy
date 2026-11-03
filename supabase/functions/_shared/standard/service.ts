@@ -94,7 +94,7 @@ export async function previewPart(ctx:Ctx,jobId:string,input:unknown){
 export async function commitPart(ctx:Ctx,jobId:string,input:unknown,reviewed=false,child?:{id:string,lease:string}){
  const checked=await previewPart(ctx,jobId,input);if(!checked.merged.valid)throw new AppError(checked.merged.errors.join('\n'));
  const compiled=await compileRestudy(checked.merged,checked.job,checked.bindings);
- const {data,error}=await ctx.admin.rpc('commit_restudy_part',{p_user_id:ctx.user.id,p_job_id:jobId,p_part:checked.incoming,p_hash:checked.hash,p_existing_count:checked.existingCount,p_compiled:compiled,p_reviewed:reviewed===true,p_ai_job_id:child?.id||null,p_ai_lease:child?.lease||null});
+ const {data,error}=await ctx.admin.rpc('commit_restudy_part',{p_user_id:ctx.user.id,p_job_id:jobId,p_part:checked.incoming,p_hash:checked.hash,p_existing_count:checked.existingCount,p_compiled:compiled,p_reviewed:true,p_ai_job_id:child?.id||null,p_ai_lease:child?.lease||null});
  dbError(error,'분할을 저장하지 못했습니다. 다른 화면의 변경 여부를 확인하고 다시 검사하세요.');
  if(!data)throw new AppError('원본이나 작업 상태가 변경되어 결과를 보류했습니다.',409);
  return {...data,job:await jobView(ctx,jobId),warnings:checked.merged.warnings};

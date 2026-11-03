@@ -508,6 +508,40 @@ describe("material selection and honest grading", () => {
     expect(update.session.mastered).not.toBe(true);
     expect(update.session.status).toBe("complete");
   });
+  it("loads every memory card answer and explanation from the saved session before flipping", () => {
+    const state = fixture();
+    state.bank = state.bank.map((item, index) => ({
+      ...item,
+      type: index ? "문장 가리기" : "플래시카드",
+      modes: ["memory"],
+      answer: `저장된 답 ${index}`,
+      explanation: `저장된 해설 ${index}`,
+    }));
+    const session = createStudy(studyBody({ mode: "memory", count: 2 }), state);
+    state.bank[0].answer = "나중에 수정한 답";
+    state.bank[1].explanation = "나중에 수정한 해설";
+
+    const loaded = publicStudy(session);
+    expect(loaded.items).toMatchObject([
+      { id: session.items[0].id, bankItemId: "c0-b0", answer: "저장된 답 0", explanation: "저장된 해설 0" },
+      { id: session.items[1].id, bankItemId: "c0-b1", answer: "저장된 답 1", explanation: "저장된 해설 1" },
+    ]);
+    expect(loaded.items.every((item: any) => !item.revealedAt && !item.memory)).toBe(true);
+    expect(session.items.every((item: any) => !item.revealedAt && !item.memory)).toBe(true);
+    expect(loaded).not.toHaveProperty("reviewPool");
+    expect(loaded).not.toHaveProperty("questionSnapshots");
+  });
+  it.each(["quiz", "check"])("keeps unsubmitted %s answers private and grades the saved snapshot", (mode) => {
+    const state = fixture();
+    const session = createStudy(studyBody({ mode, count: 1 }), state);
+    state.bank[0].answer = "다른 답";
+    const loaded = publicStudy(session);
+    expect(loaded.items[0]).not.toHaveProperty("answer");
+    expect(loaded.items[0]).not.toHaveProperty("explanation");
+    const update = answerStudy(session, { itemId: session.items[0].id, response: "옳은 답" }, state);
+    expect(update.session.items[0].result).toBe("correct");
+    expect(update.attempt.itemId).toBe(session.items[0].id);
+  });
   it("repeats only the latest weak result per currently approved bank item", () => {
     const state = fixture();
     state.results = [

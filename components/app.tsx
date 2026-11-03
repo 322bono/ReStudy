@@ -19,6 +19,7 @@ import {
   X,
   RotateCcw,
   CalendarDays,
+  MoreHorizontal,
 } from "lucide-react";
 import { api, isDue } from "@/lib/client";
 import type { AppState, StudySession } from "@/lib/types";
@@ -265,9 +266,47 @@ export default function RestudyApp({
                 weekday: "short",
               })}
             </span>
-            <IconButton label="설정" onClick={onSettings}>
-              <Settings2 size={16} />
-            </IconButton>
+            <details
+              className="topbar-more"
+              onBlur={(event) => {
+                if (!event.currentTarget.contains(event.relatedTarget)) {
+                  event.currentTarget.open = false;
+                }
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Escape") {
+                  event.currentTarget.open = false;
+                  event.currentTarget.querySelector("summary")?.focus();
+                }
+              }}
+            >
+              <summary>
+                <MoreHorizontal size={18} />
+                <span>더보기</span>
+              </summary>
+              <div className="topbar-more-menu">
+                <button
+                  onClick={(event) => {
+                    event.currentTarget
+                      .closest("details")
+                      ?.removeAttribute("open");
+                    navigate({ name: "manage" });
+                  }}
+                >
+                  콘텐츠 관리
+                </button>
+                <button
+                  onClick={(event) => {
+                    event.currentTarget
+                      .closest("details")
+                      ?.removeAttribute("open");
+                    onSettings?.();
+                  }}
+                >
+                  설정
+                </button>
+              </div>
+            </details>
           </header>
         )}
         <main id="main-content" className={focus ? "focus-main" : "page-main"}>
@@ -599,6 +638,7 @@ export default function RestudyApp({
             <button
               key={n.id}
               className={activeNav === n.id ? "active" : ""}
+              aria-current={activeNav === n.id ? "page" : undefined}
               onClick={() => navigate({ name: n.id })}
             >
               <n.icon size={21} />

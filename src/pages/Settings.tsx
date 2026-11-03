@@ -90,13 +90,6 @@ export type SettingsProps = {
 
 const providers: Provider[] = ["nvidia", "gemini"];
 const providerNames = { nvidia: "NVIDIA NIM", gemini: "Google Gemini" };
-const modes: { value: Mode; label: string }[] = [
-  { value: "round_robin", label: "자동 순환" },
-  { value: "nvidia_first", label: "NVIDIA 우선" },
-  { value: "gemini_first", label: "Gemini 우선" },
-  { value: "nvidia_only", label: "NVIDIA 전용" },
-  { value: "gemini_only", label: "Gemini 전용" },
-];
 const roles: { value: ModelRole; label: string }[] = [
   { value: "analysis", label: "일반 개념 분석" },
   { value: "vision", label: "이미지 포함 문제 분석" },
@@ -198,7 +191,6 @@ function readCredential(row: Row, index: number, fallbackModels: Model[], legacy
 function readSettings(value: unknown): SettingsData {
   const data = record(value);
   if (
-    !modes.some((mode) => mode.value === data.mode) ||
     !Number.isInteger(data.dailyLimit) ||
     !Number.isInteger(data.maxRetries)
   ) {
@@ -618,7 +610,7 @@ export default function Settings({
     await run(
       "preferences",
       async () => {
-        await transportRef.current("settings.save", draft);
+        await transportRef.current("settings.save", {...draft,mode:'gemini_only',allowPaid:false});
         await reload(true);
       },
       "AI 설정을 저장했습니다.",
@@ -746,10 +738,10 @@ export default function Settings({
               <section className="cloud-section">
                 <div className="cloud-section-title">
                   <h2>AI 서비스</h2>
-                  <p>등록한 키는 서버에서 암호화해 보관합니다.</p>
+                  <p>무료 전용 Gemma 4 두 모델만 사용합니다. 유료 모델로 전환하지 않습니다.</p>
                 </div>
                 <div className="cloud-provider-grid">
-                  {settings.providers.map((provider) => <article className="cloud-provider" key={provider.provider}>
+                  {settings.providers.filter(provider=>provider.provider==='gemini').map((provider) => <article className="cloud-provider" key={provider.provider}>
                     <div className="cloud-provider-head"><h3>{providerNames[provider.provider]}</h3><span>{provider.credentials.length}개 키</span></div>
                     <div className="cloud-credential-list">{provider.credentials.map(credential => <CredentialCard key={credential.id || "legacy"} provider={provider.provider} credential={credential} allowPaid={draft.allowPaid} busy={busy}
                       onAction={(action, operation, payload, success) => run(action, async () => { try { await transportRef.current(operation, payload); } finally { await reload(); } }, success)}
@@ -760,7 +752,7 @@ export default function Settings({
                       <label className="cloud-field" htmlFor={`${id}-key-${provider.provider}`}><span>새 API 키</span><input id={`${id}-key-${provider.provider}`} type="password" autoComplete="off" spellCheck={false} autoCapitalize="none" value={keys[provider.provider]} onChange={event=>setKeys(current=>({...current,[provider.provider]:event.target.value}))} disabled={!!busy} required autoFocus /></label>
                       <label className="cloud-field" htmlFor={`${id}-group-${provider.provider}`}><span>한도 그룹</span><input id={`${id}-group-${provider.provider}`} value={keyQuotaGroup} maxLength={64} disabled={!!busy} onChange={event=>setKeyQuotaGroup(event.target.value)} /><small>같은 프로젝트·계정의 키는 shared 등 같은 그룹을 사용하세요.</small></label>
                       <label className="cloud-key-free" htmlFor={`${id}-free-${provider.provider}`}><input id={`${id}-free-${provider.provider}`} type="checkbox" checked={freeKeys[provider.provider]} disabled={!!busy} onChange={event=>setFreeKeys(current=>({...current,[provider.provider]:event.target.checked}))} /><span>결제가 연결되지 않은 무료 사용 계정임을 확인했어요.</span></label>
-                      <p className="cloud-key-help">잔여 무료 할당량은 자동 확인하지 않습니다. NVIDIA 연결 확인은 짧은 생성 요청을 사용합니다.</p>
+                      <p className="cloud-key-help">무료 할당량이 끝나면 대기합니다. 다른 유료 모델을 호출하지 않습니다.</p>
                       <div className="cloud-actions"><Button type="submit" size="sm" busy={busy===`key-${provider.provider}`} disabled={!!busy || !keys[provider.provider].trim()}>확인 후 저장</Button><Button type="button" variant="ghost" size="sm" disabled={!!busy} onClick={()=>{setEditing(null);setKeys({nvidia:"",gemini:""});setFreeKeys({nvidia:false,gemini:false});}}>취소</Button></div>
                     </form> : <Button variant="secondary" size="sm" disabled={!!busy} onClick={()=>{setEditing({provider:provider.provider});setKeyLabel("");setKeyQuotaGroup("shared");setKeys({nvidia:"",gemini:""});setFreeKeys({nvidia:false,gemini:false});}}>API 키 추가</Button>}
                   </article>)}
@@ -776,26 +768,7 @@ export default function Settings({
                     </p>
                   </div>
                   <div className="cloud-form-grid">
-                    <label className="cloud-field" htmlFor={`${id}-mode`}>
-                      <span>AI 선택</span>
-                      <select
-                        id={`${id}-mode`}
-                        value={draft.mode}
-                        disabled={!!busy}
-                        onChange={(event) =>
-                          setDraft({
-                            ...draft,
-                            mode: event.target.value as Mode,
-                          })
-                        }
-                      >
-                        {modes.map((mode) => (
-                          <option key={mode.value} value={mode.value}>
-                            {mode.label}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
+                    <div className="cloud-field"><span>사용 모델</span><strong>Gemma 4 26B · 31B</strong><small>26B를 먼저 사용하고 필요할 때 31B로 이어갑니다.</small></div>
                     <label className="cloud-field" htmlFor={`${id}-daily`}>
                       <span>하루 최대 AI 작업 수</span>
                       <input
@@ -843,29 +816,7 @@ export default function Settings({
                       />
                     </label>
                   </div>
-                  <label className="cloud-paid-choice" htmlFor={`${id}-paid`}>
-                    <input
-                      id={`${id}-paid`}
-                      type="checkbox"
-                      checked={draft.allowPaid}
-                      disabled={!!busy}
-                      onChange={(event) =>
-                        setDraft({ ...draft, allowPaid: event.target.checked })
-                      }
-                    />
-                    <span>
-                      <strong>유료 AI 호출 허용</strong>
-                      <small>
-                        기본적으로 차단됩니다. 활성화하면 제공자의 요금 정책에
-                        따라 비용이 발생할 수 있습니다.
-                      </small>
-                    </span>
-                    <span
-                      className={`cloud-status ${draft.allowPaid ? "warning" : "neutral"}`}
-                    >
-                      {draft.allowPaid ? "허용" : "차단"}
-                    </span>
-                  </label>
+                  <p className="cloud-help">유료 호출은 서버에서 차단합니다. 기존 NVIDIA 키는 보관되며 호출에 사용하지 않습니다.</p>
                 </section>
                 <details className="cloud-advanced">
                   <summary>고급 모델 설정</summary>

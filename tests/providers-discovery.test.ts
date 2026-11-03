@@ -30,10 +30,12 @@ test('new documented models are offered only when the provider actually lists th
  const gemma=filterDiscoveredModels('gemini',{models:[{name:'models/gemma-4-26b-a4b-it',supportedGenerationMethods:['generateContent']},{name:'models/gemma-4-31b-it',supportedGenerationMethods:['generateContent']}]});
  expect(gemma.map(m=>m.id)).toEqual(['gemma-4-26b-a4b-it','gemma-4-31b-it']);expect(gemma.every(m=>m.freeEligible===true)).toBe(true);
 });
-test('legacy four-token NVIDIA probes do not claim verified structured generation',()=>{
+test('historic NVIDIA verification never advertises current allowed generation',()=>{
  const slot={provider:'nvidia',id:'slot',data:{generation_verified:true,connection_verified:true,modelIds:['nvidia/nemotron-3.5-lightning-30b-a3b'],selectedModels:['nvidia/nemotron-3.5-lightning-30b-a3b'],access:'free_confirmed'}};
  expect(publicSlot(slot)).toMatchObject({connection_verified:true,generation_verified:false});
- expect(publicSlot({...slot,data:{...slot.data,generation_contract_version:'validated-json-v1'}})).toMatchObject({generation_verified:true});
+ expect(publicSlot({...slot,data:{...slot.data,generation_contract_version:'validated-json-v2-gemma4'}})).toMatchObject({enabled:false,generation_verified:false});
+ const gemma={...slot,provider:'gemini',data:{...slot.data,generation_contract_version:'validated-json-v2-gemma4',modelIds:['gemma-4-26b-a4b-it'],selectedModels:['gemma-4-26b-a4b-it']}};
+ expect(publicSlot(gemma)).toMatchObject({generation_verified:true});
 });
 test('Gemini discovery follows page tokens and sends the key only in its header',async()=>{
  const calls:any[]=[];

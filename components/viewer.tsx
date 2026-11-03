@@ -438,15 +438,6 @@ export function Viewer({
                           `${question.page || question.regions[0]?.page}쪽`}
                       </small>
                     </span>
-                    {manage &&
-                      (question.confirmed ? (
-                        <Check size={15} />
-                      ) : (
-                        <span
-                          className="unconfirmed-dot"
-                          title="영역 확인 필요"
-                        />
-                      ))}
                   </button>
                 ))
             ) : (
@@ -549,10 +540,7 @@ export function Viewer({
               </p>
               {manage && (
                 <>
-                  <Badge tone={q.confirmed ? "green" : "amber"}>
-                    {q.confirmed ? "영역 확인됨" : "영역 확인 필요"}
-                  </Badge>
-                  <p>본문·보기·그림·공통 지문이 모두 포함됐는지 확인하세요.</p>
+                  <Badge tone="green">원본 저장됨</Badge>
                   <Button variant="secondary" onClick={() => begin(q)}>
                     <Crop size={15} />
                     영역 수정
@@ -680,25 +668,6 @@ export function Viewer({
                       두 문항으로 분리
                     </Button>
                   </details>
-                  {!q.confirmed && (
-                    <Button
-                      busy={!!busy}
-                      onClick={() =>
-                        act("문제 확인", async () => {
-                          await api(`questions/${q.id}`, "PATCH", {
-                            materialId: id,
-                            number: q.number,
-                            page: q.page,
-                            unit: q.unit,
-                            regions: q.regions,
-                            confirmed: true,
-                          });
-                        })
-                      }
-                    >
-                      <Check size={15} />이 영역으로 확인
-                    </Button>
-                  )}
                   <fieldset className="editor-fieldset">
                     <legend>연결 개념</legend>
                     {concepts
@@ -741,7 +710,7 @@ export function Viewer({
                 </>
               )}
               <Button
-                variant={q.confirmed ? "primary" : "secondary"}
+                variant="primary"
                 busy={!!busy}
                 onClick={() =>
                   act("오답 추가", async () => {

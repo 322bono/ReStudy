@@ -39,7 +39,6 @@ export default function Bank({
     [mode, setMode] = useState(initial.mode || "quiz"),
     [busy, setBusy] = useState(false),
     [selected, setSelected] = useState<string[]>([]),
-    [showPending, setShowPending] = useState(initial.showPending !== false),
     [search, setSearch] = useState(""),
     [page, setPage] = useState(0),
     [inspection, setInspection] = useState<any>();
@@ -65,7 +64,7 @@ export default function Bank({
   const active = (data?.items || []).filter(
     (i: any) =>
       !i.archived &&
-      (showPending || i.active) &&
+      i.active &&
       (i.modes || []).includes(mode) &&
       (!initial.originalId||i.relatedQuestionIds?.includes(initial.originalId)||
         [i.conceptId,...(i.conceptIds||[])].some((id:string)=>data?.originals?.find((q:any)=>q.id===initial.originalId)?.conceptIds?.includes(id))) &&
@@ -138,19 +137,6 @@ export default function Bank({
       setInspection(await api(`bank/inspect/${id}`));
     } catch (e) {
       onError((e as Error).message);
-    }
-  }
-  async function review(ids: string[]) {
-    setBusy(true);
-    try {
-      await api("bank/review", "POST", { ids });
-      setInspection(undefined);
-      setSelected([]);
-      await load();
-    } catch (e) {
-      onError((e as Error).message);
-    } finally {
-      setBusy(false);
     }
   }
   if (!data) return <div className="loading">문제 은행을 여는 중…</div>;
@@ -302,7 +288,7 @@ export default function Bank({
         </div></details>
       </section>
       <div className="toolbar">
-        <span>조건에 맞는 문항 {active.length}개 · 학습 가능 {active.filter((i:any)=>i.active).length}개 · 검토 대기 {active.filter((i:any)=>!i.active).length}개</span>
+        <span>학습할 수 있는 문항 {active.length}개</span>
         <input
           aria-label="문제 은행 검색"
           placeholder="문항 검색"
@@ -312,25 +298,10 @@ export default function Bank({
             setPage(0);
           }}
         />
-        <label>
-          <input
-            type="checkbox"
-            checked={showPending}
-            onChange={(e) => setShowPending(e.target.checked)}
-          />
-          검토 대기 포함
-        </label>
       </div>
       {selected.length > 0 && (
         <div className="selection-bar">
           <span>{selected.length}개 선택</span>
-          <Button
-            variant="secondary"
-            onClick={() => review(selected)}
-            busy={busy}
-          >
-            선택 문항 검토 완료·사용
-          </Button>
           <Button onClick={start} busy={busy}>
             선택 문항으로 학습
           </Button>
@@ -355,12 +326,12 @@ export default function Bank({
               <div>
                 <small>
                   {i.type} · {i.difficulty} ·{" "}
-                  {i.active ? "학습 가능" : "내용 검토 필요"}
+                  학습 가능
                 </small>
                 <p>{i.prompt}</p>
                 <div className="row">
                   <button className="text-button" onClick={() => inspect(i.id)}>
-                    문항·정답 검토
+                    내용 보기·수정
                   </button>
                   <button
                     className="text-button"
@@ -423,7 +394,7 @@ export default function Bank({
         </div>
       )}
       {inspection && (
-        <Dialog wide title="내용 검토" onClose={() => setInspection(undefined)}>
+        <Dialog wide title="문항 내용" onClose={() => setInspection(undefined)}>
           <BankEditor
             item={inspection}
             onSave={async (item) => {
@@ -450,10 +421,6 @@ export default function Bank({
               </p>
             ),
           )}
-          <p className="field-help">
-            형식 검사는 교육적 정확성 검토와 별개입니다. 정답과 해설을 직접
-            확인하세요.
-          </p>
           <div className="dialog-footer">
             <Button
               variant="secondary"
@@ -469,9 +436,7 @@ export default function Bank({
             >
               문항 보관
             </Button>
-            <Button busy={busy} onClick={() => review([inspection.id])}>
-              검토 완료·학습에 사용
-            </Button>
+            <Button onClick={() => setInspection(undefined)}>닫기</Button>
           </div>
         </Dialog>
       )}
@@ -506,8 +471,8 @@ function BankEditor({
               answer,
               explanation,
               acceptedAnswers: [answer],
-              active: false,
-              reviewStatus: "needs_review",
+              active: true,
+              reviewStatus: "approved",
             });
           } catch (e) {
             onError((e as Error).message);
@@ -549,7 +514,7 @@ function BankEditor({
           />
         </label>
         <Button type="submit" busy={busy}>
-          수정 저장·검토 대기로
+          수정 저장
         </Button>
       </form>
     </details>

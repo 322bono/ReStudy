@@ -1,5 +1,4 @@
 import ApiPreparationStatus from '../components/ApiPreparationStatus';
-import ContentReview from "../components/ContentReview";
 import{aiFailureText}from"../domain/ai-status";
 import LocalOutlineEditor from'../components/LocalOutlineEditor';
 import { useEffect, useState, useRef } from "react";
@@ -23,7 +22,7 @@ const labels: Record<string, string> = {
   partial: "일부 분할 등록",
   needs_more: "추가 문항 필요",
   ready: "학습 가능",
-  review_needed: "내용 검토 필요",
+  review_needed: "학습 가능",
   completed: "완료",
   paused: "보류 · 직접 재개",
   waiting: "대기",
@@ -57,7 +56,6 @@ export default function MaterialWorkspace({
     [busy, setBusy] = useState(""),
     [raw, setRaw] = useState(""),
     [preview, setPreview] = useState<any>(),
-    [reviewed, setReviewed] = useState(false),
     [prompt, setPrompt] = useState(""),
     [part, setPart] = useState(1),
     [message, setMessage] = useState(""),
@@ -65,7 +63,7 @@ export default function MaterialWorkspace({
     [apiStartedAt,setApiStartedAt]=useState(0),
     [apiElapsed,setApiElapsed]=useState(0),
     [apiError,setApiError]=useState(''),
-    [task, setTask] = useState("concepts"),
+    [task, setTask] = useState("initial"),
     [questionCount, setQuestionCount] = useState(100),
     [conceptCount, setConceptCount] = useState(5),
     [practiceCount, setPracticeCount] = useState(5),
@@ -273,15 +271,14 @@ export default function MaterialWorkspace({
     const parsed = parseRestudy(raw);
     const result = await standard("preview", { jobId: job.id, raw: parsed });
     setPreview(result);
-    setReviewed(false);
+    if(result.valid)await importData(result);
   }
-  async function importData() {
-    if (!job || !preview?.valid) return;
+  async function importData(checked=preview) {
+    if (!job || !checked?.valid) return;
     const result = await standard("import", {
       jobId: job.id,
       raw: parseRestudy(raw),
-      previewHash: preview.hash,
-      reviewed,
+      previewHash: checked.hash,
     });
     setJob(result.job);
     setMessage(
@@ -289,7 +286,6 @@ export default function MaterialWorkspace({
     );
     setRaw("");
     setPreview(undefined);
-    setReviewed(false);
     await load(job.id);
     await onRefresh();
   }
@@ -317,7 +313,7 @@ export default function MaterialWorkspace({
         </div>
       </div>
       <details className="panel" style={{padding:16,marginBottom:16}}>
-        <summary>PDF 인식 · {state.questions.filter(q=>q.materialId===id&&!q.mergedInto).length}문항 · 검토 {state.questions.filter(q=>q.materialId===id&&!q.mergedInto&&!q.confirmed).length}개</summary>
+        <summary>원본 저장 · {state.questions.filter(q=>q.materialId===id&&!q.mergedInto).length}문항</summary>
         <p className="field-help">{doc.message || '저장된 원본과 인식 결과를 사용합니다.'}</p>
         {['uploaded','processing'].includes(doc.status)&&<progress aria-label="PDF 분석 진행률" value={doc.progress||0} max={100}/>}
         {doc.error&&<p className="error" role="alert">{doc.error}</p>}
@@ -328,7 +324,7 @@ export default function MaterialWorkspace({
           className={tab === "concepts" ? "active" : ""}
           onClick={() => setTab("concepts")}
         >
-          목차·개념
+            개념 보기
         </button>
         <button
           className={tab === "external" ? "active" : ""}
@@ -504,18 +500,15 @@ export default function MaterialWorkspace({
       )}
       {tab === "external" && (
         <>
-          <p className="notice">
-            필요한 작업 하나를 고르세요. 외부 AI는 PDF와 프롬프트를 한 번 전달하고 결과 JSON을 통째로 가져옵니다. API는 저장된 근거를 작은 단위로 처리합니다.
-          </p>
           <section className="panel content-job-setup">
-            <h2>준비할 콘텐츠</h2>
+            <h2>학습 자료 준비</h2>
             <div className="form-grid">
               <label>
                 작업
                 <select value={task} onChange={(e) => setTask(e.target.value)}>
-                  <option value="concepts">1. 개념 정리 · 정의·공식·암기사항</option>
-                  <option value="initial">2. 개념 문제·기본 문제</option>
-                  <option value="bank">3. 문제 은행 · 추가 연습문제</option>
+                  <option value="initial">개념과 기본 문제</option>
+                  <option value="concepts">개념·암기 카드만</option>
+                  <option value="bank">연습문제 추가</option>
                 </select>
               </label>
               <label>
@@ -798,7 +791,7 @@ export default function MaterialWorkspace({
               </select>
             </label>
           )}
-          {job?.method==='api'&&<section className="panel"><h2>API 준비 결과</h2><p>개념 {job.preparedConcepts||0}개 · 암기 카드 {job.preparedFlashcards||0}개 · 문항 {job.preparedQuestions||0}개 저장 · {labels[job.status]||job.status}</p><div className="row"><Button busy={!!busy} onClick={()=>act('API 작업 재개',()=>run(job))}>이어서 준비</Button><Button variant="secondary" onClick={()=>onBank({materialIds:[id],showPending:true})}>저장된 문항 검토</Button><Button variant="ghost" onClick={()=>setTab('concepts')}>개념 정리 보기</Button></div></section>}
+          {job?.method==='api'&&<section className="panel"><h2>준비된 학습 자료</h2><p>개념 {job.preparedConcepts||0}개 · 암기 카드 {job.preparedFlashcards||0}개 · 문항 {job.preparedQuestions||0}개</p><div className="row">{job.apiStatus?.state!=='completed'&&<Button busy={!!busy} onClick={()=>act('API 작업 재개',()=>run(job))}>이어서 준비</Button>}<Button variant="secondary" onClick={()=>onBank({materialIds:[id]})}>문제 풀기</Button><Button variant="ghost" onClick={()=>setTab('concepts')}>개념 보기</Button></div></section>}
           {job && job.method!=='api' && (
             <section className="panel external-import">
               <div className="section-heading">
@@ -929,7 +922,7 @@ export default function MaterialWorkspace({
                 </div>
               </div>
               <div className="external-step">
-                <h3>3. 결과 JSON을 붙여넣고 검사·검토·등록하세요.</h3>
+                <h3>3. 결과 JSON을 붙여넣고 등록하세요.</h3>
                 <p>
                   JSON 전체 또는 바깥쪽 JSON 코드 블록을 그대로 입력하세요.
                   개념·퀴즈·연습문제·암기 카드가 자동으로 분류됩니다.
@@ -942,7 +935,6 @@ export default function MaterialWorkspace({
                   onChange={(e) => {
                     setRaw(e.target.value);
                     setPreview(undefined);
-                    setReviewed(false);
                   }}
                 />
                 <div className="row">
@@ -952,7 +944,7 @@ export default function MaterialWorkspace({
                     busy={!!busy}
                     onClick={() => act("JSON 검사", inspect)}
                   >
-                    검사·미리보기
+                    등록하고 학습에 사용
                   </Button>
                 </div>
                 {preview && (
@@ -972,31 +964,6 @@ export default function MaterialWorkspace({
                         {v}
                       </p>
                     ))}
-                    {preview.valid && (
-                      <>
-                        <ContentReview content={preview.review} />
-                        <label className="cloud-check">
-                          <input
-                            type="checkbox"
-                            checked={reviewed}
-                            disabled={!preview.ready}
-                            onChange={(e) => setReviewed(e.target.checked)}
-                          />
-                          현재 병합된 {preview.counts.questions}문항의
-                          내용·정답·해설을 모두 검토했습니다.
-                        </label>
-                        <Button
-                          busy={!!busy}
-                          onClick={() => act("분할 등록", importData)}
-                        >
-                          {!preview.ready
-                            ? "분할 보관 · 참조 대기"
-                            : reviewed
-                              ? "검토 완료로 등록·학습에 사용"
-                              : "검토 대기로 등록"}
-                        </Button>
-                      </>
-                    )}
                   </div>
                 )}
               </div>

@@ -1,7 +1,7 @@
 import type { Provider } from "./crypto.ts";
 
-export const catalogVersion='2026-11-02-request-dialects';
-export const generationContractVersion='validated-json-v1';
+export const catalogVersion='2026-11-03-no-charge-gemma4';
+export const generationContractVersion='validated-json-v2-gemma4';
 const nvidiaOrder=['nvidia/nemotron-3.5-lightning-30b-a3b','nvidia/nemotron-3.5-bolt-e4b','openai/gpt-oss-20b','nvidia/nemotron-3.5-super-vl-120b-a12b','nvidia/nemotron-3-super-120b-a12b','nvidia/nemotron-3-ultra-550b-a55b'];
 export function nvidiaModelRank(id:string){const index=nvidiaOrder.indexOf(id);return index<0?nvidiaOrder.length:index;}
 export type ModelDefinition = { provider: Provider; id: string; label: string; text: boolean; image: boolean; structured: boolean; maxInputTokens: number; maxInputChars: number; roles: string[]; documentation: string; maxOutputTokens?: number; requestModel?:string; nvidiaThinking?:'disabled'; nvidiaReasoningEffort?: 'low'; geminiThinkingLevel?:'LOW'|'MINIMAL'; freeEligible?: boolean; pricingDocumentation?: string; legacy?: boolean };
@@ -27,4 +27,14 @@ export const models: ModelDefinition[] = [
   { provider: "gemini", id: "gemma-4-31b-it", label: "Gemma 4 31B · 무료 본문·이미지", text:true,image:true,structured:true,maxInputTokens:262144,maxInputChars:48000,maxOutputTokens:8192,geminiThinkingLevel:'MINIMAL',freeEligible:true,pricingDocumentation:'https://ai.google.dev/gemini-api/docs/pricing',roles:['concept_analysis','image_analysis','question_generation'],documentation:'https://ai.google.dev/gemma/docs/core/gemma_on_gemini_api' },
 ];
 export function modelFor(provider: Provider, id: string): ModelDefinition | undefined { return models.find((model) => model.provider === provider && model.id === id); }
-export function defaultModel(provider: Provider): string { return models.find((model) => model.provider === provider && !model.legacy)!.id; }
+// This is an application policy, not a user-editable billing preference. Gemini
+// Flash has both free and paid rates; key metadata cannot prove a free project.
+// Gemma 4's documented paid tier is unavailable (checked 2026-11-03):
+// https://ai.google.dev/gemini-api/docs/pricing#gemma-4
+// Keep historic definitions above readable without permitting their execution.
+export function isGenerationModel(provider: Provider, id: string): boolean {
+  return provider === 'gemini' && (id === 'gemma-4-26b-a4b-it' || id === 'gemma-4-31b-it');
+}
+export const generationModels = models.filter(model => isGenerationModel(model.provider, model.id));
+export function generationModelRank(id: string): number { return id === 'gemma-4-26b-a4b-it' ? 0 : 1; }
+export function defaultModel(provider: Provider): string { return (generationModels.find(model => model.provider === provider) ?? models.find(model => model.provider === provider && !model.legacy))!.id; }

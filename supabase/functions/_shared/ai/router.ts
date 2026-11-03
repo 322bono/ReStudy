@@ -1,5 +1,5 @@
 import type { Provider } from "./crypto.ts";
-import { modelFor,generationContractVersion,nvidiaModelRank } from "./catalog.ts";
+import { modelFor,generationContractVersion,isGenerationModel,generationModelRank } from "./catalog.ts";
 import { generate, ProviderError, type ImageInput } from "./providers.ts";
 import { validateOutput,validationMetadata, type TaskKind, type Json } from "./schemas.ts";
 export type Mode = "round_robin" | "nvidia_first" | "gemini_first" | "nvidia_only" | "gemini_only";
@@ -16,10 +16,7 @@ export async function runTask(input: TaskInput, context: RouterContext): Promise
   // clock. The durable DB lease is 180s; fallback resumes in another invocation
   // instead of repeatedly aborting calls against a shrinking time allowance.
   const deadline=Math.min(now()+125000,context.deadline??Infinity),inferenceTimeout=110000;
-  let order: Provider[] = context.mode === "gemini_first" || context.mode === "gemini_only" ? ["gemini", "nvidia"] : ["nvidia", "gemini"];
-  if (context.mode === "round_robin" && context.rotationIndex % 2 === 1) order.reverse();
-  if (context.mode.endsWith("_only")) order = order.slice(0, 1);
-  if (context.preferredProvider && !context.mode.endsWith("_only")) order = [context.preferredProvider, ...order.filter((provider) => provider !== context.preferredProvider)];
+  const order: Provider[] = ['gemini'];
   let tried = false,lastError:string|undefined; const retryTimes: number[] = [], blockedKeys=new Set<string>(),groupCooldowns=new Map<string,number>();
   const timeoutHealth=new Map<string,number>();
   for(const state of context.providers)for(const [id,health]of Object.entries(state.modelStates??{})){
@@ -33,18 +30,14 @@ export async function runTask(input: TaskInput, context: RouterContext): Promise
     for(const state of rotate(slots,Math.floor(context.rotationIndex/2))){
     const keyId=state.credentialId??provider,groupId=`${provider}:${state.quotaGroup??'shared'}`;
     const pool=[...(state.selectedModels??[state.model])];
-    // Prefer compact hosted NVIDIA models before the larger reasoning models,
-    // but retain every explicit selection in the durable round-robin pool.
-    if(provider==='nvidia'){
-      pool.sort((a,b)=>nvidiaModelRank(a)-nvidiaModelRank(b));
-    }
+    pool.sort((a,b)=>generationModelRank(a)-generationModelRank(b));
     // Keys do not multiply the number of turns spent on one model. A slow
     // model must not receive four full timeouts just because four keys exist.
-    let selected=rotate(pool,Math.floor(context.rotationIndex/2));
+    let selected=pool;
     if(context.preferredModel&&selected.includes(context.preferredModel))selected=[context.preferredModel,...selected.filter(m=>m!==context.preferredModel)];
     for(const modelId of selected){
     const model=modelFor(provider,modelId);
-    if (!state?.enabled || !model?.text || !model.structured || state.status === "auth_error" || !context.allowPaid && state.access !== "free_confirmed" || input.images?.length && !model.image || input.prompt.length > model.maxInputChars) continue;
+    if (!state?.enabled || !model?.text || !model.structured || !isGenerationModel(provider,modelId) || state.status === "auth_error" || input.images?.length && !model.image || input.prompt.length > model.maxInputChars) continue;
     if(blockedKeys.has(keyId))continue;
     const cooldown = Math.max((state.cooldown_until ? Date.parse(state.cooldown_until) : 0)||0,timeoutHealth.get(`${groupId}:${modelId}`)??0,groupCooldowns.get(groupId)??0,groupCooldowns.get(`${groupId}:${modelId}`)??0,Date.parse(state.quotaCooldowns?.['']??'')||0,Date.parse(state.quotaCooldowns?.[modelId]??'')||0,Date.parse(state.modelStates?.[modelId]?.cooldown_until??'')||0);
     if (cooldown > now()) { retryTimes.push(cooldown); continue; }

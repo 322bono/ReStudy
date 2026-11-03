@@ -1,5 +1,5 @@
 import { decryptKey, encode64, type Provider } from "./crypto.ts";
-import { modelFor } from "./catalog.ts";
+import { modelFor,catalogVersion,isGenerationModel } from "./catalog.ts";
 import { AiError, checked, loadSlots, publicSlot, patchSlot, readProfile, type AuthContext } from "./credentials.ts";
 import { cacheKey, processJob, validId, validateRequest, type Job, type JobRequest, type JobStore } from "./jobs.ts";
 import { providerState, sanitizeSettings, type Settings } from "./settings.ts";
@@ -122,15 +122,15 @@ export async function providerContext(ctx: AuthContext, jobId: string, settings:
   const slots = await loadSlots(ctx);
   // Legacy keys discover their eligible pool on an explicit AI action only.
   // Upload/OCR never calls this code or contacts a model provider.
-  for(const slot of slots.filter(s=>s.provider==='gemini'&&!s.data.listed_at&&s.data.enabled!==false)){
+  for(const slot of slots.filter(s=>s.provider==='gemini'&&(!s.data.listed_at||s.data.catalog_version!==catalogVersion)&&s.data.enabled!==false)){
     if(!master)continue;
-    try{const key=await decryptKey({ciphertext:slot.ciphertext,iv:slot.iv,key_version:slot.key_version},ctx.user.id,'gemini',master),found=await discoverProviderModels('gemini',key),changes={modelIds:found.models.map(m=>m.id),selectedModels:slot.data.poolConfigured===true?slot.data.selectedModels:found.models.filter(m=>settings.allow_paid||m.freeEligible).map(m=>m.id),listed_at:found.listedAt};await patchSlot(ctx,slot,changes);slot.data={...slot.data,...changes};}catch{/* Existing key and saved selection remain available; routing reports errors. */}
+    try{const key=await decryptKey({ciphertext:slot.ciphertext,iv:slot.iv,key_version:slot.key_version},ctx.user.id,'gemini',master),found=await discoverProviderModels('gemini',key),changes={modelIds:found.models.map(m=>m.id),...(Array.isArray(slot.data.selectedModels)?{}:{selectedModels:found.models.filter(m=>isGenerationModel(m.provider,m.id)).map(m=>m.id)}),catalog_version:catalogVersion,listed_at:found.listedAt};await patchSlot(ctx,slot,changes);slot.data={...slot.data,...changes};}catch{/* Existing key and saved selection remain available; routing reports errors. */}
   }
   const health=checked(await ctx.admin.from('ai_key_model_states').select('credential_id,model,data').eq('user_id',ctx.user.id));
   const quotas=checked(await ctx.admin.from('ai_quota_cooldowns').select('provider,quota_group,model,cooldown_until').eq('user_id',ctx.user.id));
   const role = input.images?.length ? "vision" : input.kind !== "analyze_problem" ? "generation" : "analysis";
-  const choice = settings.modelRoles?.[role]; const selected = choice && modelFor(choice.provider, choice.model);
-  return { mode: settings.mode, allowPaid: settings.allow_paid, ...(selected ? { preferredProvider: selected.provider,preferredModel:selected.id } : {}), providers: slots.map(slot=>({...publicSlot(slot),provider:slot.provider,credentialId:slot.id,selectedModels:publicSlot(slot).selectedModels.filter((id:string)=>publicSlot(slot).models.some((m:Json)=>m.id===id&&(settings.allow_paid||m.freeEligible===true))),modelStates:Object.fromEntries(health.filter((h:Json)=>h.credential_id===slot.id).map((h:Json)=>[h.model,h.data])),quotaCooldowns:Object.fromEntries(quotas.filter((q:Json)=>q.provider===slot.provider&&q.quota_group===(slot.data.quotaGroup??'shared')).map((q:Json)=>[q.model,q.cooldown_until]))})) as RouterContext['providers'],
+  const choice = settings.modelRoles?.[role]; const candidate = choice && modelFor(choice.provider, choice.model),selected=candidate&&isGenerationModel(candidate.provider,candidate.id)?candidate:undefined;
+  return { mode: 'gemini_only', allowPaid: false, ...(selected ? { preferredProvider: selected.provider,preferredModel:selected.id } : {}), providers: slots.map(slot=>({...publicSlot(slot),provider:slot.provider,credentialId:slot.id,modelStates:Object.fromEntries(health.filter((h:Json)=>h.credential_id===slot.id).map((h:Json)=>[h.model,h.data])),quotaCooldowns:Object.fromEntries(quotas.filter((q:Json)=>q.provider===slot.provider&&q.quota_group===(slot.data.quotaGroup??'shared')).map((q:Json)=>[q.model,q.cooldown_until]))})) as RouterContext['providers'],
     getKey: async (provider,credentialId) => {
       if (!master) throw new AiError("encryption_not_configured", 503);
       const record = checked(await ctx.admin.from("ai_key_slots").select("*").eq("user_id", ctx.user.id).eq("provider", provider).eq('id',credentialId).maybeSingle());
@@ -156,9 +156,9 @@ export function storeFor(ctx: AuthContext): JobStore {
       const saved = checked(await ctx.admin.rpc("finish_ai_job", { p_user_id: ctx.user.id, p_job_id: id, p_lease_token: token, p_status: status, p_data: data, p_available_at: availableAt }));
       return saved ? { id, status, available_at: availableAt, last_error: data.last_error ?? null,provider_error:data.last_provider_error??null } : null;
     }, commit: async (id, token, result) => {
-      if(result.standard){const committed=await commitPart(ctx,result.standardJobId,result.standard,false,{id,lease:token});return {...committed,id,status:'completed',review_status:'needs_review'};}
+      if(result.standard){const committed=await commitPart(ctx,result.standardJobId,result.standard,true,{id,lease:token});return {...committed,id,status:'completed',review_status:'approved'};}
       const saved = checked(await ctx.admin.rpc("commit_ai_result", { p_user_id: ctx.user.id, p_job_id: id, p_lease_token: token, p_result: result }));
-      if (saved?.committed) return { ...saved, id, status: "completed", review_status: "needs_review" };
+      if (saved?.committed) return { ...saved, id, status: "completed", review_status: "approved" };
       const current = checked(await ctx.admin.from("ai_jobs").select("id,status,data").eq("user_id", ctx.user.id).eq("id", id).maybeSingle());
       return current ? { id, status: current.status, last_error: current.data?.last_error ?? null } : null;
     },

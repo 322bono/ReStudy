@@ -10,10 +10,10 @@ import {
   Lightbulb,
   RotateCcw,
 } from "lucide-react";
-import { api } from "@/lib/client";
+import { api } from "../lib/client";
 import { studyInventory } from '../src/domain/study-inventory';
 import { selectPages } from '../src/domain/pages';
-import type { AppState, StudyItem, StudyMode, StudySession } from "@/lib/types";
+import type { AppState, StudyItem, StudyMode, StudySession } from "../lib/types";
 import { Badge, Button, Empty, IconButton, Sources } from "./ui";
 const modes = [
   {
@@ -73,11 +73,22 @@ export function StudySetup({
     [busy, setBusy] = useState(false),
     [weak, setWeak] = useState(0);
   useEffect(() => {
-    api('bank/list','POST').then(r=>setInventory(r.items)).catch(e=>onError(e.message));
+    let alive = true;
+    setInventory(null);
+    api('bank/list','POST')
+      .then(r=>{ if (alive) setInventory(r.items); })
+      .catch(e=>{ if (alive) onError(e.message); });
     api("study/weak")
-      .then((r) => setWeak(r.count))
+      .then((r) => { if (alive) setWeak(r.count); })
       .catch(() => {});
-  }, []);
+    return () => { alive = false; };
+  }, [state]);
+  useEffect(() => {
+    if (state.materials.some(m => m.subject === subject)) return;
+    const nextSubject = state.materials[0]?.subject || "";
+    setSubject(nextSubject);
+    setSelected(state.materials.filter(m => m.subject === nextSubject).map(m => m.id));
+  }, [state.materials, subject]);
   const start = async (repeat = false) => {
     setBusy(true);
     try {
@@ -209,7 +220,7 @@ export function StudySetup({
           <div className="notice">
             <BookOpen size={18} />
             <p>
-              선택 범위 · 학습 가능 <strong>{available}개</strong> · 검토 대기 <strong>{counts.pending}개</strong>
+              선택 범위 · 학습 가능 <strong>{available}개</strong>
               <br />
               <small>
                 {inventory===null?'저장된 콘텐츠를 확인하고 있습니다.':'현재 선택한 자료·방식·유형·난이도 기준입니다.'}
@@ -284,8 +295,7 @@ export function StudySetup({
             </div>
           </details>
           {scopeError&&<p className="error" role="alert">{scopeError}</p>}
-          {counts.pending>0&&<div className="notice"><p>준비된 콘텐츠 {counts.pending}개가 검토를 기다립니다. 저장 내용과 정답을 확인하면 학습할 수 있습니다.</p><Button variant="secondary" onClick={()=>onBank({materialIds:selected,mode,showPending:true})}>준비된 콘텐츠 검토</Button></div>}
-          {inventory!==null&&available === 0&&counts.pending===0 && (
+          {inventory!==null&&available === 0 && (
             <div className="notice">
               <p>
                 현재 조건에 맞는 문항이 없습니다. 저장된 개념 정리는 왼쪽에서 읽을 수 있고, 자료의 콘텐츠 준비에서 문제를 추가할 수 있습니다.
@@ -395,23 +405,20 @@ export function StudyPlayer({
         selfGrade,
       });
       setSession(s);
-      await onRefresh();
       if (mode === "memory") next(s);
+      void onRefresh().catch((e) => onError((e as Error).message));
     } catch (e) {
       onError((e as Error).message);
     } finally {
       setBusy(false);
     }
   };
-  const show = async () => {
-    setBusy(true);
-    try {
-      setReveal(await api(`study/${id}/reveal`, "POST", { itemId: item.id }));
-    } catch (e) {
-      onError((e as Error).message);
-    } finally {
-      setBusy(false);
+  const show = () => {
+    if (item.answer === undefined) {
+      onError("저장된 답을 불러오지 못했습니다. 학습을 다시 열어 주세요.");
+      return;
     }
+    setReveal({ answer: item.answer, explanation: item.explanation });
   };
   const pendingGrade =
     item &&
@@ -560,8 +567,8 @@ export function StudyPlayer({
                     <div className="flash-answer">
                       {reveal?.answer || item.answer}
                     </div>
-                    {reveal?.explanation && (
-                      <p className="feedback-text">{reveal.explanation}</p>
+                    {(reveal?.explanation || item.explanation) && (
+                      <p className="feedback-text">{reveal?.explanation || item.explanation}</p>
                     )}
                     <div className="memory-controls">
                       <Button

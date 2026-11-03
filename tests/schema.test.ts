@@ -20,6 +20,22 @@ async function database(skipSlots=false){
   return db;
 }
 afterEach(async()=>{await db?.close()});
+test('validated content activates automatically while archived and deliberately disabled content stay unchanged',async()=>{
+ const c=await database();
+ await c.query('insert into concepts(id,user_id,subject,name,canonical_key)values($1,$2,$3,$4,$5)',['auto-c',owner,'수학','함수','auto-c']);
+ const input={prompt:'함수는?',answer:'대응',explanation:'함수의 정의',choices:[],modes:['memory']};
+ await c.query('insert into concept_questions(id,user_id,concept_id,type,difficulty,review_status,data)values($1,$2,$3,$4,$5,$6,$7)',['auto-q',owner,'auto-c','플래시카드','기본','needs_review',{...input,active:false}]);
+ const first=(await c.query<{id:string,review_status:string,data:any}>('select id,review_status,data from concept_questions where id=$1',['auto-q'])).rows[0];
+ expect(first).toMatchObject({id:'auto-q',review_status:'approved',data:{active:true,autoActivated:true}});
+ await c.query("update concept_questions set review_status='archived',data=data||'{\"archived\":true,\"active\":false}' where id='auto-q'");
+ await c.query("update concept_questions set review_status='needs_review' where id='auto-q'");
+ expect((await c.query<{data:any}>('select data from concept_questions where id=$1',['auto-q'])).rows[0].data.active).toBe(false);
+ await c.query('insert into concept_questions(id,user_id,concept_id,type,difficulty,review_status,data)values($1,$2,$3,$4,$5,$6,$7)',['disabled-q',owner,'auto-c','플래시카드','기본','approved',{...input,active:false}]);
+ expect((await c.query<{data:any}>('select data from concept_questions where id=$1',['disabled-q'])).rows[0].data.active).toBe(false);
+ const item={...input,id:'disabled-q',conceptId:'auto-c',type:'플래시카드',difficulty:'기본',active:false,userEdited:true,sources:[]};
+ await c.query('select import_content_package($1,$2)',[owner,{concepts:[],items:[item],mappings:[]}]);
+ expect((await c.query<{data:any}>('select data from concept_questions where id=$1',['disabled-q'])).rows[0].data.active).toBe(false);
+});
 test('shared provider pacing coordinates keys and isolates owners without exposing request clocks',async()=>{
  const c=await database();
  await c.exec(`set role service_role`);

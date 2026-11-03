@@ -876,6 +876,7 @@ export function publicStudy(input: any): any {
   delete session.reviewPool;
   for (const item of session.items) {
     const reveal =
+      session.mode === "memory" ||
       item.result ||
       item.memory ||
       (item.responseSubmitted && item.waitingSelfGrade);
