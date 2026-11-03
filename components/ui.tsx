@@ -149,7 +149,7 @@ export function Sources({
   materials: { id: string; title: string }[];
   onOpen: (id: string, page: number) => void;
 }) {
-  return (
+  const links = (
     <div className="sources">
       {sources.map((s, i) => (
         <button key={i} onClick={() => onOpen(s.materialId, s.page)}>
@@ -160,4 +160,5 @@ export function Sources({
       ))}
     </div>
   );
+  return sources.length>2 ? <details className="source-details"><summary>출처 보기 · {sources.length}쪽</summary>{links}</details> : links;
 }

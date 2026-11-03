@@ -20,7 +20,7 @@ export async function runTask(input: TaskInput, context: RouterContext): Promise
   let tried = false,lastError:string|undefined; const retryTimes: number[] = [], blockedKeys=new Set<string>(),groupCooldowns=new Map<string,number>();
   const timeoutHealth=new Map<string,number>();
   for(const state of context.providers)for(const [id,health]of Object.entries(state.modelStates??{})){
-    if(health.last_error!=='timeout')continue;
+    if(!['timeout','invalid_response'].includes(health.last_error))continue;
     const until=Date.parse(health.cooldown_until??'')||0,key=`${state.provider}:${state.quotaGroup??'shared'}:${id}`;
     if(until>now())timeoutHealth.set(key,Math.max(until,timeoutHealth.get(key)??0));
   }
@@ -72,9 +72,9 @@ export async function runTask(input: TaskInput, context: RouterContext): Promise
         const failure = error instanceof ProviderError ? error : new ProviderError("provider_error");
         lastError=failure.code;
         await context.log({ provider,credential_id:state.credentialId,key_label:state.label, model: model.id, kind: input.kind, success: false, attempt: attempt + 1, duration_ms: Math.max(0, now() - start), error: failure.code, diagnostic:failure.diagnostic??null,response_metadata:failure.responseMetadata??null,http_status: failure.status ?? null });
-        if (["provider_error", "network_error","invalid_response"].includes(failure.code) && attempt === 0) { await sleep(1000); continue; }
-        const until = failure.retryAt ?? (failure.code==='timeout'?now()+300000:["provider_error", "network_error","invalid_response"].includes(failure.code) ? now() + 5000 : now()+600000);
-        if(failure.code==='timeout')timeoutHealth.set(`${groupId}:${modelId}`,until);
+        if (["provider_error", "network_error"].includes(failure.code) && attempt === 0) { await sleep(1000); continue; }
+        const until = failure.retryAt ?? (['timeout','invalid_response'].includes(failure.code)?now()+300000:["provider_error", "network_error"].includes(failure.code) ? now() + 5000 : now()+600000);
+        if(['timeout','invalid_response'].includes(failure.code))timeoutHealth.set(`${groupId}:${modelId}`,until);
         if (until) retryTimes.push(until);
         if(failure.code==='auth_error')blockedKeys.add(keyId);
         if(failure.code==='rate_limited')groupCooldowns.set(failure.quotaScope==='model'?`${groupId}:${model.id}`:groupId,until);

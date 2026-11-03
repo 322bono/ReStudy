@@ -52,34 +52,34 @@ export const QuestionSchema = z
   })
   .strict()
   .superRefine((q, ctx) => {
-    const fail = (message: string) => ctx.addIssue({ code: "custom", message });
+    const fail = (message: string,field:string) => ctx.addIssue({ code: "custom", message,path:[field] });
     if (new Set(q.concept_ids).size !== q.concept_ids.length)
-      fail("개념 참조가 중복됐습니다.");
+      fail("개념 참조가 중복됐습니다.","concept_ids");
     if (new Set(q.source_pages).size !== q.source_pages.length)
-      fail("출처 페이지가 중복됐습니다.");
+      fail("출처 페이지가 중복됐습니다.","source_pages");
     if (q.kind === "mcq") {
       if (
         q.options.length < 4 ||
         new Set(q.options.map(normalize)).size !== q.options.length
       )
-        fail("객관식은 서로 다른 선택지 4~5개가 필요합니다.");
+        fail("객관식은 서로 다른 선택지 4~5개가 필요합니다.","options");
       const letters = "ABCDE".slice(0, q.options.length);
       if (!letters.includes(q.answer) || q.answer.length !== 1)
-        fail("정답 A~E와 실제 선택지 범위를 확인하세요.");
+        fail("정답 A~E와 실제 선택지 범위를 확인하세요.","answer");
       if (
         [...letters].some((key) => !q.option_explanations[key]?.trim()) ||
         Object.keys(q.option_explanations).some((key) => !letters.includes(key))
       )
-        fail("모든 선택지 A~E의 해설을 입력하세요.");
+        fail("모든 선택지 A~E의 해설을 입력하세요.","option_explanations");
     } else {
-      if (q.options.length) fail("OX·단답형·빈칸의 options는 []로 입력하세요.");
+      if (q.options.length) fail("OX·단답형·빈칸의 options는 []로 입력하세요.","options");
       if (q.kind === "ox" && !["O", "X"].includes(q.answer))
-        fail("OX 정답은 O 또는 X입니다.");
+        fail("OX 정답은 O 또는 X입니다.","answer");
       if (Object.keys(q.option_explanations).length)
-        fail("객관식 외 option_explanations는 {}로 입력하세요.");
+        fail("객관식 외 option_explanations는 {}로 입력하세요.","option_explanations");
     }
     if (q.purpose === "similar" && !q.source_problem)
-      fail("유사문제에는 원본 문제 식별 정보가 필요합니다.");
+      fail("유사문제에는 원본 문제 식별 정보가 필요합니다.","source_problem");
   });
 export const RestudySchema = z
   .object({

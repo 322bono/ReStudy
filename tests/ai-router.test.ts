@@ -13,6 +13,16 @@ function context(rotationIndex = 0, providers = [state()], transport?: typeof fe
 }
 
 describe('durable no-charge routing', () => {
+  it('switches models after invalid structured output instead of repeating the same costly generation',async()=>{
+    const seen:string[]=[];
+    const ctx=context(0,[state()],(async url=>{seen.push(String(url));return String(url).includes(primary)?response({questions:[]}):response();})as typeof fetch);
+    expect(await runTask(input,ctx)).toMatchObject({status:'succeeded',model:fallback});
+    expect(seen.filter(url=>url.includes(primary))).toHaveLength(1);
+  });
+  it('shares invalid-output cooldown across keys so a resumed worker can reach its fallback',async()=>{
+    const slots=[{...state(),credentialId:'a',quotaGroup:'account'},{...state(),credentialId:'b',quotaGroup:'account',modelStates:{[primary]:{last_error:'invalid_response',cooldown_until:new Date(1300000).toISOString()}}}];
+    expect(await runTask(input,context(0,slots))).toMatchObject({status:'succeeded',model:fallback});
+  });
   it('preserves a full inference window and defers fallback after a full timeout', async () => {
     let clock = 1000000; const seen: string[] = [];
     const timeout = vi.spyOn(AbortSignal, 'timeout');

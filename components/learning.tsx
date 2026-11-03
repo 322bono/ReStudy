@@ -567,7 +567,7 @@ export function StudyPlayer({
                     <div className="flash-answer">
                       {reveal?.answer || item.answer}
                     </div>
-                    {(reveal?.explanation || item.explanation) && (
+                    {(reveal?.explanation || item.explanation) && (reveal?.explanation || item.explanation)?.trim()!==(reveal?.answer || item.answer)?.trim() && (
                       <p className="feedback-text">{reveal?.explanation || item.explanation}</p>
                     )}
                     <div className="memory-controls">

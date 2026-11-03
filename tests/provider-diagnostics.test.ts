@@ -29,7 +29,9 @@ test('provider schema preserves supported constraints and application validation
   expect(schema.properties.schema_version.enum).toEqual(['restudy.v1']); expect(schema.properties.questions.items.allOf).toBeUndefined();
   expect(JSON.stringify(schema)).not.toMatch(/allOf|propertyNames|exclusiveMinimum|\$schema/);
   const bad = { schema_version: 'restudy.v1', document_id: 'd', job_id: 'j', part: 1, total_parts: 1, chapters: [], concepts: [], problem_analyses: [], flashcards: [], similarities: [], questions: [{ id: 'q', chapter_id: 'c', concept_ids: ['x'], kind: 'mcq', purpose: 'concept', level: 'easy', source_problem: null, prompt: '질문', options: ['1', '2', '3', '4'], answer: 'E', accepted_answers: [], explanation: '설명', option_explanations: { A: '설명', B: '설명', C: '설명', D: '설명' }, source_pages: [1] }] };
-  expect(RestudySchema.safeParse(bad).success).toBe(false);
+  const parsed=RestudySchema.safeParse(bad);
+  expect(parsed.success).toBe(false);
+  if(!parsed.success)expect(parsed.error.issues.map(issue=>issue.path.join('.'))).toContain('questions.0.answer');
 });
 test('request failure diagnostics expose fixed categories without upstream secrets', async () => {
   const payload = { error: { message: 'Invalid schema allOf; key=private-value and source=private-text' } };

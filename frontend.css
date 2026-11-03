@@ -799,3 +799,13 @@
     line-height: 1.85;
   }
 }
+.source-details {
+  margin: 12px 0 20px;
+}
+.source-details > summary {
+  min-height: 44px;
+  padding: 12px 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+}
