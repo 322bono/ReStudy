@@ -1,6 +1,6 @@
 import { CheckCircle2, Clock3, CircleAlert, LoaderCircle } from "lucide-react";
 import { Button } from "../../components/ui";
-import { aiFailureText } from "../domain/ai-status";
+import { aiFailureText, aiDiagnosticText } from "../domain/ai-status";
 
 function responseDetail(value: any) {
   if (!value) return "";
@@ -143,6 +143,11 @@ export default function ApiPreparationStatus({
                   ? "유효한 응답을 받았습니다."
                   : aiFailureText(attempt.error)}
               </p>
+              {!attempt.success && aiDiagnosticText(attempt.diagnostic) && (
+                <p className="api-attempt-diagnostic">
+                  {aiDiagnosticText(attempt.diagnostic)}
+                </p>
+              )}
               {attempt.at && (
                 <small>
                   {new Date(attempt.at).toLocaleTimeString("ko-KR", {

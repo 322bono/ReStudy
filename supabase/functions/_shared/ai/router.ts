@@ -1,6 +1,6 @@
 import type { Provider } from "./crypto.ts";
 import { modelFor,generationContractVersion,isGenerationModel,generationModelRank } from "./catalog.ts";
-import { generate, ProviderError, type ImageInput } from "./providers.ts";
+import { generate, validateProviderInput, ProviderError, type ImageInput } from "./providers.ts";
 import { validateOutput,validationMetadata, type TaskKind, type Json } from "./schemas.ts";
 export type Mode = "round_robin" | "nvidia_first" | "gemini_first" | "nvidia_only" | "gemini_only";
 export type ProviderState = { provider: Provider; enabled: boolean; model: string; access: "unknown" | "free_confirmed" | "paid"; status: string; cooldown_until?: string; credentialId?:string; label?:string; quotaGroup?:string; selectedModels?:string[]; modelStates?:Record<string,Json>; quotaCooldowns?:Record<string,string>; [key: string]: unknown };
@@ -37,7 +37,14 @@ export async function runTask(input: TaskInput, context: RouterContext): Promise
     if(context.preferredModel&&selected.includes(context.preferredModel))selected=[context.preferredModel,...selected.filter(m=>m!==context.preferredModel)];
     for(const modelId of selected){
     const model=modelFor(provider,modelId);
-    if (!state?.enabled || !model?.text || !model.structured || !isGenerationModel(provider,modelId) || state.status === "auth_error" || input.images?.length && !model.image || input.prompt.length > model.maxInputChars) continue;
+    if (!state?.enabled || !model?.text || !model.structured || !isGenerationModel(provider,modelId) || state.status === "auth_error" || input.images?.length && !model.image) continue;
+    try{validateProviderInput(input,model);}catch(error){
+      const failure=error instanceof ProviderError?error:new ProviderError('request_invalid');
+      await context.log({provider,model:model.id,kind:input.kind,success:false,attempt:0,duration_ms:0,error:failure.code,diagnostic:failure.diagnostic??null});
+      // This is an input failure, not key/model health. Rotating credentials
+      // cannot fix it and must not consume additional upstream requests.
+      return{status:'paused',reason:'all_providers_failed',lastError:failure.code};
+    }
     if(blockedKeys.has(keyId))continue;
     const cooldown = Math.max((state.cooldown_until ? Date.parse(state.cooldown_until) : 0)||0,timeoutHealth.get(`${groupId}:${modelId}`)??0,groupCooldowns.get(groupId)??0,groupCooldowns.get(`${groupId}:${modelId}`)??0,Date.parse(state.quotaCooldowns?.['']??'')||0,Date.parse(state.quotaCooldowns?.[modelId]??'')||0,Date.parse(state.modelStates?.[modelId]?.cooldown_until??'')||0);
     if (cooldown > now()) { retryTimes.push(cooldown); continue; }

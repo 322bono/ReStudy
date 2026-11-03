@@ -62,3 +62,25 @@ test("paused API attempts show failure and HTTP status without claiming saved co
   expect(html).not.toContain("응답을 확인하고 저장");
   expect(html).toContain('<details class="api-history">');
 });
+
+test("request diagnostics explain the rejected field category without displaying arbitrary provider values", () => {
+  const job = {
+    apiJobs: [{ status: "paused" }],
+    apiStatus: { state: "paused" },
+    apiAttempts: [
+      {
+        success: false,
+        error: "request_invalid",
+        diagnostic: "image_base64_invalid",
+      },
+      {
+        success: false,
+        error: "request_invalid",
+        diagnostic: "private-upstream-value",
+      },
+    ],
+  };
+  const html = renderToStaticMarkup(<ApiPreparationStatus job={job} />);
+  expect(html).toContain("Base64 형식이 올바르지 않습니다");
+  expect(html).not.toContain("private-upstream-value");
+});
