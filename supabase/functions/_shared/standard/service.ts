@@ -83,7 +83,7 @@ export async function previewPart(ctx:Ctx,jobId:string,input:unknown){
  if(['toc','concepts'].includes(job.taskType)&&incoming.questions.length)merged.errors.push('개념·목차 작업에는 문제를 가져오지 않습니다. 기본 문제 또는 문제 은행을 선택하세요.');
  if(job.taskType==='concepts'&&incoming.problem_analyses.length)merged.errors.push('개념 정리에는 원본 문제 분석을 가져오지 않습니다.');
  if(job.targetQuestions.length){const target=new Set(job.targetQuestions.map((q:any)=>`${q.q_number}:${q.pdf_page}`));for(const a of incoming.problem_analyses)if(!target.has(`${a.q_number}:${a.pdf_page}`))merged.errors.push('요청한 원본 문제 번호·페이지와 분석 결과가 다릅니다.');}
- const index=(await rows(ctx,'problems')).filter((q:any)=>q.document_id===job.documentId);
+ const index=incoming.problem_analyses.length?await rows(ctx,'problems',{document_id:job.documentId}):[];
  for(const a of incoming.problem_analyses){const matches=index.filter((q:any)=>String(q.number)===String(Number(a.q_number))&&q.page===a.pdf_page);if(matches.length!==1)merged.warnings.push(`${a.q_number}번(${a.pdf_page}쪽)은 원본 영역을 지정하거나 중복 번호를 구분해야 합니다. 분석 데이터는 보존합니다.`)}
  merged.valid=!merged.errors.length;merged.ready=merged.valid&&!merged.unresolved.length;
  const samePart=parts.find((p:any)=>p.part===incoming.part&&canonicalJson(p.raw)===canonicalJson(incoming));

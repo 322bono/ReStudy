@@ -2,9 +2,10 @@ import type { Provider } from "./crypto.ts";
 import { modelFor,generationContractVersion,isGenerationModel,generationModelRank } from "./catalog.ts";
 import { generate, validateProviderInput, ProviderError, type ImageInput } from "./providers.ts";
 import { unreadableWrongReview, validateOutput,validationMetadata, type TaskKind, type Json } from "./schemas.ts";
+import { expandCompactPreparation, type CompactPreparation } from "../standard/compact.ts";
 export type Mode = "round_robin" | "nvidia_first" | "gemini_first" | "nvidia_only" | "gemini_only";
 export type ProviderState = { provider: Provider; enabled: boolean; model: string; access: "unknown" | "free_confirmed" | "paid"; status: string; cooldown_until?: string; credentialId?:string; label?:string; quotaGroup?:string; selectedModels?:string[]; modelStates?:Record<string,Json>; quotaCooldowns?:Record<string,string>; [key: string]: unknown };
-export type TaskInput = { kind: TaskKind; prompt: string; sourceIds: string[]; count?: number; images?: ImageInput[]; types?: string[]; difficulty?: string;allowedPages?:number[] };
+export type TaskInput = { kind: TaskKind; prompt: string; sourceIds: string[]; count?: number; images?: ImageInput[]; types?: string[]; difficulty?: string;allowedPages?:number[];compactPreparation?:CompactPreparation };
 export type RouterContext = { providers: ProviderState[]; mode: Mode; rotationIndex: number; allowPaid: boolean; preferredProvider?: Provider; preferredModel?:string; deadline?:number; getKey(provider: Provider,credentialId?:string): Promise<string>; reserveRequest?(provider:Provider,group:string):Promise<{granted:boolean;retryAt?:number}>; updateProvider(provider: Provider, changes: Json,credentialId?:string,model?:string): Promise<void>; log(entry: Json): Promise<void>; fetch?: typeof fetch; now?: () => number; sleep?: (ms: number) => Promise<void> };
 export type TaskResult = { status: "succeeded"; provider: Provider; model: string; output: Json; usage: Record<string, number>; duration_ms: number } | { status: "paused"; reason: "no_available_provider" | "all_providers_failed"; retryAt?: number;lastError?:string };
 export class SuccessfulTaskPersistenceError extends Error {
@@ -73,7 +74,16 @@ export async function runTask(input: TaskInput, context: RouterContext): Promise
           return { status: "paused", reason: "all_providers_failed", lastError: "source_incomplete" };
         }
         let output: Json;
-        try { output = validateOutput(input.kind, response.raw, input.sourceIds, input.count); } catch { throw new ProviderError("invalid_response",undefined,undefined,'group','output_schema_invalid',{...response.metadata,schema:validationMetadata(input.kind,response.raw,input.count)}); }
+        try {
+          output = input.compactPreparation
+            ? expandCompactPreparation(input.compactPreparation, response.raw)
+            : validateOutput(input.kind, response.raw, input.sourceIds, input.count);
+        } catch {
+          throw new ProviderError("invalid_response",undefined,undefined,'group',input.compactPreparation?'compact_output_invalid':'output_schema_invalid',{
+            ...response.metadata,
+            ...(!input.compactPreparation ? {schema:validationMetadata(input.kind,response.raw,input.count)} : {}),
+          });
+        }
         if(input.kind==='restudy_v1'&&input.allowedPages&&(output.questions.some((q:Json)=>q.source_pages.some((n:number)=>!input.allowedPages!.includes(n)))||output.problem_analyses.some((q:Json)=>!input.allowedPages!.includes(q.pdf_page))))throw new ProviderError('invalid_response');
         if (input.kind !== "analyze_problem" && input.kind!=='restudy_v1' && output.questions.some((question: Json) => input.types?.length && !input.types.includes(question.type) || input.difficulty && input.difficulty !== question.difficulty)) throw new ProviderError("invalid_response");
         const duration_ms = Math.max(0, now() - start);

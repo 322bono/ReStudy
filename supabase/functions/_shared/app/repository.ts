@@ -16,6 +16,21 @@ export async function pageRows(ctx:Ctx,documentId?:string,number?:number){
  }
 }
 export async function row(ctx:Ctx,table:string,id:string){const {data,error}=await ctx.db.from(table).select('*').eq('user_id',ctx.user.id).eq('id',id).maybeSingle();if(error||!data)throw new AppError('자료 또는 학습 기록을 찾을 수 없습니다.',404);return data;}
+export async function preparationPageRows(ctx: Ctx, documentId: string, numbers: number[]) {
+ const { data, error } = await ctx.db.from('document_pages')
+  .select('id,number,updated_at,text:data->>text,kind:data->>kind,checkpoint:data->checkpointComplete')
+  .eq('user_id', ctx.user.id).eq('document_id', documentId).in('number', numbers);
+ if (error) throw new AppError('저장된 페이지 본문을 읽지 못했습니다.', 500);
+ return data.map((p: any) => ({ ...p, data: { text: p.text ?? '', kind: p.kind, checkpointComplete: p.checkpoint } }));
+}
+export async function preparationChapters(ctx: Ctx, jobId: string, beforePart: number) {
+ if (beforePart <= 1) return [];
+ const { data, error } = await ctx.db.from('content_parts')
+  .select('chapters:raw->chapters')
+  .eq('user_id', ctx.user.id).eq('job_id', jobId).lt('part', beforePart).order('part');
+ if (error) throw new AppError('이전 분할의 단원을 읽지 못했습니다.', 500);
+ return data.flatMap((part: any) => part.chapters ?? []);
+}
 export function value(r:any){return {...r.data,id:r.id,createdAt:r.data?.createdAt||r.created_at,updatedAt:r.updated_at};}
 export async function put(ctx:Ctx,table:string,id:string,data:any,columns:Record<string,unknown>={}){const result=await ctx.db.from(table).upsert({id,user_id:ctx.user.id,...columns,data},{onConflict:table==='concepts'||table==='concept_questions'?'id,user_id':'id'}).select().single();if(result.error)throw new AppError('자료 저장 중 참조 또는 형식을 확인하지 못했습니다.',400);return result.data;}
 export const material=(r:any)=>({...value(r),title:r.title,subject:r.subject,kind:r.kind,status:r.status,hash:r.content_hash});
