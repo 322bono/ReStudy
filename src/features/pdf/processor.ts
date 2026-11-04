@@ -656,6 +656,44 @@ interface Layout {
 
 const QUESTION_INTENT = /[?？]|(?:구하|고르|쓰|적으|답하|서술하|계산하|찾으|선택하|설명하|비교하|확인하|판단하|읽으|보|연결하)(?:시오|세요|라)|(?:첫|다음|둘째|새로운|왼쪽|오른쪽|번째)\s*문제|\b(?:find|solve|calculate|choose|select|determine|explain|what|which|how|why|fill|complete|write|read|answer)\b/i;
 const EXPLICIT_MARKER = /^\s*(?:문제|문항|Question|Q)\s*(\d{1,4})(?:[.:．)]|\s|$)\s*(.*)$/i;
+const CHOICE = /^\s*([①-⑤])(?:\s|[가-힣A-Za-z(]|$)/;
+const BOX_ENTRY = /^\s*(?:[ㄱ-ㅎ][.)．]|[㉠-㉻][.)．])/;
+const BOX_HEADING = /^\s*[<〈《\[【(]?\s*보\s*기\s*[>〉》\]】)]?\s*$/;
+
+/** PDF textbooks often use a separate, large font for isolated number badges.
+ * Confirm the style from multiple actual badges on a page, then reuse it on
+ * other pages. Local coordinates and an adjacent stem remain mandatory. */
+function badgeStyle(line: PageTextItem, lines: PageTextItem[]): string | undefined {
+  if (!line.fontName || !/^\d{2,3}$/.test(line.text) || +line.text < 1 ||
+      line.y < .045 || line.y > .92 || line.width > .075) return;
+  const stem = lines.some((body) =>
+    body !== line && body.x >= line.x - .012 && body.x < right(line) + .05 &&
+    body.y >= line.y - .009 && body.y < line.y + .053 &&
+    body.width > .09 && line.height >= body.height * 1.2 &&
+    /[가-힣]{2,}|[a-z]{4,}/i.test(body.text) &&
+    !CHOICE.test(body.text) && !BOX_ENTRY.test(body.text) && !marker(body),
+  );
+  if (stem) return line.fontName;
+}
+
+function trustedBadgeStyles(layouts: Layout[]): Set<string> {
+  const styles = new Set<string>();
+  for (const layout of layouts) {
+    if (layout.kind === "answers") continue;
+    const byFont = new Map<string, PageTextItem[]>();
+    for (const line of layout.lines) {
+      const style = badgeStyle(line, layout.lines);
+      if (style) byFont.set(style, [...(byFont.get(style) ?? []), line]);
+    }
+    for (const [font, badges] of byFont) {
+      if (badges.some((a) => badges.some((b) => a !== b &&
+        Math.abs(a.x - b.x) < .027 && Math.abs(a.y - b.y) > .07 &&
+        Math.abs(+a.text - +b.text) === 1))) styles.add(font);
+    }
+  }
+  return styles;
+}
+
 function marker(line:PageTextItem): {number:number;tail:string;bare:boolean;explicit:boolean}|undefined {
   const explicit=EXPLICIT_MARKER.exec(line.text),normal=NUMBER.exec(line.text);
   const circle=/^\s*([①-⑳])\s*(.*)$/.exec(line.text);
@@ -665,10 +703,17 @@ function marker(line:PageTextItem): {number:number;tail:string;bare:boolean;expl
   if(!m||+m[1]<1)return;
   return{number:+m[1],tail:m[2]||'',bare:!!separated&&!explicit&&!normal||NUMERIC_CELL.test(line.text),explicit:!!explicit};
 }
-function findAnchors(lines: PageTextItem[]): Anchor[] {
+function findAnchors(lines: PageTextItem[], badgeStyles: ReadonlySet<string> = new Set()): Anchor[] {
   const candidates: Anchor[] = [];
+  const badges = lines.filter((line) => line.fontName && badgeStyles.has(line.fontName) && badgeStyle(line, lines));
+  if (badges.length) {
+    // Numbered choices and table cells can have the same left edge, but they
+    // do not share the badge font. Explicit labels can coexist on this page.
+    return [...badges, ...lines.filter((line) => EXPLICIT_MARKER.test(line.text))]
+      .map((line) => ({ number: marker(line)!.number, line, bare: badges.includes(line), column: 0 }));
+  }
   for (const line of lines) {
-    if (RANGE.test(line.text)) continue;
+    if (RANGE.test(line.text) || BOX_ENTRY.test(line.text)) continue;
     const parsed=marker(line);if(!parsed)continue;
     if(parsed.bare&&(line.y<.035||line.y>.91))continue;
     const aligned=lines.filter(other=>other!==line&&other.x>=line.x-.025&&other.x<=line.x+.09&&other.y>line.y+line.height*.55&&other.y-line.y<Math.max(.055,line.height*3.2)).sort(order);
@@ -677,6 +722,9 @@ function findAnchors(lines: PageTextItem[]): Anchor[] {
     const beside=lines.filter(other=>other!==line&&other.x>=right(line)-.001&&other.x-right(line)<.09&&Math.abs(other.y-line.y)<Math.max(.004,line.height*.7));
     const context=[parsed.tail,...beside.map(l=>l.text),...below.map(l=>l.text)].join(' ');
     const firstProse=below.find(l=>/[A-Za-z가-힣]/.test(l.text)&&l.text.length>=4);
+    // A circled label inside a choice grid can borrow the next stem's
+    // question wording. Require question wording on its own line.
+    if (CHOICE.test(line.text) && !QUESTION_INTENT.test(parsed.tail)) continue;
     const prominent=parsed.bare&&parsed.number>=10&&firstProse&&line.height>=firstProse.height*1.18&&Math.abs(firstProse.x-line.x)<.035;
     if(!parsed.explicit&&!QUESTION_INTENT.test(context)&&!prominent)continue;
     // Numeric fragments need an actual nearby stem, never alignment alone.
@@ -758,9 +806,9 @@ function area(
   return { region, text };
 }
 
-function detectPage(layout: Layout): ProblemCandidate[] {
+function detectPage(layout: Layout, badgeStyles: Set<string>): ProblemCandidate[] {
   if (layout.kind === "answers") return [];
-  layout.anchors = findAnchors(layout.lines);
+  layout.anchors = findAnchors(layout.lines, badgeStyles);
   layout.lines=layout.lines.filter(line=>{const parsed=marker(line);return !parsed||!layout.anchors.some(a=>a.number!==parsed.number&&Math.abs(a.line.x-line.x)<.025&&Math.abs(a.line.y-line.y)<Math.max(.009,Math.min(a.line.height,line.height)*.8));});
   columns(layout);
   for (const line of layout.lines) {
@@ -852,14 +900,26 @@ function detectPage(layout: Layout): ProblemCandidate[] {
   });
 }
 
+function continuationStart(lines: PageTextItem[], previous: ProblemCandidate | undefined) {
+  const first = lines.find((line) => line.y >= .045);
+  if (!first || !previous) return;
+  const nextChoice = CHOICE.exec(first.text)?.[1];
+  const priorLines = previous.text.split("\n");
+  const priorChoices = priorLines.flatMap((line) => CHOICE.exec(line)?.[1] ?? []);
+  const lastChoice = priorChoices.at(-1);
+  if (nextChoice && lastChoice && nextChoice.charCodeAt(0) === lastChoice.charCodeAt(0) + 1) return first;
+  if (BOX_ENTRY.test(first.text) && /[\[<〈]\s*보기\s*[\]>〉]|보기에서/.test(previous.text) &&
+      (priorLines.some((line) => BOX_HEADING.test(line)) || !priorChoices.length)) return first;
+}
+
 /** Finds review candidates from observed markers; never fills missing numbers. */
-export function detectProblems(pages: PreparedPage[]): ProblemCandidate[] {
+export function detectProblems(pages: PreparedPage[], chapterStarts: number[] = []): ProblemCandidate[] {
   const questions: ProblemCandidate[] = [];
-  let previous: Layout | undefined;
+  const layouts: Layout[] = [];
   for (const page of [...pages].sort((a, b) => a.number - b.number)) {
     const lines = textLines([...page.items,...(page.numberMarkers??[])]);
-    const adjacent = previous && previous.page.number === page.number - 1;
-    const layout: Layout = {
+    const previous = layouts.at(-1);
+    layouts.push({
       page,
       lines,
       anchors: [],
@@ -868,13 +928,35 @@ export function detectProblems(pages: PreparedPage[]): ProblemCandidate[] {
       kind: pageKind(
         lines,
         page.kind,
-        !!adjacent && previous?.kind === "answers",
+        previous?.page.number === page.number - 1 && previous.kind === "answers",
       ),
-    };
-    const candidates = detectPage(layout);
+    });
+  }
+  const styles = trustedBadgeStyles(layouts);
+  const starts = new Set(chapterStarts);
+  for (const [index, layout] of layouts.entries()) {
+    const previous = layouts[index - 1];
+    const page = layout.page, lines = layout.lines;
+    const candidates = detectPage(layout, styles);
+    if (layout.columns.length === 2) {
+      const firstRight = layout.anchors.findIndex((anchor) => anchor.column === 1);
+      if (firstRight > 0) {
+        const lastLeft = candidates[firstRight - 1];
+        const boundary = layout.anchors[firstRight].line.y;
+        const topRight = lines.filter((line) => line.x >= layout.columns[1][0] && line.y < boundary - .005);
+        const first = continuationStart(topRight, lastLeft);
+        if (first) {
+          const continuation = area(layout, 1, first.y, boundary);
+          lastLeft.regions.push(continuation.region);
+          lastLeft.text += `\n${continuation.text}`;
+          lastLeft.confidence = Math.min(lastLeft.confidence, .6);
+        }
+      }
+    }
     if (
-      adjacent &&
       previous &&
+      previous.page.number === page.number - 1 &&
+      !starts.has(page.number) &&
       previous.kind !== "answers" &&
       layout.kind !== "answers"
     ) {
@@ -921,19 +1003,19 @@ export function detectProblems(pages: PreparedPage[]): ProblemCandidate[] {
       const topLines = lines.filter(
         (l) => l.x < layout.columns[0][1] && l.y < boundary - 0.005,
       );
+      const firstContent = continuationStart(topLines, last);
       if (
         last &&
         topLines.length &&
-        (NEXT.test(last.text) || CONTINUED.test(topLines[0].text))
+        (NEXT.test(last.text) || CONTINUED.test(topLines[0].text) || firstContent)
       ) {
-        const continuation = area(layout, 0, topLines[0].y, boundary);
+        const continuation = area(layout, 0, (firstContent ?? topLines[0]).y, boundary);
         last.regions.push(continuation.region);
         last.text += `\n${continuation.text}`;
         last.confidence = Math.min(last.confidence, 0.6);
       }
     }
     questions.push(...candidates);
-    previous = layout;
   }
   return questions;
 }

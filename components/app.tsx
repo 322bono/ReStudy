@@ -26,7 +26,7 @@ import type { AppState, StudySession } from "@/lib/types";
 import { Button, Empty, IconButton } from "./ui";
 import { Materials, MaterialStatus, UploadDialog } from "./materials";
 import { Viewer } from "./viewer";
-import { AddMistakes, Mistakes } from "./mistakes";
+import { AddMistakes, Mistakes, type MistakeFilters } from "./mistakes";
 import { Solve } from "./solve";
 import { StudyPlayer, StudySetup } from "./learning";
 import { ContentManager } from "./content-manager";
@@ -85,6 +85,9 @@ export default function RestudyApp({
     [busy, setBusy] = useState(""),
     [studyIds, setStudyIds] = useState<string[]>([]);
   const [bankScope, setBankScope] = useState<any>({});
+  const [mistakeFilters, setMistakeFilters] = useState<MistakeFilters>({
+    subject: "전체", material: "전체", unit: "전체", status: "다시 풀 문제", search: "",
+  });
   const [moreOpen, setMoreOpen] = useState(false);
   const moreMenu = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -550,6 +553,8 @@ export default function RestudyApp({
             {view.name === "mistakes" && (
               <Mistakes
                 state={state}
+                filters={mistakeFilters}
+                onFilters={setMistakeFilters}
                 onAdd={() => setAddMistakes(true)}
                 onSolve={solve}
                 onConcept={(id) => navigate({ name: "wrong", id })}
@@ -687,6 +692,8 @@ export default function RestudyApp({
       {addMistakes && (
         <AddMistakes
           state={state}
+          preferredMaterial={view.name === "material" ? view.id || "" : mistakeFilters.material}
+          subject={mistakeFilters.subject}
           onClose={() => setAddMistakes(false)}
           onDone={refresh}
           onRegistered={registeredWrong}

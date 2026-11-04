@@ -20,6 +20,23 @@ async function database(skipSlots=false){
   return db;
 }
 afterEach(async()=>{await db?.close()});
+test('wrong review atomically saves only for the correct user, lease and problem version', async () => {
+ const c=await database(),doc=crypto.randomUUID(),problem=crypto.randomUUID(),job=crypto.randomUUID(),lease=crypto.randomUUID();
+ await c.query('insert into documents(id,user_id,title,subject,kind) values($1,$2,$3,$4,$5)',[doc,owner,'검증','과학','문제집']);
+ const p=await c.query<{version:string}>('insert into problems(id,user_id,document_id,number,page,data) values($1,$2,$3,1,1,$4) returning updated_at::text version',[problem,owner,doc,{revision:'old'}]);
+ await c.query("insert into ai_jobs(id,user_id,document_id,problem_id,kind,status,cache_key,lease_token,lease_until,data) values($1,$2,$3,$4,'wrong_review','running','test',$5,now()+interval '3 minutes',$6)",[job,owner,doc,problem,lease,{problemVersion:p.rows[0].version,input:{images:['data']}}]);
+ const review={solution:{answer:'1',explanation:'풀이'},concepts:[],memorize:[],questions:[]};
+ const commit=(uid:string,token:string)=>c.query<{status:string|null}>('select commit_wrong_review($1,$2,$3,$4) status',[uid,job,token,review]);
+ await c.exec('set role authenticated');
+ await expect(commit(owner,lease)).rejects.toThrow(/permission/);
+ await c.exec('reset role');
+ expect((await commit(other,lease)).rows[0].status).toBeNull();
+ expect((await commit(owner,crypto.randomUUID())).rows[0].status).toBeNull();
+ expect((await commit(owner,lease)).rows[0].status).toBe('completed');
+ expect((await c.query<{data:unknown}>('select data from problems where id=$1',[problem])).rows[0].data).toEqual({revision:'old',wrongReview:review});
+ expect((await c.query<{data:unknown}>('select data from ai_jobs where id=$1',[job])).rows[0].data).not.toHaveProperty('input');
+ expect((await commit(owner,lease)).rows[0].status).toBeNull();
+});
 test('validated content activates automatically while archived and deliberately disabled content stay unchanged',async()=>{
  const c=await database();
  await c.query('insert into concepts(id,user_id,subject,name,canonical_key)values($1,$2,$3,$4,$5)',['auto-c',owner,'수학','함수','auto-c']);

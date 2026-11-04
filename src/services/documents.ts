@@ -20,7 +20,7 @@ import{mergeRegions,splitRegions}from'../domain/problem-regions';
 import { downloadPrivateFile, uploadPrivateFile } from "./private-files";
 
 export const PDF_ENGINE_VERSION = "browser-pdf-2026-11-01-v1";
-export const PDF_LAYOUT_VERSION = "local-layout-2026-11-02-v3";
+export const PDF_LAYOUT_VERSION = "local-layout-2026-11-04-v4";
 const BUCKET = "study-files",
   MAX_PAGES = 500;
 type Row = Record<string, any>;
@@ -809,13 +809,15 @@ async function runDocument(ctx: Context, job: Job): Promise<void> {
     const localOutline=extractLocalOutline(prepared,starting.data.tocPages??[],pdf.numPages,starting.data.printedPageOffset);
     await edgeCall('app',{path:`materials/${job.id}/outline`,method:'POST',body:{outline:localOutline,processingToken:job.token}});
     const chapters=await list(ctx,'document_chapters','document_id',job.id);
-    const candidates = textbook ? [] : detectProblems(prepared),
+    const contents = prepared.filter((page) => selected.includes(page.number) && !starting.data.tocPages?.includes(page.number));
+    const candidates = textbook ? [] : detectProblems(contents, chapters.map((chapter) => chapter.start_page)),
       warnings = prepared.flatMap((p) =>
         (p.warnings || []).map((w) => `${p.number}쪽: ${w}`),
       );
     const existing = await list(ctx, "problems", "document_id", job.id),
       used = new Set<string>(),
       occurrences = new Map<string, number>();
+    let runStart: number | undefined;
     for (let index = 0; index < candidates.length; index++) {
       const candidate = candidates[index],
         key = `${candidate.page}:${candidate.number}`,
@@ -851,11 +853,14 @@ async function runDocument(ctx: Context, job: Job): Promise<void> {
           ? await list(ctx, "problem_regions", "problem_id", id)
           : [];
       const chapter=chapters.filter(c=>candidate.page>=c.start_page&&candidate.page<=c.end_page).sort((a,b)=>(a.end_page-a.start_page)-(b.end_page-b.start_page))[0];
+      const previous = candidates[index - 1];
+      if (runStart === undefined || candidate.number === 1 && previous?.number > 1)
+        runStart = candidate.page;
       const fields = {
         number: candidate.number,
         page: candidate.page,
         materialId: job.id,
-        unit: current?.data.unit || candidate.unit,
+        unit: chapter?.title || (runStart === undefined ? "" : `PDF ${runStart}쪽부터`),
         text: candidate.text,
         confirmed: false,
         source: candidate.source,

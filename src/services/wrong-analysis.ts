@@ -1,60 +1,35 @@
-import { api } from "../../lib/client";
-import type { Material, Question } from "../../lib/types";
+import { aiFailureText } from "../domain/ai-status";
 import { edgeCall } from "./supabase";
-import { runPreparedJob } from "./content-runner";
 
-const standard = (action: string, body: Record<string, unknown>) =>
-  edgeCall("content-jobs", { action, ...body });
-
-/** Registration initiates generation once; revisits read the saved result. */
-export async function prepareWrongAnalysis(
-  question: Question,
-  material: Material,
-  options: {
-    onUpdate: (job: any) => void;
-    shouldStop: () => boolean;
-  },
-) {
-  const saved = await api(`questions/${question.id}/review`);
-  if (saved.hasSavedAnalysis) return { saved, reused: true };
-  if (
-    !question.regions.length ||
-    !(question as Question & { imagePaths?: string[] }).imagePaths?.length
-  )
-    throw new Error(
-      `${question.number}번의 저장된 원본 크롭이 없습니다. 문항 영역을 먼저 저장해 주세요.`,
-    );
-  const result = await standard("list", { documentId: question.materialId });
-  const existing = (result.jobs || []).find(
-    (job: any) =>
-      job.taskType === "problem" &&
-      job.method === "api" &&
-      job.targetQuestions?.length === 1 &&
-      job.targetQuestions[0].id === question.id,
-  );
-  if (options.shouldStop()) return { stopped: true };
-  let job = existing
-    ? await standard("get", { jobId: existing.id })
-    : await standard("create", {
-        documentId: question.materialId,
-        taskType: "problem",
-        method: "api",
-        questionIds: [question.id],
-        selectedPages: [
-          ...new Set(question.regions.map((region) => region.page)),
-        ],
-        tocPages: material.tocPages || [],
-        questionCount: 5,
-        purposeCounts: { concept: 3, practice: 2, similar: 0 },
-        questionTypes: ["mcq", "ox", "short", "blank"],
-        difficultyDistribution: { easy: 20, medium: 60, hard: 20 },
-      });
-  options.onUpdate(job);
-  job = await runPreparedJob(job, options);
-  const analysis = await api(`questions/${question.id}/review`);
-  if (!analysis.hasSavedAnalysis && !options.shouldStop())
-    throw new Error(
-      "분석을 완료하지 못했습니다. 완료된 결과는 보관했으며 준비 도구에서 오류를 확인하고 이어서 실행할 수 있습니다.",
-    );
-  return { job, saved: analysis };
+export async function prepareWrongAnalysis(problemId: string, shouldStop: () => boolean) {
+  const call = (body: Record<string, unknown>) => edgeCall("analyze-problem", body);
+  const start = () => call({ action: "wrong_review", problemId });
+  let job = await start();
+  let retries = 0;
+  while (!shouldStop() && job.status !== "completed") {
+    if (job.status === "running") {
+      await new Promise((resolve) => setTimeout(resolve, 2500));
+      if (shouldStop()) return false;
+      job = await call({ action: "status", jobId: job.id });
+      if (job.status === "running" && Date.parse(job.lease_until) <= Date.now())
+        throw new Error("분석 실행이 중단됐습니다. 이 문제 분석하기를 눌러 다시 시도해 주세요.");
+      continue;
+    }
+    const code = job.provider_error ?? job.last_error;
+    const wait = Date.parse(job.available_at ?? "") - Date.now();
+    if (retries < 1 && ["invalid_response", "timeout", "provider_error", "network_error", "all_providers_failed"].includes(code) && wait <= 15000) {
+      await new Promise((resolve) => setTimeout(resolve, Math.max(1000, wait)));
+      if (shouldStop()) return false;
+      retries++;
+      job = await start();
+      continue;
+    }
+    if (job.status === "waiting")
+      throw new Error("일일 분석 한도 또는 대기 상태를 확인한 뒤 이 문제 분석하기를 눌러 주세요.");
+    if (code === "source_changed")
+      throw new Error("분석 중 원본 영역이 바뀌었습니다. 수정된 영역으로 다시 분석해 주세요.");
+    const retryAt = wait > 0 ? ` ${new Date(job.available_at).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" })} 이후에 다시 시도해 주세요.` : "";
+    throw new Error(aiFailureText(code) + retryAt);
+  }
+  return job.status === "completed";
 }

@@ -85,15 +85,16 @@ export async function handle(ctx:Ctx,input:any):Promise<any>{
  if(route==='questions'&&action==='mapping'&&method==='PATCH')return importContent(ctx,{concepts:[],items:[],mappings:[{questionId:id,...b}]});
  if(route==='questions'&&action==='review'&&method==='GET'){const s=learnState(await state(ctx,true)),q=s.questions.find((q:any)=>q.id===id);if(!q)throw new AppError('원본 문항을 찾을 수 없습니다.',404);return originalReview(q,s,await rows(ctx,'problem_similarities'));}
  if(route==='mistakes'){
-  const s=await state(ctx,true);
+  const s=await state(ctx);
   if(id){const m=await row(ctx,'wrong_answers',id);if(method==='DELETE'){await put(ctx,'wrong_answers',id,{...m.data,archived:true},{problem_id:m.problem_id});return {archived:true};}return {mistake:{...value(m),questionId:m.problem_id,resolved:m.data.resolved??m.data.lastResult==='correct'},attempts:s.sessions.filter((ss:any)=>ss.answers?.[m.problem_id]).map((ss:any)=>({sessionId:ss.id,...ss.answers[m.problem_id],strokes:ss.drawings?.[m.problem_id]||[]}))};}
   if(method!=='POST')return s.mistakes;
   const selected:any[]=[],ambiguous:number[]=[],missing:number[]=[];
+  if(b.questionIds!==undefined&&(!Array.isArray(b.questionIds)||b.questionIds.length>200||b.questionIds.some((id:unknown)=>typeof id!=='string')))throw new AppError('한 번에 원본 문항을 200개까지 등록할 수 있습니다.');
   for(const qid of b.questionIds||[]){const q=s.questions.find((q:any)=>q.id===qid);if(!q)throw new AppError('선택한 원본 문항을 찾을 수 없습니다.');selected.push(q)}
   for(const num of numbers(String(b.numbers||''),200)){const found=s.questions.filter((q:any)=>q.materialId===b.materialId&&q.number===num);if(found.length>1)ambiguous.push(num);else if(!found.length)missing.push(num);else selected.push(found[0]);}
   let added=0;const unique=[...new Map(selected.map(q=>[q.id,q])).values()];
   for(const q of unique){const exists=s.tables.wrong_answers.find((m:any)=>m.problem_id===q.id);if(exists&&!exists.data.archived&&!(exists.data.resolved??exists.data.lastResult==='correct'))continue;const mid=exists?.id||uuid(),data={...(exists?.data||{}),id:mid,questionId:q.id,cause:String(b.cause||'').slice(0,500),createdAt:exists?.created_at||now(),dueAt:now(),reviewCount:exists?.data.reviewCount||0,correctCount:exists?.data.correctCount||0,streak:0,conceptState:q.conceptIds.length?'reviewing':'unregistered',archived:false,resolved:false,resolvedAt:null};await put(ctx,'wrong_answers',mid,data,{problem_id:q.id});added++;}
-  return {added,ambiguous,missing,unregistered:unique.filter(q=>!q.hasContent).length,questionIds:unique.map(q=>q.id),autoAnalyzeQuestionIds:unique.filter(q=>!q.analysis&&!q.answer&&!q.explanation).map(q=>q.id)};
+  return {added,ambiguous,missing,unregistered:unique.filter(q=>!q.hasContent).length,questionIds:unique.map(q=>q.id),autoAnalyzeQuestionIds:unique.filter(q=>!q.wrongReview&&!q.analysis&&!q.answer&&!q.explanation).map(q=>q.id)};
  }
  if(route==='lessons'){const s=learnState(await state(ctx,true));return saveStudy(ctx,createReview([b.questionId],s));}
  if(route==='study'){

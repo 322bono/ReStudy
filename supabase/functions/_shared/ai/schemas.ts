@@ -1,5 +1,5 @@
 import {parseRestudy,RestudySchema,RestudyJSONSchema}from'../../../../src/domain/restudy.ts';
-export type TaskKind = "analyze_problem" | "generate_questions" | "generate_material" | "restudy_v1";
+export type TaskKind = "analyze_problem" | "generate_questions" | "generate_material" | "restudy_v1" | "wrong_review";
 export type Json = Record<string, any>;
 const schemaFields=new Set<string>();
 function collectSchemaFields(value:any){if(!value||typeof value!=='object')return;for(const [key,entry]of Object.entries(value)){if(key==='properties'&&entry&&typeof entry==='object')for(const field of Object.keys(entry))schemaFields.add(field);if(Array.isArray(entry))entry.forEach(collectSchemaFields);else collectSchemaFields(entry);}}
@@ -41,6 +41,23 @@ function arithmetic(expression: string): number {
 export function validateOutput(kind: TaskKind, raw: unknown, sourceIds: string[], count = 3): Json {
   if(kind==='restudy_v1'){const parsed=parseRestudy(raw);if(parsed.questions.length!==count)invalid();return parsed;}
   const value = object(raw);
+  if (kind === "wrong_review") {
+    const solution = object(value.solution);
+    const concepts = list(value.concepts, 5).map((entry) => {
+      const concept = object(entry);
+      return { name: text(concept.name, 150), summary: text(concept.summary, 1200) };
+    });
+    const memorize = strings(value.memorize, 8);
+    const questions = list(value.questions, 3).map((entry) => {
+      const question = object(entry);
+      return { prompt: text(question.prompt, 1500), answer: text(question.answer, 600), explanation: text(question.explanation, 1500) };
+    });
+    if (!concepts.length || !memorize.length || !questions.length) invalid();
+    return {
+      solution: { answer: text(solution.answer, 600), explanation: text(solution.explanation, 3500) },
+      concepts, memorize, questions,
+    };
+  }
   if (kind === "generate_material") {
     const concepts = validateConcepts(value.concepts, sourceIds);
     const questions = validateOutput("generate_questions", { questions: value.questions }, sourceIds, count).questions.map((question: Json, index: number) => {
@@ -95,6 +112,12 @@ const stringSchema = { type: "string" }; const stringsSchema = { type: "array", 
 function schema(properties: Json, required = Object.keys(properties)): Json { return { type: "object", properties, required, additionalProperties: false }; }
 export function outputSchema(kind: TaskKind): Json {
   if(kind==='restudy_v1')return RestudyJSONSchema;
+  if (kind === "wrong_review") return schema({
+    solution: schema({ answer: stringSchema, explanation: stringSchema }),
+    concepts: { type: "array", minItems: 1, maxItems: 5, items: schema({ name: stringSchema, summary: stringSchema }) },
+    memorize: { ...stringsSchema, minItems: 1, maxItems: 8 },
+    questions: { type: "array", minItems: 1, maxItems: 3, items: schema({ prompt: stringSchema, answer: stringSchema, explanation: stringSchema }) },
+  });
   if (kind === "generate_material") {
     const questions = outputSchema("generate_questions").properties.questions;
     questions.items.properties.concept_key = stringSchema; questions.items.required.push("concept_key");

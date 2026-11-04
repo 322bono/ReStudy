@@ -2,6 +2,7 @@ import { AppError, context, json, preflight } from "../context.ts";
 import { AiError, credentialAction } from "./credentials.ts";
 import { jobAction } from "./service.ts";
 import {runStandard}from'../standard/ai.ts';
+import { startWrongReview } from "./wrong-review.ts";
 
 const messages: Record<string, string> = {
   credential_changed: "다른 화면에서 키가 변경됐습니다. 설정을 새로 불러와 주세요.",credential_id_required:"작업할 API 키를 선택해 주세요.",credential_duplicate:"이미 등록된 키입니다. 기존 키의 모델 목록을 갱신해 주세요.",credential_limit:"제공자별로 최대 20개 키를 등록할 수 있습니다.",invalid_quota_group:"한도 그룹은 영문·숫자·밑줄·마침표·콜론·하이픈으로 64자까지 입력하세요.",no_compatible_models:"현재 키에서 앱이 지원하는 모델을 찾지 못했습니다. 키 권한과 제공자의 모델 목록을 확인해 주세요.",connection_failed:"AI 연결을 확인하지 못했습니다. 기존 키는 보존했습니다.",
@@ -22,6 +23,7 @@ export async function handleAI(req: Request, kind: "credentials" | "request" | "
     const master = Deno.env.get("RE_CREDENTIAL_MASTER_KEY") ?? "";
     let result;
     if(kind==='credentials')result=await credentialAction(body,ctx,master);
+    else if(kind==='analyze'&&body.action==='wrong_review')result=await startWrongReview(ctx,body.problemId,master);
     else if(body.action==='run_standard')result=await runStandard(ctx,body.standardJobId,body.part,master);
     else if(['resume','status'].includes(body.action))result=await jobAction(body,ctx,master);
     else throw new AppError('자료 상세에서 restudy.v1 작업을 준비한 뒤 분석을 시작하세요.');

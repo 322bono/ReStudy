@@ -11,181 +11,146 @@ import {
   Search,
 } from "lucide-react";
 import { api, dueLabel, isDue, dateLabel } from "@/lib/client";
-import type { AppState, Question } from "@/lib/types";
-import { Badge, Button, Dialog, Empty, IconButton } from "./ui";
+import type { AppState } from "@/lib/types";
+import { Badge, Button, Dialog, Empty } from "./ui";
 import { SecureImage } from "./secure-assets";
+import { resolveMistakeNumbers } from "../src/domain/mistake-selection";
+
+export type MistakeFilters = {
+  subject: string;
+  material: string;
+  unit: string;
+  status: string;
+  search: string;
+};
 
 export function AddMistakes({
   state,
+  preferredMaterial,
+  subject,
   onClose,
   onDone,
   onRegistered,
 }: {
   state: AppState;
+  preferredMaterial: string;
+  subject: string;
   onClose: () => void;
   onDone: () => Promise<void>;
   onRegistered: (ids: string[], autoAnalyzeIds: string[]) => void;
 }) {
-  const [materialId, setMaterialId] = useState(state.materials[0]?.id || ""),
-    [numbers, setNumbers] = useState(""),
-    [cause, setCause] = useState(""),
-    [busy, setBusy] = useState(false),
-    [message, setMessage] = useState(""),
-    [result, setResult] = useState<{
-      added: number;
-      ambiguous: number[];
-      missing: number[];
-      questionIds?: string[];
-      autoAnalyzeQuestionIds?: string[];
-    }>(),
-    [chosen, setChosen] = useState<string[]>([]);
-  const add = async (explicit = false) => {
+  const materials = state.materials.filter((m) => state.questions.some((q) => q.materialId === m.id && !q.mergedInto));
+  const [materialId, setMaterialId] = useState(() =>
+    (materials.find((m) => m.id === preferredMaterial) || materials.find((m) => m.subject === subject) || materials[0])?.id || "",
+  );
+  const [numbers, setNumbers] = useState("");
+  const [cause, setCause] = useState("");
+  const [scope, setScope] = useState("");
+  const [chosen, setChosen] = useState<string[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+  const source = state.questions.filter((q) => q.materialId === materialId && !q.mergedInto);
+  const groups = [...new Set(source.map((q) => q.unit).filter(Boolean))];
+  const filtered = source.filter((q) => !scope || q.unit === scope);
+  const input = resolveMistakeNumbers(numbers, filtered);
+  const questionIds = [...new Set([...input.matches, ...chosen])];
+  const confirmed = input.ambiguous.every((group) => group.some((q) => chosen.includes(q.id)));
+
+  async function add() {
     setBusy(true);
     setMessage("");
     try {
-      const r = await api(
-        "mistakes",
-        "POST",
-        explicit
-          ? { questionIds: chosen, cause }
-          : { materialId, numbers, cause },
-      );
+      const result = await api("mistakes", "POST", { questionIds, cause });
       await onDone();
-      if (r.questionIds?.length && !r.ambiguous.length && !r.missing.length) {
-        onRegistered(r.questionIds, r.autoAnalyzeQuestionIds || []);
-        return;
-      }
-      setResult(r);
-      setMessage(
-        `${r.added}개 문제를 저장했습니다.${r.added === 0 ? " 이미 등록한 문제는 중복 저장하지 않습니다." : ""}`,
-      );
-      if (explicit) setChosen([]);
-    } catch (e) {
-      setMessage((e as Error).message);
+      onRegistered(result.questionIds, result.autoAnalyzeQuestionIds || []);
+    } catch (cause) {
+      setMessage((cause as Error).message);
     } finally {
       setBusy(false);
     }
-  };
+  }
+
   return (
-    <Dialog title="오답 등록" onClose={onClose}>
+    <Dialog title="오답 한꺼번에 등록" onClose={onClose}>
       <div className="form-stack">
         <label>
           문제집
-          <select
-            value={materialId}
-            onChange={(e) => {
-              setMaterialId(e.target.value);
-              setResult(undefined);
-              setChosen([]);
-            }}
-          >
-            <option value="" disabled>
-              자료를 선택하세요
-            </option>
-            {state.materials.map((m) => (
-              <option key={m.id} value={m.id}>
-                {m.subject} · {m.title}
-              </option>
-            ))}
+          <select value={materialId} disabled={busy} onChange={(event) => {
+            setMaterialId(event.target.value);
+            setScope("");
+            setChosen([]);
+          }}>
+            <option value="" disabled>자료를 선택하세요</option>
+            {materials.map((m) => <option key={m.id} value={m.id}>{m.subject} · {m.title}</option>)}
           </select>
         </label>
+        <details>
+          <summary>오답 원인 기록 · 선택</summary>
+          <label>
+            오답 원인
+            <select value={cause} disabled={busy} onChange={(event) => setCause(event.target.value)}>
+              {["", "개념 부족", "계산 실수", "조건 해석", "시간 부족", "기타"].map((value) => (
+                <option key={value} value={value}>{value || "선택하지 않음"}</option>
+              ))}
+            </select>
+          </label>
+        </details>
+        {groups.length > 0 && (
+          <label>
+            단원
+            <select value={scope} disabled={busy} onChange={(event) => {
+              setScope(event.target.value);
+              setChosen([]);
+            }}>
+              <option value="">모든 단원</option>
+              {groups.map((unit) => <option key={unit}>{unit}</option>)}
+            </select>
+          </label>
+        )}
         <label>
           문제 번호
           <input
             autoFocus
-            placeholder="17, 24, 36 또는 17-20"
+            placeholder="예: 3, 7, 12–15"
             value={numbers}
-            onChange={(e) => setNumbers(e.target.value)}
+            disabled={busy}
+            onChange={(event) => {
+              setNumbers(event.target.value);
+              setChosen([]);
+            }}
           />
-          <small>여러 번호를 한 번에 입력할 수 있어요.</small>
-        </label>
-        <label>
-          오답 원인 <small>선택</small>
-          <select value={cause} onChange={(e) => setCause(e.target.value)}>
-            {[
-              "",
-              "개념 부족",
-              "계산 실수",
-              "조건 해석",
-              "시간 부족",
-              "기타",
-            ].map((c) => (
-              <option key={c} value={c}>
-                {c || "선택하지 않음"}
-              </option>
-            ))}
-          </select>
+          <small>번호와 범위를 섞어 입력할 수 있어요.</small>
         </label>
       </div>
-      {message && (
-        <p className="notice" role="status">
-          {message}
-        </p>
-      )}
-      {result?.missing.length ? (
-        <p className="error">
-          찾지 못한 번호: {result.missing.join(", ")}. 콘텐츠 관리에서 문항
-          번호와 영역을 확인해 주세요.
-        </p>
-      ) : null}
-      {result?.ambiguous.length ? (
-        <div className="ambiguous">
-          <p>같은 번호가 여러 개 있어요. 페이지로 선택해 주세요.</p>
-          {state.questions
-            .filter(
-              (q) =>
-                q.materialId === materialId &&
-                result.ambiguous.includes(q.number),
-            )
-            .map((q) => (
-              <label key={q.id}>
-                <input
-                  type="checkbox"
-                  checked={chosen.includes(q.id)}
-                  onChange={(e) =>
-                    setChosen(
-                      e.target.checked
-                        ? [...chosen, q.id]
-                        : chosen.filter((id) => id !== q.id),
-                    )
-                  }
-                />
-                {q.number}번 · {q.regions[0].page}쪽 {q.unit && `· ${q.unit}`}
-              </label>
-            ))}
-          <Button
-            variant="secondary"
-            disabled={!chosen.length}
-            busy={busy}
-            onClick={() => add(true)}
-          >
-            선택한 문제 추가
-          </Button>
-        </div>
-      ) : null}
+      {input.error && <p className="error">{input.error}</p>}
+      {input.missing.length > 0 && <p className="error">찾지 못한 번호 {input.missing.join(", ")}번 · 단원이나 번호를 확인해 주세요.</p>}
+      {questionIds.length > 200 && <p className="error">한 번에 200문제까지 등록할 수 있습니다.</p>}
+      {input.ambiguous.map((group) => (
+        <fieldset className="ambiguous" key={group[0].number}>
+          <legend>{group[0].number}번 · 등록할 원본 선택</legend>
+          {group.map((q) => (
+            <label key={q.id}>
+              <input
+                type="checkbox"
+                checked={chosen.includes(q.id)}
+                disabled={busy}
+                onChange={(event) => setChosen(event.target.checked
+                  ? [...chosen, q.id]
+                  : chosen.filter((id) => id !== q.id))}
+              />
+              PDF {q.page}쪽{q.unit ? ` · ${q.unit}` : ""}
+              {group.some((other) => other.id !== q.id && other.page === q.page) && (
+                <SecureImage loading="lazy" path={`questions/${q.id}/image/0`} alt={`${q.number}번 원본`} />
+              )}
+            </label>
+          ))}
+        </fieldset>
+      ))}
+      {message && <p className="error" role="alert">{message}</p>}
       <div className="dialog-footer">
-        {!!result?.questionIds?.length && (
-          <Button
-            variant="secondary"
-            onClick={() =>
-              onRegistered(
-                result.questionIds!,
-                result.autoAnalyzeQuestionIds || [],
-              )
-            }
-          >
-            저장한 문제 분석 보기
-          </Button>
-        )}
-        <Button variant="secondary" onClick={onClose}>
-          닫기
-        </Button>
-        <Button
-          disabled={!materialId || !numbers}
-          busy={busy}
-          onClick={() => add()}
-        >
-          추가
+        <Button variant="secondary" disabled={busy} onClick={onClose}>닫기</Button>
+        <Button disabled={!questionIds.length || !confirmed || !!input.error || questionIds.length > 200} busy={busy} onClick={add}>
+          {questionIds.length ? `${questionIds.length}문제 등록` : "등록"}
         </Button>
       </div>
     </Dialog>
@@ -193,6 +158,8 @@ export function AddMistakes({
 }
 export function Mistakes({
   state,
+  filters,
+  onFilters,
   onAdd,
   onSolve,
   onConcept,
@@ -201,6 +168,8 @@ export function Mistakes({
   onError,
 }: {
   state: AppState;
+  filters: MistakeFilters;
+  onFilters: (filters: MistakeFilters) => void;
   onAdd: () => void;
   onSolve: (ids: string[]) => void;
   onConcept: (id: string) => void;
@@ -208,16 +177,17 @@ export function Mistakes({
   onRefresh: () => Promise<void>;
   onError: (s: string) => void;
 }) {
-  const [subject, setSubject] = useState("전체"),
-    [material, setMaterial] = useState("전체"),
-    [unit, setUnit] = useState("전체"),
-    [status, setStatus] = useState("다시 풀 문제"),
-    [selected, setSelected] = useState<string[]>([]),
-    [search, setSearch] = useState(""),
-    [detail, setDetail] = useState<any>();
+  const { subject, material, unit, status, search } = filters;
+  const [selected, setSelected] = useState<string[]>([]);
+  const [detail, setDetail] = useState<any>();
+  function change(patch: Partial<MistakeFilters>) {
+    onFilters({ ...filters, ...patch });
+    setSelected([]);
+  }
   const subjects = [...new Set(state.materials.map((m) => m.subject))];
+  const availableMaterials = state.materials.filter((d) => subject === "전체" || d.subject === subject);
   const units = [
-    ...new Set(state.questions.map((q) => q.unit).filter(Boolean)),
+    ...new Set(state.questions.filter((q) => availableMaterials.some((d) => d.id === q.materialId) && (material === "전체" || q.materialId === material)).map((q) => q.unit).filter(Boolean)),
   ];
   const rows = state.mistakes
     .flatMap((m) => {
@@ -270,10 +240,7 @@ export function Mistakes({
             <button
               key={s}
               className={status === s ? "active" : ""}
-              onClick={() => {
-                setStatus(s);
-                setSelected([]);
-              }}
+              onClick={() => change({ status: s })}
             >
               {s}
             </button>
@@ -285,7 +252,7 @@ export function Mistakes({
             placeholder="문제 번호, 자료 검색"
             aria-label="오답 검색"
             value={search}
-            onChange={(e) => setSearch(e.target.value)}
+            onChange={(e) => change({ search: e.target.value })}
           />
         </label>
       </div>
@@ -293,7 +260,7 @@ export function Mistakes({
         <select
           aria-label="과목 필터"
           value={subject}
-          onChange={(e) => setSubject(e.target.value)}
+          onChange={(e) => change({ subject: e.target.value, material: "전체", unit: "전체" })}
         >
           <option value="전체">모든 과목</option>
           {subjects.map((s) => (
@@ -303,10 +270,10 @@ export function Mistakes({
         <select
           aria-label="문제집 필터"
           value={material}
-          onChange={(e) => setMaterial(e.target.value)}
+          onChange={(e) => change({ material: e.target.value, unit: "전체" })}
         >
           <option value="전체">모든 문제집</option>
-          {state.materials.map((d) => (
+          {availableMaterials.map((d) => (
             <option key={d.id} value={d.id}>
               {d.title}
             </option>
@@ -316,7 +283,7 @@ export function Mistakes({
           <select
             aria-label="단원 필터"
             value={unit}
-            onChange={(e) => setUnit(e.target.value)}
+            onChange={(e) => change({ unit: e.target.value })}
           >
             <option value="전체">모든 단원</option>
             {units.map((u) => (
@@ -457,7 +424,7 @@ export function Mistakes({
                 state.mistakes.some((m) => m.resolved) ? (
                   <Button
                     variant="secondary"
-                    onClick={() => setStatus("시험 전 복습")}
+                    onClick={() => change({ status: "시험 전 복습" })}
                   >
                     시험 전 복습 보기
                   </Button>

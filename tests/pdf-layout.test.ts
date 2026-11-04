@@ -29,6 +29,53 @@ const page = (
 });
 
 describe("evidence-based question crops", () => {
+  it("recognizes large text-layer badges across a numbering reset and retains the boxed choices", () => {
+    const badge = (text: string, y: number) => ({ ...line(text, .09, y, .028, .019), fontName: "badge-font" });
+    const block = (number: string, y: number) => [
+      badge(number, y),
+      line("그림은 두 지역을 나타낸 것이다.", .09, y + .023, .34, .011),
+      line("옳은 것을 [보기]에서 고른 것은?", .09, y + .13, .35, .011),
+      { ...line("78", .27, y + .15, .019, .008), fontName: "decorative-font" },
+      line("ㄱ. 두 지역은 온도가 다르다.", .10, y + .17, .3, .011),
+      line("① ㄱ", .09, y + .2, .03, .011),
+      line("② ㄴ", .21, y + .2, .03, .011),
+    ];
+    const result = detectProblems([
+      page(31, [...block("01", .1), ...block("02", .53)]),
+      page(35, [...block("01", .1), ...block("02", .53)]),
+    ], [35]);
+    expect(result.map((q) => [q.page, q.number])).toEqual([[31, 1], [31, 2], [35, 1], [35, 2]]);
+    expect(result.every((q) => q.text.includes("ㄱ. 두 지역") && q.text.includes("② ㄴ"))).toBe(true);
+  });
+
+  it("attaches continuing choices on the next page without taking the next question or crossing a chapter", () => {
+    const input = [
+      page(1, [line("7. 다음 중 옳은 것은?", .07, .7), line("① 첫째 선택지", .07, .85), line("② 둘째 선택지", .07, .89)]),
+      page(2, [line("③ 셋째 선택지", .07, .075), line("④ 넷째 선택지", .07, .1), line("8. 새로운 문제", .07, .3)]),
+    ];
+    const result = detectProblems(input);
+    expect(result.map((q) => q.number)).toEqual([7, 8]);
+    expect(result[0].regions.map((r) => r.page)).toEqual([1, 2]);
+    expect(result[0].text).toContain("④ 넷째");
+    expect(result[0].text).not.toContain("8. 새로운");
+    expect(detectProblems(input, [2])[0].regions).toHaveLength(1);
+  });
+
+  it("keeps continued choices above the next question in the right column", () => {
+    const result = detectProblems([page(1, [
+      line("7. 다음 중 옳은 것은?", .07, .5),
+      line("① 첫째 선택지", .07, .8),
+      line("② 둘째 선택지", .07, .85),
+      line("③ 셋째 선택지", .55, .1),
+      line("④ 넷째 선택지", .55, .13),
+      line("8. 새로운 문제", .55, .4),
+    ])]);
+    expect(result.map((q) => q.number)).toEqual([7, 8]);
+    expect(result[0].regions).toHaveLength(2);
+    expect(result[0].regions[1].x).toBeGreaterThan(.4);
+    expect(result[0].text).toContain("④ 넷째");
+    expect(result[0].text).not.toContain("8. 새로운");
+  });
   it('resolves conflicting OCR numbers at the same printed marker using observed neighbours',()=>{
    const body=page(56,[line('272',.51,.1,.05,.015),line('무슨 회의인지 쓰시오.',.51,.125,.35,.01),line('273',.51,.3,.05,.015),line('배경을 서술하시오.',.51,.325,.35,.01),line('274',.51,.5,.05,.015),line('회의의 명칭을 쓰시오.',.51,.525,.35,.01),line('275',.51,.7,.05,.015),line('회의 배경을 서술하시오.',.51,.725,.35,.01)]);
    body.numberMarkers=[{...line('2974',.5105,.5,.05,.015),confidence:.92},{...line('2975',.5105,.7,.05,.015),confidence:.9}];

@@ -1036,22 +1036,24 @@ export function originalReview(
     })
     .sort((a, b) => b.score - a.score)
     .slice(0, 8);
-  const analysis = clone(question.analysis ?? null);
+  const quick = question.wrongReview;
+  const analysis = clone(question.analysis ?? (quick ? { provider: quick.provider, model: quick.model } : null));
   return {
-    concepts,
+    concepts: [...list(quick?.concepts).map((concept, index) => ({ ...concept, id: `review-concept-${index}` })), ...concepts],
     bankScope: { originalId: question.id },
     analysis,
-    answer: question.answer || analysis?.answer || "",
-    explanation: question.explanation || analysis?.explanation || "",
+    answer: quick?.solution?.answer || question.answer || analysis?.answer || "",
+    explanation: quick?.solution?.explanation || question.explanation || analysis?.explanation || "",
     solutionSteps: list(analysis?.solution_steps),
     hasSavedAnalysis: !!(analysis || question.answer || question.explanation),
     memorize: unique([
       ...list(question.memorize),
+      ...list(quick?.memorize),
       ...list(analysis?.memorize),
       ...concepts.flatMap((c) => list(c.memorize)),
     ]),
     bankCounts,
-    questions: relatedBank
+    questions: [...list(quick?.questions).map((item, index) => ({ ...clone(item), id: `review-question-${index}` })), ...relatedBank
       .filter((i) => !i.archived)
       .map((i) =>
         clone({
@@ -1064,7 +1066,7 @@ export function originalReview(
           reviewStatus: i.reviewStatus ?? i.review_status ?? "approved",
           active: approved(i),
         }),
-      ),
+      )],
     similar,
   };
 }

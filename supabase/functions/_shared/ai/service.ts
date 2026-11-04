@@ -157,6 +157,10 @@ export function storeFor(ctx: AuthContext): JobStore {
       return saved ? { id, status, available_at: availableAt, last_error: data.last_error ?? null,provider_error:data.last_provider_error??null } : null;
     }, commit: async (id, token, result) => {
       if(result.standard){const committed=await commitPart(ctx,result.standardJobId,result.standard,true,{id,lease:token});return {...committed,id,status:'completed',review_status:'approved'};}
+      if(result.wrongReview){
+        const status=checked(await ctx.admin.rpc('commit_wrong_review',{p_user_id:ctx.user.id,p_job_id:id,p_lease_token:token,p_result:result.wrongReview}));
+        return status?{id,status}:null;
+      }
       const saved = checked(await ctx.admin.rpc("commit_ai_result", { p_user_id: ctx.user.id, p_job_id: id, p_lease_token: token, p_result: result }));
       if (saved?.committed) return { ...saved, id, status: "completed", review_status: "approved" };
       const current = checked(await ctx.admin.from("ai_jobs").select("id,status,data").eq("user_id", ctx.user.id).eq("id", id).maybeSingle());
@@ -191,10 +195,15 @@ export async function jobAction(raw: Json, ctx: AuthContext, master: string): Pr
     return { jobs: summaries, queued: summaries.filter((job) => job.status !== "completed").length, completed: summaries.filter((job) => job.status === "completed").length, review_status: "needs_review" };
   }
   let job: Job;
-  if (request.action === "status" || request.action === "resume") {
+  if (request.action === "status") {
+    const status = checked(await ctx.admin.from("ai_jobs").select("id,status,attempts,available_at,lease_until,last_error:data->>last_error,provider_error:data->>last_provider_error").eq("user_id", ctx.user.id).eq("id", request.jobId).maybeSingle());
+    if (!status) throw new AiError("job_not_found", 404);
+    return status;
+  }
+  if (request.action === "resume") {
     job = checked(await ctx.admin.from("ai_jobs").select("*").eq("user_id", ctx.user.id).eq("id", request.jobId).maybeSingle());
     if (!job) throw new AiError("job_not_found", 404);
-    if (request.action === "status") return { id: job.id, status: job.status, attempts: job.attempts, available_at: job.available_at, last_error: job.data.last_error ?? null };
+    if (job.kind === "wrong_review") throw new AiError("invalid_request");
     // Current policy always takes precedence over the settings snapshot (especially paid off).
     job.data.settings = settings;
     if (["paused", "failed"].includes(job.status)) {

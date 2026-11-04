@@ -20,10 +20,8 @@ import {
 import { downloadSelectedPdf } from "../services/documents";
 import { edgeCall } from "../services/supabase";
 import "../styles/wrong-workspace.css";
-import ApiPreparationStatus from "../components/ApiPreparationStatus";
 import OriginalAnalysis from "../components/OriginalAnalysis";
 import { prepareWrongAnalysis } from "../services/wrong-analysis";
-import { runPreparedJob } from "../services/content-runner";
 import "../styles/original-analysis.css";
 
 type SavedQuestion = Question & {
@@ -176,7 +174,6 @@ export default function WrongWorkspace({
     const request = autoAnalyzeIds.join(",");
     if (
       !request ||
-      loadingJobs ||
       loadingReview ||
       automaticStarted.current === request ||
       locked.current
@@ -184,7 +181,7 @@ export default function WrongWorkspace({
       return;
     automaticStarted.current = request;
     void act("API 자동 분석", () => startAutomatic(autoAnalyzeIds));
-  }, [autoAnalyzeIds, loadingJobs, loadingReview]);
+  }, [autoAnalyzeIds, loadingReview]);
   useEffect(() => {
     if (!busy.includes("API")) return;
     // The durable runner already polls this job. Keep the display clock local.
@@ -205,6 +202,7 @@ export default function WrongWorkspace({
     const related = (result.jobs || []).filter(
       (item) =>
         item.taskType === "problem" &&
+        item.method !== "api" &&
         item.targetQuestions?.length === 1 &&
         item.targetQuestions[0].id === forId,
     );
@@ -288,34 +286,6 @@ export default function WrongWorkspace({
     setPrompt("");
     setPart(1);
   }
-  async function runApi(current: Job) {
-    const forId = id;
-    stopApi.current = false;
-    if (current.method !== "api" || (current.partSize ?? 20) > 5) {
-      current = await standard<Job>("api_continuation", { jobId: current.id });
-      setJob(current);
-      selectedJob.current = current.id;
-    }
-    const completed = await runPreparedJob(current, {
-      shouldStop: () =>
-        stopApi.current || activeId.current !== forId || !mounted.current,
-      onUpdate: (latest: Job) => {
-        if (mounted.current && activeId.current === forId) {
-          setJob(latest);
-          selectedJob.current = latest.id;
-        }
-      },
-    });
-    await onRefresh();
-    await loadJobs(current.id);
-    if (activeId.current === forId && mounted.current)
-      setMessage(
-        completed.parts?.filter((part) => part.applied).length ===
-          completed.totalParts
-          ? "저장된 결과를 불러왔습니다. 준비된 문항을 바로 학습할 수 있습니다."
-          : "완료된 결과는 보관했습니다. 준비 도구에서 남은 분할과 오류를 확인하고 이어서 실행할 수 있습니다.",
-      );
-  }
   async function startAutomatic(ids: string[]) {
     stopApi.current = false;
     const failures: string[] = [];
@@ -331,44 +301,35 @@ export default function WrongWorkspace({
           `${index + 1}/${ids.length} · ${target.number}번 원본을 분석하고 저장합니다.`,
         );
         try {
-          await prepareWrongAnalysis(target, source, {
-            shouldStop: () => stopApi.current || !mounted.current,
-            onUpdate: (next) => {
-              if (mounted.current) {
-                setJob(next);
-                selectedJob.current = next.id;
-              }
-            },
-          });
-          await onRefresh();
-          if (mounted.current) await loadReview();
+          const completed = await prepareWrongAnalysis(target.id, () => stopApi.current || !mounted.current);
+          if (!completed) break;
+          if (mounted.current && target.id === id) await loadReview();
         } catch (cause) {
           failures.push(`${target.number}번: ${messageOf(cause)}`);
         }
       }
       if (mounted.current) {
-        await loadJobs();
         if (failures.length) setError(failures.join("\n"));
         setMessage(
           stopApi.current
-            ? "완료된 분석은 저장했습니다. 준비 도구에서 이어서 실행할 수 있습니다."
+            ? "완료된 분석은 저장했습니다. 남은 문제는 오답 노트에서 다시 열어 분석할 수 있습니다."
             : failures.length
               ? "완료된 분석은 저장했습니다. 실패한 문제는 다시 분석할 수 있습니다."
               : "저장된 분석을 불러왔습니다. 준비된 추가 문항을 바로 풀 수 있습니다.",
         );
       }
     } finally {
-      onAutoAnalysisComplete?.();
+      if (mounted.current) onAutoAnalysisComplete?.();
     }
   }
-  async function create(method: "api" | "external") {
+  async function createExternal() {
     if (!question || !material)
       throw new Error("원본 자료를 찾을 수 없습니다.");
     const forId = id;
     const created = await standard<Job>("create", {
       documentId: question.materialId,
       taskType: "problem",
-      method,
+      method: "external",
       questionIds: [id],
       selectedPages: pages,
       tocPages: material.tocPages || [],
@@ -395,8 +356,6 @@ export default function WrongWorkspace({
     setJobs((current) => [created, ...current]);
     resetIncoming();
     setPreparationOpen(true);
-    if (method === "api") await runApi(created);
-    else
       setMessage(
         "외부 분석 작업을 준비했습니다. 프롬프트와 원본 PDF를 함께 사용해 주세요.",
       );
@@ -510,16 +469,15 @@ export default function WrongWorkspace({
           다시 풀기
         </Button>
       </header>
-      <ApiPreparationStatus
-        job={job}
-        running={busy.includes("API")}
-        elapsed={apiElapsed}
-        error={busy.includes("API") ? "" : error}
-        onStop={() => {
-          stopApi.current = true;
-          setMessage("현재 요청이 끝나면 완료된 결과를 보관하고 멈춥니다.");
-        }}
-      />
+      {busy.includes("API") && (
+        <div className="ww-feedback" role="status">
+          분석 중 · {apiElapsed}초
+          <Button variant="ghost" size="sm" onClick={() => {
+            stopApi.current = true;
+            setMessage("현재 요청은 서버에서 마무리하고 다음 문제부터 멈춥니다.");
+          }}>다음 분석 멈추기</Button>
+        </div>
+      )}
       <div className="ww-study-layout">
         <aside className="ww-source" aria-label="저장된 원본 문제">
           <div className="ww-source-heading">
@@ -619,18 +577,11 @@ export default function WrongWorkspace({
               </p>
               <div className="ww-actions">
                 <Button
-                  disabled={!!busy || loadingJobs}
-                  busy={busy === "API 분석"}
-                  onClick={() => act("API 분석", () => create("api"))}
-                >
-                  새 API 작업 시작
-                </Button>
-                <Button
                   variant="secondary"
                   disabled={!!busy || loadingJobs}
                   busy={busy === "외부 작업 준비"}
                   onClick={() =>
-                    act("외부 작업 준비", () => create("external"))
+                    act("외부 작업 준비", createExternal)
                   }
                 >
                   새 외부 분석 작업 준비
@@ -842,18 +793,9 @@ export default function WrongWorkspace({
                     ) : null}
                   </section>
                   <p className="ww-import-note">
-                    붙여넣기·검사·등록은 AI API를 호출하지 않습니다. API 결과도
-                    같은 restudy.v1 형식 검사를 거쳐 바로 학습에 사용합니다.
+                    외부에서 준비한 restudy.v1 JSON을 가져오면 등록된 문항을 문제 은행에서 학습할 수 있습니다.
                   </p>
                   <div className="ww-actions">
-                    <Button
-                      variant="ghost"
-                      disabled={!!busy}
-                      busy={busy === "API 작업 실행"}
-                      onClick={() => act("API 작업 실행", () => runApi(job))}
-                    >
-                      현재 작업을 API로 실행·재개
-                    </Button>
                     <Button
                       variant="ghost"
                       onClick={() =>

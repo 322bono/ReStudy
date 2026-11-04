@@ -39,6 +39,7 @@ export function validateRequest(raw: unknown): JobRequest {
 function sources(job: Job, ids: string[]): Json[] { const result = ids.flatMap((id) => job.data.sourceMap?.[id] ?? []); return [...new Map(result.map((source: Json) => [`${source.materialId}:${source.page}`, source])).values()]; }
 export function toCommitResult(job: Job, result: Extract<TaskResult, { status: "succeeded" }>): Json {
   if(job.kind==='restudy_v1')return {standard:result.output,standardJobId:job.data.standardJobId};
+  if(job.kind==='wrong_review')return {wrongReview:{...result.output,provider:result.provider,model:result.model}};
   const provenance = { provider: result.provider, model: result.model, job_id: job.id, generated_at: new Date().toISOString(), review_status: "needs_review" };
   const concepts = (result.output.concepts ?? []).map((concept: Json) => ({ ...concept, misconceptions: concept.misconceptions.map((entry: Json, index: number) => ({ id: `ai-${index + 1}`, ...entry })), sources: sources(job, concept.source_citations), ...provenance }));
   if (job.kind === "analyze_problem") return {

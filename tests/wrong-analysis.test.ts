@@ -1,81 +1,39 @@
-import { beforeEach, expect, test, vi } from "vitest";
-const fixture = vi.hoisted(() => ({
-  reviews: [] as any[],
-  calls: [] as any[],
-  existing: [] as any[],
-  run: vi.fn(),
-}));
-vi.mock("../lib/client", () => ({ api: async () => fixture.reviews.shift() }));
-vi.mock("../src/services/supabase", () => ({
-  edgeCall: async (name: string, body: any) => {
-    fixture.calls.push({ name, ...body });
-    if (body.action === "list") return { jobs: fixture.existing };
-    if (body.action === "get") return fixture.existing[0];
-    return { ...body, id: "created", totalParts: 1, parts: [] };
-  },
-}));
-vi.mock("../src/services/content-runner", () => ({
-  runPreparedJob: fixture.run,
-}));
+import { afterEach, expect, test, vi } from "vitest";
+
+const edgeCall = vi.hoisted(() => vi.fn());
+vi.mock("../src/services/supabase", () => ({ edgeCall }));
 import { prepareWrongAnalysis } from "../src/services/wrong-analysis";
-const question: any = {
-  id: "q",
-  materialId: "doc",
-  number: 47,
-  regions: [{ page: 2 }],
-  imagePaths: ["owner/doc/saved-q.png"],
-};
-const material: any = { id: "doc", tocPages: [1] };
-const options = () => ({ onUpdate: vi.fn(), shouldStop: () => false });
-beforeEach(() => {
-  fixture.reviews = [];
-  fixture.calls = [];
-  fixture.existing = [];
-  fixture.run.mockReset().mockImplementation(async (job) => job);
+
+afterEach(() => {
+  edgeCall.mockReset();
+  vi.useRealTimers();
 });
 
-test("opening a saved analysis reuses it without any generation job or upstream request", async () => {
-  fixture.reviews = [
-    { hasSavedAnalysis: true, analysis: { explanation: "저장된 해설" } },
-  ];
-  expect(
-    await prepareWrongAnalysis(question, material, options()),
-  ).toMatchObject({ reused: true });
-  expect(fixture.calls).toEqual([]);
-  expect(fixture.run).not.toHaveBeenCalled();
+test("cached results finish without polling or creating a content job", async () => {
+  edgeCall.mockResolvedValue({ status: "completed", cached: true });
+  await expect(prepareWrongAnalysis("q", () => false)).resolves.toBe(true);
+  expect(edgeCall.mock.calls).toEqual([["analyze-problem", { action: "wrong_review", problemId: "q" }]]);
 });
-test("first registration creates one single-original job using stored crop pages and saves four-group content", async () => {
-  fixture.reviews = [
-    { hasSavedAnalysis: false },
-    { hasSavedAnalysis: true, concepts: [], memorize: [], questions: [] },
-  ];
-  await prepareWrongAnalysis(question, material, options());
-  expect(fixture.calls.find((call) => call.action === "create")).toMatchObject({
-    taskType: "problem",
-    questionIds: ["q"],
-    selectedPages: [2],
-    questionCount: 5,
-  });
-  expect(fixture.run).toHaveBeenCalledTimes(1);
+
+test("one original is submitted and the leased job is polled until completion", async () => {
+  vi.useFakeTimers();
+  edgeCall.mockResolvedValueOnce({ id: "running", status: "running" }).mockResolvedValueOnce({ status: "completed" });
+  const work = prepareWrongAnalysis("q", () => false);
+  await vi.runAllTimersAsync();
+  await expect(work).resolves.toBe(true);
+  expect(edgeCall.mock.calls).toEqual([
+    ["analyze-problem", { action: "wrong_review", problemId: "q" }],
+    ["analyze-problem", { action: "status", jobId: "running" }],
+  ]);
 });
-test("a previously started original job resumes without creating duplicate content jobs", async () => {
-  fixture.reviews = [{ hasSavedAnalysis: false }, { hasSavedAnalysis: true }];
-  fixture.existing = [
-    {
-      id: "existing",
-      method: "api",
-      taskType: "problem",
-      totalParts: 1,
-      targetQuestions: [{ id: "q" }],
-    },
-  ];
-  await prepareWrongAnalysis(question, material, options());
-  expect(fixture.calls.some((call) => call.action === "create")).toBe(false);
-  expect(fixture.run.mock.calls[0][0].id).toBe("existing");
+
+test("a stopped view leaves a running server job to finish without further polling", async () => {
+  edgeCall.mockResolvedValue({ id: "running", status: "running" });
+  await expect(prepareWrongAnalysis("q", () => true)).resolves.toBe(false);
+  expect(edgeCall).toHaveBeenCalledTimes(1);
 });
-test("a paused API failure is reported instead of presenting an empty analysis as success", async () => {
-  fixture.reviews = [{ hasSavedAnalysis: false }, { hasSavedAnalysis: false }];
-  await expect(
-    prepareWrongAnalysis(question, material, options()),
-  ).rejects.toThrow("분석을 완료하지 못했습니다");
+
+test("a paused API failure is reported without pretending an analysis was saved", async () => {
+  edgeCall.mockResolvedValue({ status: "paused", last_error: "invalid_response", available_at: new Date(Date.now() + 60_000).toISOString() });
+  await expect(prepareWrongAnalysis("q", () => false)).rejects.toThrow("JSON 구조와 맞지 않아");
 });
