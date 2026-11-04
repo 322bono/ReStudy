@@ -2,6 +2,14 @@ import {parseRestudy,RestudySchema,RestudyJSONSchema}from'../../../../src/domain
 export type TaskKind = "analyze_problem" | "generate_questions" | "generate_material" | "restudy_v1" | "wrong_review";
 export type Json = Record<string, any>;
 const schemaFields=new Set<string>();
+export function unreadableWrongReview(raw: unknown): boolean {
+  if (raw === null) return true;
+  if (!raw || typeof raw !== "object" || !("solution" in raw)) return false;
+  const solution = raw.solution as Json | null;
+  if (solution === null || solution?.answer === null) return true;
+  return typeof solution?.answer === "string" &&
+    /^(?:null|unknown|n\/?a|판독\s*불가|확인\s*불가|알\s*수\s*없음|답을\s*구할\s*수\s*없음)[.。]?$/i.test(solution.answer.trim());
+}
 function collectSchemaFields(value:any){if(!value||typeof value!=='object')return;for(const [key,entry]of Object.entries(value)){if(key==='properties'&&entry&&typeof entry==='object')for(const field of Object.keys(entry))schemaFields.add(field);if(Array.isArray(entry))entry.forEach(collectSchemaFields);else collectSchemaFields(entry);}}
 collectSchemaFields(RestudyJSONSchema);
 /** Schema field names, array indices and counts only; never provider values,
@@ -42,6 +50,7 @@ export function validateOutput(kind: TaskKind, raw: unknown, sourceIds: string[]
   if(kind==='restudy_v1'){const parsed=parseRestudy(raw);if(parsed.questions.length!==count)invalid();return parsed;}
   const value = object(raw);
   if (kind === "wrong_review") {
+    if (unreadableWrongReview(value)) invalid();
     const solution = object(value.solution);
     const concepts = list(value.concepts, 5).map((entry) => {
       const concept = object(entry);

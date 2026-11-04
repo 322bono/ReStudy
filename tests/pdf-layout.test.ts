@@ -232,6 +232,21 @@ describe("evidence-based question crops", () => {
     expect(result[0].regions[0].w).toBeGreaterThan(0.9);
   });
 
+  it("links a spaced pipe-delimited passage and stops before an unindexed next passage", () => {
+    const result = detectProblems([page(78, [
+      line("| 382~383 |", .51, .14, .08, .01),
+      line("두 문항의 공통 자료", .51, .2, .28, .012),
+      line("382. 원인을 쓰시오.", .51, .37),
+      line("383. 정책을 서술하시오.", .51, .47),
+      line("| 384~385 |", .51, .57, .08, .01),
+      line("다른 문항의 그래프", .51, .62),
+    ])]);
+    expect(result.map((q) => q.number)).toEqual([382, 383]);
+    expect(result[1].regions).toHaveLength(2);
+    expect(result[1].text).toContain("두 문항의 공통 자료");
+    expect(result[1].text).not.toContain("다른 문항의 그래프");
+  });
+
   it("retains a shared passage across adjacent pages only within its explicit number range", () => {
     const result = detectProblems([
       page(1, [

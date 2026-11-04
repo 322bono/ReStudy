@@ -13,6 +13,13 @@ function context(rotationIndex = 0, providers = [state()], transport?: typeof fe
 }
 
 describe('durable no-charge routing', () => {
+  it('reports unreadable source instead of saving a null answer or cooling a healthy model', async () => {
+    const transport = vi.fn(async () => response({ solution: { answer: "null" } }));
+    const ctx = context(0, [state()], transport as typeof fetch);
+    expect(await runTask({ ...input, kind: "wrong_review" }, ctx)).toMatchObject({ status: "paused", lastError: "source_incomplete" });
+    expect(transport).toHaveBeenCalledTimes(1);
+    expect(ctx.events).toEqual([expect.objectContaining({ success: false, error: "source_incomplete" })]);
+  });
   it('switches models after invalid structured output instead of repeating the same costly generation',async()=>{
     const seen:string[]=[];
     const ctx=context(0,[state()],(async url=>{seen.push(String(url));return String(url).includes(primary)?response({questions:[]}):response();})as typeof fetch);

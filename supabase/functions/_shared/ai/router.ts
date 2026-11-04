@@ -1,7 +1,7 @@
 import type { Provider } from "./crypto.ts";
 import { modelFor,generationContractVersion,isGenerationModel,generationModelRank } from "./catalog.ts";
 import { generate, validateProviderInput, ProviderError, type ImageInput } from "./providers.ts";
-import { validateOutput,validationMetadata, type TaskKind, type Json } from "./schemas.ts";
+import { unreadableWrongReview, validateOutput,validationMetadata, type TaskKind, type Json } from "./schemas.ts";
 export type Mode = "round_robin" | "nvidia_first" | "gemini_first" | "nvidia_only" | "gemini_only";
 export type ProviderState = { provider: Provider; enabled: boolean; model: string; access: "unknown" | "free_confirmed" | "paid"; status: string; cooldown_until?: string; credentialId?:string; label?:string; quotaGroup?:string; selectedModels?:string[]; modelStates?:Record<string,Json>; quotaCooldowns?:Record<string,string>; [key: string]: unknown };
 export type TaskInput = { kind: TaskKind; prompt: string; sourceIds: string[]; count?: number; images?: ImageInput[]; types?: string[]; difficulty?: string;allowedPages?:number[] };
@@ -68,6 +68,10 @@ export async function runTask(input: TaskInput, context: RouterContext): Promise
       let successful: Extract<TaskResult, { status: "succeeded" }> | undefined;
       try {
         const response = await generate(provider, model.id, key, input, context.fetch ?? fetch, now(),inferenceTimeout);
+        if (input.kind === "wrong_review" && unreadableWrongReview(response.raw)) {
+          await context.log({ provider,credential_id:state.credentialId,key_label:state.label, model:model.id, kind:input.kind, success:false, attempt:attempt+1, duration_ms:Math.max(0,now()-start), error:"source_incomplete" });
+          return { status: "paused", reason: "all_providers_failed", lastError: "source_incomplete" };
+        }
         let output: Json;
         try { output = validateOutput(input.kind, response.raw, input.sourceIds, input.count); } catch { throw new ProviderError("invalid_response",undefined,undefined,'group','output_schema_invalid',{...response.metadata,schema:validationMetadata(input.kind,response.raw,input.count)}); }
         if(input.kind==='restudy_v1'&&input.allowedPages&&(output.questions.some((q:Json)=>q.source_pages.some((n:number)=>!input.allowedPages!.includes(n)))||output.problem_analyses.some((q:Json)=>!input.allowedPages!.includes(q.pdf_page))))throw new ProviderError('invalid_response');

@@ -549,7 +549,7 @@ const NUMBER =
 const BARE = /^\s*(\d{1,4})\s*$/;
 const NUMERIC_CELL = /^\s*\d+[.)．]?\s*$/;
 const RANGE =
-  /^(?:\s*[\[［【(（|｜]|\s*(?:Questions?|문항)\s+)(\d{1,4})\s*[~～\-–—]\s*(\d{1,4})\s*[\]］】)）|｜]?/i;
+  /^(?:\s*[\[［【(（|｜]|\s*(?:Questions?|문항)\s+)\s*(\d{1,4})\s*[~～\-–—]\s*(\d{1,4})\s*[\]］】)）|｜]?/i;
 const ANSWERS =
   /^\s*(?:정답\s*(?:(?:과|및|[·ㆍ/])\s*해설|해설)?|빠른\s*정답|해답|해설(?:지)?|정답표|Answers?(?:\s*(?:key|sheet))?|Solutions?(?:\s+(?:and\s+)?(?:answers?|explanations?))?)(?:\s*[:：-].*|\s*\d+|\s*)$/i;
 const ANSWER_ENTRY =
@@ -811,6 +811,7 @@ function detectPage(layout: Layout, badgeStyles: Set<string>): ProblemCandidate[
   layout.anchors = findAnchors(layout.lines, badgeStyles);
   layout.lines=layout.lines.filter(line=>{const parsed=marker(line);return !parsed||!layout.anchors.some(a=>a.number!==parsed.number&&Math.abs(a.line.x-line.x)<.025&&Math.abs(a.line.y-line.y)<Math.max(.009,Math.min(a.line.height,line.height)*.8));});
   columns(layout);
+  const rangeStarts: { column: number; top: number }[] = [];
   for (const line of layout.lines) {
     const match = RANGE.exec(line.text);
     if (
@@ -824,6 +825,7 @@ function detectPage(layout: Layout, badgeStyles: Set<string>): ProblemCandidate[
       0,
       layout.columns.findIndex(([l, r]) => line.x >= l && line.x < r),
     );
+    rangeStarts.push({ column, top: line.y });
     const members = layout.anchors.filter(
       (a) =>
         a.number >= +match[1] && a.number <= +match[2] && a.line.y > line.y,
@@ -861,7 +863,7 @@ function detectPage(layout: Layout, badgeStyles: Set<string>): ProblemCandidate[
       )
       .map((a) => a.line.y);
     after.push(
-      ...layout.shared
+      ...rangeStarts
         .filter((s) => s.column === anchor.column && s.top > anchor.line.y)
         .map((s) => s.top),
     );

@@ -28,6 +28,7 @@ it("requests only the four review sections and sends all saved image regions", a
   }, transport as typeof fetch, 0);
   expect(validateOutput("wrong_review", reply.raw, [])).toEqual(result);
   expect(() => validateOutput("wrong_review", { ...result, questions: [] }, [])).toThrow();
+  expect(() => validateOutput("wrong_review", { ...result, solution: { ...result.solution, answer: "null" } }, [])).toThrow();
 });
 
 it("reveals saved review and additional questions without concept-bank IDs", () => {
