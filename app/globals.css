@@ -1621,16 +1621,17 @@ label > input + small {
   height: auto;
   min-height: 60px;
 }
-.drawing-paper svg {
+.drawing-paper > svg {
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
   pointer-events: none;
 }
-.drawing-paper svg.pen-active {
-  pointer-events: auto;
+.drawing-paper.pen-active {
   touch-action: none;
+  user-select: none;
+  -webkit-touch-callout: none;
   cursor: crosshair;
 }
 .solve-footer {

@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const mocked = vi.hoisted(() => ({ db: null as any, user: "11111111-1111-4111-8111-111111111111",edgeCall:vi.fn(),openPdf: vi.fn(), preparePage: vi.fn(),prepareNumberMarkers:vi.fn(),renderRegions: vi.fn(), detectProblems: vi.fn(), closeOcr: vi.fn() }));
-vi.mock("../src/services/supabase", () => ({ getSupabase: () => mocked.db,edgeCall:mocked.edgeCall,currentUser: async () => ({ id: mocked.user }) }));
+const mocked = vi.hoisted(() => ({ db: null as any, user: "11111111-1111-4111-8111-111111111111",currentUser:vi.fn(),edgeCall:vi.fn(),openPdf: vi.fn(), preparePage: vi.fn(),prepareNumberMarkers:vi.fn(),renderRegions: vi.fn(), detectProblems: vi.fn(), closeOcr: vi.fn() }));
+vi.mock("../src/services/supabase", () => ({ getSupabase: () => mocked.db,edgeCall:mocked.edgeCall,currentUser: mocked.currentUser }));
 vi.mock("../src/features/pdf/processor", () => ({ openPdf: mocked.openPdf, preparePage: mocked.preparePage,prepareNumberMarkers:mocked.prepareNumberMarkers,NUMBER_LAYER_VERSION:'test-number-layer',renderRegions: mocked.renderRegions, detectProblems: mocked.detectProblems, closeOcr: mocked.closeOcr }));
 import { PDF_ENGINE_VERSION, PDF_LAYOUT_VERSION, pauseMaterial, resumeMaterial, resumePending, saveQuestion, uploadMaterials } from "../src/services/documents";
 
@@ -10,19 +10,20 @@ function database() {
   const tables: Record<string, Row[]> = { documents: [], document_pages: [], problems: [], problem_regions: [] };
   const files = new Map<string, Blob>();
   const uploads: string[] = [];
+  const reads: { table: string; selection: string; single: boolean }[] = [];
   let clock = 0;
   let authChanged: ((event: string, session: any) => void) | undefined;
   let failUpload: boolean | ((path: string) => boolean) = false;
   const db: any = {
-    tables, files, uploads, failUploads: (predicate?: (path: string) => boolean) => { failUpload = predicate || true; }, resumeUploads: () => { failUpload = false; },
+    tables, files, uploads, reads, failUploads: (predicate?: (path: string) => boolean) => { failUpload = predicate || true; }, resumeUploads: () => { failUpload = false; },
     auth: { onAuthStateChange: (callback: typeof authChanged) => { authChanged = callback; return { data: { subscription: { unsubscribe: () => {} } } }; } },
     signOut: () => authChanged?.("SIGNED_OUT", null),
     from(table: string) {
-      let operation = "read", values: any, single = false;
+      let operation = "read", values: any, single = false, selection = "*";
       const predicates: ((r: Row) => boolean)[] = [];
       let start = 0, end = Infinity;
       const query: any = {
-        select: () => query, eq: (key: string, value: any) => { predicates.push((r) => r[key] === value); return query; },
+        select: (columns = "*") => { selection = columns; return query; }, eq: (key: string, value: any) => { predicates.push((r) => r[key] === value); return query; },
         in: (key: string, value: any[]) => { predicates.push((r) => value.includes(r[key])); return query; },
         order: () => query, limit: (count: number) => { end = count - 1; return query; },
         range: (a: number, b: number) => { start = a; end = b; return query; },
@@ -33,6 +34,7 @@ function database() {
           return Promise.resolve().then(() => {
             const list = tables[table] ||= [];
             let rows = list.filter((r) => predicates.every((p) => p(r)));
+            if (operation === "read") reads.push({ table, selection, single });
             if (operation === "insert") {
               const pending = Array.isArray(values) ? values : [values];
               for (const value of pending) {
@@ -44,6 +46,11 @@ function database() {
               for (const row of rows) Object.assign(row, structuredClone(values), { updated_at: String(++clock) });
             }
             rows = rows.slice(start, end + 1);
+            if (selection !== "*") rows = rows.map((row) => Object.fromEntries(selection.split(",").map((column) => {
+              const [key, field = key] = column.split(":");
+              const nested = /^data->>?(.+)$/.exec(field);
+              return [key, nested ? row.data?.[nested[1]] : row[field]];
+            })));
             return { data: structuredClone(single ? rows[0] ?? null : rows), error: null };
           }).then(resolve, reject);
         },
@@ -91,6 +98,7 @@ function seedPage(number: number, extra: Row = {}) {
 beforeEach(() => {
   mocked.db = database();
   vi.clearAllMocks();
+  mocked.currentUser.mockResolvedValue({ id: mocked.user });
   mocked.openPdf.mockResolvedValue({ numPages: 2, loadingTask: { destroy: vi.fn(async () => {}) } });
   mocked.preparePage.mockImplementation(async (_pdf, n) => prepared(n));
   mocked.prepareNumberMarkers.mockResolvedValue([]);
@@ -102,6 +110,14 @@ beforeEach(() => {
 const finished = () => vi.waitFor(() => expect(["needs_review", "ready", "error"]).toContain(mocked.db.tables.documents[0].status));
 
 describe("private browser document checkpoints", () => {
+  it("reuses the downloaded OCR checkpoint rows and checks the job lease with small responses", async () => {
+    seedDoc(); seedPage(1); seedPage(2);
+    await resumeMaterial(DOC); await finished();
+    expect(mocked.db.tables.documents[0].status).toBe("needs_review");
+    expect(mocked.currentUser).toHaveBeenCalledTimes(1);
+    expect(mocked.db.reads.filter((read: any) => read.table === "document_pages" && !read.single)).toHaveLength(1);
+    expect(mocked.db.reads.some((read: any) => read.table === "documents" && read.selection.includes("processingToken"))).toBe(true);
+  });
   it("stores and reopens a PDF above 50MiB through private parts without changing its bytes", async () => {
     const bytes = new Uint8Array(51 * 1024 * 1024);
     bytes.set(new TextEncoder().encode("%PDF-1.4 large"));
@@ -148,6 +164,34 @@ describe("private browser document checkpoints", () => {
     expect(mocked.db.tables.problems[0]).toMatchObject({id:Q,data:{text:'원본',answer:'3',layoutVersion:PDF_LAYOUT_VERSION}});
     expect(mocked.db.tables.problem_regions[0].image_path).toBe(path);
     expect(mocked.db.tables.problems[0].data.revision).not.toBe('old');
+  });
+
+  it("adds the shared crop to matching legacy IDs without rewriting a different crop", async () => {
+    seedDoc(); seedPage(1); seedPage(2);
+    const ids = [Q, crypto.randomUUID(), crypto.randomUUID()];
+    const otherRegion = { ...region, x: .16 };
+    for (const [index, id] of ids.entries()) {
+      const oldRegion = index === 2 ? otherRegion : region;
+      mocked.db.tables.problems.push({
+        id, user_id: mocked.user, document_id: DOC, number: 17, page: 1, updated_at: 'old',
+        data: { regions: [oldRegion], source: "text", answer: String(index), revision: "old" },
+      });
+      mocked.db.tables.problem_regions.push({
+        id: crypto.randomUUID(), user_id: mocked.user, problem_id: id,
+        part: 0, page: 1, image_path: `${mocked.user}/${DOC}/${id}.png`, data: oldRegion,
+      });
+    }
+    const shared = { ...region, y: .01, h: .06 };
+    const candidate = { number: 17, page: 1, unit: "", text: "공통 그래프와 본문", regions: [shared, region], confidence: .7, source: "text", sharedRegionCount: 1 };
+    mocked.detectProblems.mockReturnValue([candidate]);
+    mocked.renderRegions.mockImplementation(async (_pdf, regions) => regions.map(() => new Blob(["crop"])));
+    await resumeMaterial(DOC); await finished();
+    for (const [index, id] of ids.slice(0, 2).entries()) {
+      expect(mocked.db.tables.problems.find((q) => q.id === id)).toMatchObject({
+        id, data: { regions: [shared, region], answer: String(index), sharedRegionCount: 1 },
+      });
+    }
+    expect(mocked.db.tables.problems.find((q) => q.id === ids[2])?.data.regions).toEqual([otherRegion]);
   });
   it("preflights every file before any DB or storage persistence", async () => {
     const form = new FormData(); form.set("subject", "수학"); form.set("kind", "문제집");

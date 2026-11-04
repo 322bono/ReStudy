@@ -298,6 +298,33 @@ describe("evidence-based question crops", () => {
     expect(next.sharedRegionCount).toBe(0);
   });
 
+  it.each([
+    { pageNumber: 84, x: .51860, first: 411, last: 413, digitWidth: .01949 },
+    { pageNumber: 85, x: .09302, first: 414, last: 415, digitWidth: .02289 },
+  ])("links the entire graph to $first–$last when narrow digits split the heading", ({ pageNumber, x, first, last, digitWidth }) => {
+    const y = .06749;
+    const endX = x + .01827 + digitWidth;
+    const graphBottom = .26189;
+    const result = detectProblems([page(pageNumber, [
+      line("[", x, y, .00606, .01105),
+      line(String(first), x + .00667, y, digitWidth, .01105),
+      line("~", x + .00728 + digitWidth, y, .01099, .01105),
+      line(String(last), endX + .00061, y, .02289, .01105),
+      line("] 빈출 자료", endX + .02411, y, .07822, .01105),
+      line("위 그래프를 읽고 물음에 답하시오.", x, .08785, .35, .01128),
+      line("시기", x + .31, .25361, .020, .00828),
+      ...Array.from({ length: last - first + 1 }, (_, i) =>
+        line(`${first + i}. 위 그래프에 대한 설명으로 옳은 것은?`, x, .275 + i * .21)),
+    ])]);
+    expect(result.map(q => q.number)).toEqual(Array.from({ length: last - first + 1 }, (_, i) => first + i));
+    for (const question of result) {
+      expect(question.sharedRegionCount).toBe(1);
+      expect(question.regions[0]).toEqual(result[0].regions[0]);
+      expect(question.regions[0].y + question.regions[0].h).toBeGreaterThan(graphBottom);
+      expect(question.text).toContain("시기");
+    }
+  });
+
   it("retains a shared passage across adjacent pages only within its explicit number range", () => {
     const result = detectProblems([
       page(1, [

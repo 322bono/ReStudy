@@ -6,7 +6,7 @@ function cacheDatabase(initial:any){
   get:(key:string)=>{const req:any={};queueMicrotask(()=>{req.result=entries.get(key);req.onsuccess?.();finish()});return req;},
   put:(value:any)=>{writes.push(value);entries.set(value.key,value);finish();},
   delete:(key:string)=>{entries.delete(key);finish();},
-  getAll:()=>{const req:any={};queueMicrotask(()=>{req.result=[...entries.values()];req.onsuccess?.();finish()});return req;}
+  index:()=>({openKeyCursor:()=>{const req:any={},all=[...entries.values()].sort((a,b)=>a.usedAt-b.usedAt);let i=0;const advance=()=>queueMicrotask(()=>{const entry=all[i++];req.result=entry?{key:[entry.usedAt,entry.bytes],primaryKey:entry.key,continue:advance}:null;req.onsuccess?.();if(!entry)finish();});advance();return req;}}),
  };tx.objectStore=()=>store;return tx;}};
  vi.stubGlobal('indexedDB',{open:()=>{const req:any={result:db};queueMicrotask(()=>req.onsuccess?.());return req;}});
  return{entries,writes};

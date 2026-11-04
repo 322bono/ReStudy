@@ -20,7 +20,7 @@ import{mergeRegions,splitRegions}from'../domain/problem-regions';
 import { downloadPrivateFile, uploadPrivateFile } from "./private-files";
 
 export const PDF_ENGINE_VERSION = "browser-pdf-2026-11-01-v1";
-export const PDF_LAYOUT_VERSION = "local-layout-2026-11-04-v6";
+export const PDF_LAYOUT_VERSION = "local-layout-2026-11-05-v7";
 const BUCKET = "study-files",
   MAX_PAGES = 500;
 type Row = Record<string, any>;
@@ -147,24 +147,29 @@ async function patchDocument(
       .eq("user_id", ctx.user.id)
       .eq("id", id)
       .eq("updated_at", row.updated_at)
-      .select("*")
+      .select(job ? "id" : "*")
       .maybeSingle();
     if (error) throw failure("자료의 진행 상태를 저장하지 못했습니다.");
     if (data) return data;
   }
   throw failure("자료가 다른 화면에서 변경되었습니다. 다시 시도해 주세요.");
 }
-async function ensureJob(ctx: Context, job: Job): Promise<Row> {
-  if (job.controller.signal.aborted || (await currentUser()).id !== ctx.user.id)
-    throw cancelled();
-  const doc = (await one(ctx, "documents", job.id))!;
+async function ensureJob(ctx: Context, job: Job): Promise<void> {
+  if (job.controller.signal.aborted) throw cancelled();
+  const { data, error } = await ctx.db.from("documents")
+    .select("paused:data->paused,archived:data->archived,processingToken:data->>processingToken")
+    .eq("user_id", ctx.user.id)
+    .eq("id", job.id)
+    .maybeSingle();
+  if (error) throw failure("자료의 처리 상태를 확인하지 못했습니다.");
   if (
-    doc.data.paused ||
-    doc.data.archived ||
-    doc.data.processingToken !== job.token
+    job.controller.signal.aborted ||
+    !data ||
+    data.paused ||
+    data.archived ||
+    data.processingToken !== job.token
   )
     throw cancelled();
-  return doc;
 }
 async function upload(ctx: Context, path: string, blob: Blob): Promise<void> {
   const { error } = await ctx.db.storage
@@ -742,6 +747,7 @@ async function runDocument(ctx: Context, job: Job): Promise<void> {
       "document_id",
       job.id,
     );
+    const pagesByNumber = new Map(previousPages.map((page) => [page.number, page]));
     const selected = Array.isArray(starting.data.selectedPages)
       ? starting.data.selectedPages
       : Array.from({ length: pdf.numPages }, (_, i) => i + 1);
@@ -753,13 +759,14 @@ async function runDocument(ctx: Context, job: Job): Promise<void> {
     for (const [position, number] of targetPages.entries()) {
       await ensureJob(ctx, job);
       job.page = number;
-      const old = previousPages.find((r) => r.number === number);
+      const old = pagesByNumber.get(number);
       if (cachedPage(old, job.force || job.retryPage===number || textbook && old?.data.preparationPurpose !== "textbook")) {
         ownPath(ctx, job.id, old.image_path);
         if(!old.data.ocrIndex||!textbook&&old.data.source==='ocr'&&old.data.numberLayerVersion!==NUMBER_LAYER_VERSION){
           await patchDocument(ctx,job.id,{message:old.data.source==='ocr'?`PDF ${number}쪽 · 저장된 본문을 재사용하고 숫자 영역만 보완 인식합니다.`:`PDF ${number}쪽 · 저장된 페이지의 좌표 인덱스를 정리합니다.`},undefined,job);
           const numberMarkers=!textbook&&old.data.source==='ocr'&&old.data.numberLayerVersion!==NUMBER_LAYER_VERSION?await prepareNumberMarkers(pdf,number):old.data.numberMarkers??[];
-          await pageCheckpoint(ctx,job,{...preparedFromRow(old),numberMarkers,numberLayerVersion:NUMBER_LAYER_VERSION},old.image_path);
+          const saved = await pageCheckpoint(ctx,job,{...preparedFromRow(old),numberMarkers,numberLayerVersion:NUMBER_LAYER_VERSION},old.image_path);
+          pagesByNumber.set(number, saved);
         }
         continue;
       }
@@ -782,7 +789,8 @@ async function runDocument(ctx: Context, job: Job): Promise<void> {
       await ensureJob(ctx, job);
       const imagePath = `${ctx.user.id}/${job.id}/pages/${number}/${crypto.randomUUID()}.png`;
       await upload(ctx, imagePath, prepared.image);
-      await pageCheckpoint(ctx, job, prepared, imagePath);
+      const saved = await pageCheckpoint(ctx, job, prepared, imagePath);
+      pagesByNumber.set(number, saved);
       await patchDocument(
         ctx,
         job.id,
@@ -797,7 +805,7 @@ async function runDocument(ctx: Context, job: Job): Promise<void> {
       );
     }
     job.page = undefined;
-    const pages = await list(ctx, "document_pages", "document_id", job.id);
+    const pages = [...pagesByNumber.values()];
     const prepared = pages
       .filter((p) => targetPages.includes(p.number))
       .sort((a, b) => a.number - b.number)
@@ -817,20 +825,41 @@ async function runDocument(ctx: Context, job: Job): Promise<void> {
     const existing = await list(ctx, "problems", "document_id", job.id),
       used = new Set<string>(),
       occurrences = new Map<string, number>();
-    let runStart: number | undefined;
-    for (let index = 0; index < candidates.length; index++) {
-      const candidate = candidates[index],
-        key = `${candidate.page}:${candidate.number}`,
-        occurrence = occurrences.get(key) ?? 0;
+    const location = (item: { page: number; number: number }) => `${item.page}:${item.number}`;
+    const existingByLocation = new Map<string, Row[]>();
+    const candidateCounts = new Map<string, number>();
+    for (const row of existing) {
+      const key = location({ page: row.page, number: row.number });
+      existingByLocation.set(key, [...(existingByLocation.get(key) ?? []), row]);
+    }
+    for (const candidate of candidates) {
+      const key = location(candidate);
+      candidateCounts.set(key, (candidateCounts.get(key) ?? 0) + 1);
+    }
+    const targets = candidates.flatMap((candidate, index) => {
+      const key = location(candidate);
+      const occurrence = occurrences.get(key) ?? 0;
       occurrences.set(key, occurrence + 1);
-      await ensureJob(ctx, job);
-      const old = existing.find(
-        (q) =>
-          !used.has(q.id) &&
-          q.number === candidate.number &&
-          q.page === candidate.page,
-      );
+      const matches = existingByLocation.get(key) ?? [];
+      const old = matches.find((row) => !used.has(row.id) && !row.data.autoRetired) ??
+        matches.find((row) => !used.has(row.id));
       if (old) used.add(old.id);
+      const primary = { candidate, index, occurrence, old };
+      if (!old || !candidate.sharedRegionCount || candidateCounts.get(key) !== 1 ||
+          old.data.confirmed || old.data.source === "manual") return [primary];
+
+      // Older index versions may have retained the very same printed body under
+      // another ID. Update both crops, since either ID can own a wrong-note entry.
+      const body = old.data.regions?.slice(old.data.sharedRegionCount ?? 0);
+      const aliases = matches.filter((row) => !used.has(row.id) && !row.data.autoRetired &&
+        !row.data.confirmed && row.data.source !== "manual" && !row.data.mergedInto &&
+        body?.length && sameRegions(row.data.regions?.slice(row.data.sharedRegionCount ?? 0), body));
+      for (const alias of aliases) used.add(alias.id);
+      return [primary, ...aliases.map((alias) => ({ ...primary, old: alias }))];
+    });
+    let runStart: number | undefined;
+    for (const [position, { candidate, index, occurrence, old }] of targets.entries()) {
+      await ensureJob(ctx, job);
       const id =
         old?.id ||
         (await stableProblemId(
@@ -896,8 +925,8 @@ async function runDocument(ctx: Context, job: Job): Promise<void> {
         {
           progress:
             70 +
-            Math.floor(((index + 1) / Math.max(1, candidates.length)) * 29),
-          message: `${index + 1}/${candidates.length}개 문항 후보의 모든 원본 영역을 저장했습니다.`,
+            Math.floor(((position + 1) / targets.length) * 29),
+          message: `${position + 1}/${targets.length}개 문항 후보의 모든 원본 영역을 저장했습니다.`,
         },
         undefined,
         job,

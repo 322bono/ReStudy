@@ -18,6 +18,10 @@ export function SecureImage({
   onFailure?: (error: Error) => void;
 }) {
   const version = useSyncExternalStore(subscribeAssetCache, assetCacheVersion);
+  const [nearViewport, setNearViewport] = useState(false);
+  const placeholder = useRef<HTMLSpanElement>(null);
+  const waitForViewport = props.loading === "lazy" && !nearViewport &&
+    typeof IntersectionObserver !== "undefined";
   const [asset, setAsset] = useState({
     path: "",
     version: -1,
@@ -27,6 +31,18 @@ export function SecureImage({
   const failureRef = useRef(onFailure);
   failureRef.current = onFailure;
   useEffect(() => {
+    if (!waitForViewport || !placeholder.current) return;
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) {
+        observer.disconnect();
+        setNearViewport(true);
+      }
+    }, { rootMargin: "250px" });
+    observer.observe(placeholder.current);
+    return () => observer.disconnect();
+  }, [waitForViewport]);
+  useEffect(() => {
+    if (waitForViewport) return;
     let alive = true;
     let lease: AssetLease | undefined;
     acquireImageAsset(path)
@@ -48,7 +64,7 @@ export function SecureImage({
       alive = false;
       lease?.release();
     };
-  }, [path, version]);
+  }, [path, version, waitForViewport]);
   const current = asset.path === path && asset.version === version;
   const url = current ? asset.url : "",
     failed = current && asset.failed;
@@ -67,7 +83,7 @@ export function SecureImage({
   ) : props.hidden ? null : failed ? (
     <span role="status">원본을 열 수 없습니다</span>
   ) : (
-    <span className="asset-loading" role="status">
+    <span ref={placeholder} className="asset-loading" role="status">
       원본 준비 중…
     </span>
   );

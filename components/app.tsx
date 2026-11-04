@@ -31,6 +31,7 @@ import { Solve } from "./solve";
 import { StudyPlayer, StudySetup } from "./learning";
 import { ContentManager } from "./content-manager";
 import { materialProgress } from "../src/services/api";
+import { createWrongAnalysisQueue, type WrongAnalysisProgress } from "../src/services/wrong-analysis";
 const MaterialWorkspace = lazy(() => import("../src/pages/MaterialWorkspace"));
 const Bank = lazy(() => import("../src/pages/Bank"));
 const WrongWorkspace = lazy(() => import("../src/pages/WrongWorkspace"));
@@ -76,8 +77,10 @@ const viewFromUrl = (): View => {
   };
 };
 export default function RestudyApp({
+  userId,
   onSettings,
 }: {
+  userId: string;
   onSettings?: () => void;
 }) {
   const [state, setState] = useState<AppState>(),
@@ -111,7 +114,43 @@ export default function RestudyApp({
       document.removeEventListener("keydown", escape);
     };
   }, [moreOpen]);
-  const [automaticWrongIds, setAutomaticWrongIds] = useState<string[]>([]);
+  const [wrongAnalysis, setWrongAnalysis] = useState<WrongAnalysisProgress>();
+  const wrongQueue = useRef<ReturnType<typeof createWrongAnalysisQueue> | null>(null);
+  const restoredWrongQueue = useRef(false);
+  const wrongQueueKey = `restudy.wrong-analysis:${userId}`;
+  useEffect(() => {
+    const queue = createWrongAnalysisQueue((progress) => {
+      setWrongAnalysis(progress);
+      const ids = progress.currentId
+        ? [progress.currentId, ...progress.pendingIds]
+        : progress.pendingIds;
+      try {
+        if (ids.length) sessionStorage.setItem(wrongQueueKey, JSON.stringify(ids));
+        else sessionStorage.removeItem(wrongQueueKey);
+      } catch {
+        // The current app session can still run the queue without browser storage.
+      }
+    });
+    wrongQueue.current = queue;
+    return () => {
+      queue.dispose();
+      wrongQueue.current = null;
+    };
+  }, [wrongQueueKey]);
+  useEffect(() => {
+    if (!state || restoredWrongQueue.current) return;
+    restoredWrongQueue.current = true;
+    try {
+      const saved: unknown = JSON.parse(sessionStorage.getItem(wrongQueueKey) || "[]");
+      if (!Array.isArray(saved) || !saved.length) return;
+      const active = new Set(state.mistakes.filter((mistake) => !mistake.resolved).map((mistake) => mistake.questionId));
+      const ids = saved.filter((id): id is string => typeof id === "string" && active.has(id));
+      if (ids.length) wrongQueue.current?.enqueue(ids);
+      else sessionStorage.removeItem(wrongQueueKey);
+    } catch {
+      // Ignore unavailable storage or invalid saved data.
+    }
+  }, [state, wrongQueueKey]);
   const returnView = useRef<View>({ name: "materials" });
   const bankReturn = useRef<View>({ name: "study" });
   const notify = useCallback((message: string) => setToast(message), []);
@@ -185,7 +224,7 @@ export default function RestudyApp({
   const registeredWrong = (ids: string[], autoAnalyzeIds: string[]) => {
     if (!ids.length) return;
     setAddMistakes(false);
-    setAutomaticWrongIds(autoAnalyzeIds);
+    wrongQueue.current?.enqueue(autoAnalyzeIds);
     navigate({ name: "wrong", id: ids[0] });
   };
   const run = async (label: string, fn: () => Promise<void>) => {
@@ -249,6 +288,16 @@ export default function RestudyApp({
     .slice(0, 3);
   const ongoing = state.sessions.find((s) => s.status === "active");
   const study = state.studies.find((s) => s.status === "active");
+  const activeWrongId = wrongAnalysis?.currentId;
+  const wrongResults = wrongAnalysis?.results ?? [];
+  const wrongFailures = wrongResults.filter((result) => result.status === "failed");
+  const pendingWrongCount = wrongAnalysis?.pendingIds.length ?? 0;
+  const stoppedWrongCount = wrongAnalysis?.stopped ?? 0;
+  const wrongTotal = wrongResults.length + pendingWrongCount + stoppedWrongCount + (activeWrongId ? 1 : 0);
+  const questionLabel = (id: string) => {
+    const question = state.questions.find((item) => item.id === id);
+    return question ? `${question.number}번 · PDF ${question.page}쪽` : "원본 문항";
+  };
   return (
     <div className={`app-shell ${focus ? "focus-mode" : ""}`}>
       <aside className="sidebar">
@@ -353,6 +402,44 @@ export default function RestudyApp({
           </header>
         )}
         <main id="main-content" className={focus ? "focus-main" : "page-main"}>
+          {wrongTotal > 0 && (
+            <section aria-label="오답 분석">
+              <div className="selection-bar">
+                <span role="status">
+                  {activeWrongId
+                    ? `오답 분석 ${wrongResults.length + 1}/${wrongTotal} · ${questionLabel(activeWrongId)}`
+                    : `오답 분석 · 저장 ${wrongResults.length - wrongFailures.length}개`}
+                  {wrongFailures.length > 0 && ` · 확인 필요 ${wrongFailures.length}개`}
+                  {stoppedWrongCount > 0 && ` · 중지 ${stoppedWrongCount}개`}
+                </span>
+                {pendingWrongCount > 0 && (
+                  <Button variant="ghost" size="sm" onClick={() => wrongQueue.current?.stop()}>
+                    다음 분석 멈추기
+                  </Button>
+                )}
+                {!activeWrongId && (
+                  <Button variant="ghost" size="sm" onClick={() => setWrongAnalysis(undefined)}>
+                    분석 결과 닫기
+                  </Button>
+                )}
+              </div>
+              {wrongFailures.length > 0 && (
+                <details>
+                  <summary>분석이 필요한 문항 {wrongFailures.length}개</summary>
+                  <ul>
+                    {wrongFailures.map(({ id, message }) => (
+                      <li key={id}>
+                        <Button variant="ghost" size="sm" onClick={() => navigate({ name: "wrong", id })}>
+                          {questionLabel(id)}
+                        </Button>{" "}
+                        {message}
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+              )}
+            </section>
+          )}
           <Suspense
             fallback={<div className="loading">학습 화면을 여는 중…</div>}
           >
@@ -585,6 +672,7 @@ export default function RestudyApp({
                 onOpen={open}
                 onRemoved={(ids) => {
                   const archived = new Set(ids);
+                  wrongQueue.current?.remove(state.mistakes.filter((m) => archived.has(m.id)).map((m) => m.questionId));
                   setState((current) => current && {
                     ...current,
                     mistakes: current.mistakes.filter((m) => !archived.has(m.id)),
@@ -614,8 +702,9 @@ export default function RestudyApp({
               <WrongWorkspace
                 key={view.id}
                 id={view.id}
-                autoAnalyzeIds={automaticWrongIds}
-                onAutoAnalysisComplete={() => setAutomaticWrongIds([])}
+                analysisPending={activeWrongId === view.id || !!wrongAnalysis?.pendingIds.includes(view.id)}
+                analysisCompleted={wrongResults.some((result) => result.id === view.id && result.status === "completed")}
+                onAnalyze={() => wrongQueue.current?.enqueue([view.id!])}
                 state={state}
                 onBack={() => navigate({ name: "mistakes" })}
                 onBank={(scope) => {

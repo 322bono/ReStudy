@@ -22,6 +22,7 @@ import { Badge, Button, Empty, IconButton } from "./ui";
 import { MaterialStatus } from "./materials";
 import { OriginalPage } from "./original-page";
 import { SecureLink, prefetchSecureImages } from "./secure-assets";
+import { materialProgress } from "../src/services/api";
 export function Viewer({
   id,
   initialPage = 1,
@@ -104,15 +105,38 @@ export function Viewer({
       onError(e.message);
     });
   }, [load, onError]);
+  const materialStatus = data?.material.status;
+  const completedPages = data?.material.completedPages ?? 0;
   useEffect(() => {
-    if (
-      data?.material.status === "processing" ||
-      data?.material.status === "uploaded"
-    ) {
-      const t = setInterval(() => load().catch(() => {}), 1500);
-      return () => clearInterval(t);
-    }
-  }, [data?.material.status, load]);
+    if (materialStatus !== "processing" && materialStatus !== "uploaded") return;
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout>;
+    const tick = async () => {
+      try {
+        const [progress] = await materialProgress([id], controller.signal);
+        if (!progress || controller.signal.aborted) return;
+        if (progress.status !== materialStatus || (progress.completedPages ?? 0) !== completedPages) {
+          await load();
+        } else {
+          setData((current) => {
+            if (current?.material.id !== id || Object.entries(progress).every(
+              ([field, value]) => current.material[field as keyof Material] === value,
+            )) return current;
+            return { ...current, material: { ...current.material, ...progress } };
+          });
+        }
+      } catch {
+        // Keep the last readable pages while a progress request retries.
+      } finally {
+        if (!controller.signal.aborted) timer = setTimeout(tick, 1500);
+      }
+    };
+    timer = setTimeout(tick, 1500);
+    return () => {
+      controller.abort();
+      clearTimeout(timer);
+    };
+  }, [id, materialStatus, completedPages, load]);
   const act = async (name: string, fn: () => Promise<void>) => {
     setBusy(name);
     try {

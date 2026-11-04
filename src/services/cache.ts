@@ -13,15 +13,27 @@ function database() {
   if (typeof indexedDB === "undefined")
     return Promise.reject(new Error("IndexedDB unavailable"));
   return (pending ||= new Promise((resolve, reject) => {
-    const request = indexedDB.open("restudy-private-cache-v1", 1);
-    request.onupgradeneeded = () => {
-      const store = request.result.createObjectStore("entries", {
-        keyPath: "key",
-      });
-      store.createIndex("owner", "owner");
-      store.createIndex("usedAt", "usedAt");
+    const request = indexedDB.open("restudy-private-cache-v1", 2);
+    request.onupgradeneeded = ({ oldVersion }) => {
+      const store = oldVersion === 0
+        ? request.result.createObjectStore("entries", { keyPath: "key" })
+        : request.transaction!.objectStore("entries");
+      if (oldVersion === 0) store.createIndex("owner", "owner");
+      else store.deleteIndex("usedAt");
+      store.createIndex("eviction", ["usedAt", "bytes"]);
     };
-    request.onsuccess = () => resolve(request.result);
+    request.onblocked = () => reject(new Error("Cache upgrade is blocked"));
+    request.onsuccess = () => {
+      const db = request.result;
+      db.onversionchange = () => {
+        db.close();
+        pending = undefined;
+      };
+      // A tab using the old schema may have blocked the first request.
+      // Resume using the cache when the browser completes that upgrade.
+      pending = Promise.resolve(db);
+      resolve(db);
+    };
     request.onerror = () => {
       pending = undefined;
       reject(request.error);
@@ -76,7 +88,12 @@ export async function cacheGet<T>(
 async function cacheRemove(owner:string,name:string){
  try{const db=await database();await new Promise<void>((resolve,reject)=>{const tx=db.transaction('entries','readwrite');tx.objectStore('entries').delete(key(owner,name));tx.oncomplete=()=>resolve();tx.onerror=()=>reject(tx.error);tx.onabort=()=>reject(tx.error);});}catch{/* Durable originals are separate from this disposable cache. */}
 }
-export async function cachePut(owner: string, name: string, value: unknown) {
+export async function cachePut(
+  owner: string,
+  name: string,
+  value: unknown,
+  canWrite = () => true,
+) {
   try {
     const db = await database(),
       bytes =
@@ -88,6 +105,7 @@ export async function cachePut(owner: string, name: string, value: unknown) {
     // makes cache eviction safe while an exported/viewed Blob is still in use.
     const binary=value instanceof Blob;
     const stored=binary?await value.arrayBuffer():value;
+    if (!canWrite()) return;
     await new Promise<void>((resolve, reject) => {
       const tx = db.transaction("entries", "readwrite"),
         store = tx.objectStore("entries");
@@ -99,23 +117,30 @@ export async function cachePut(owner: string, name: string, value: unknown) {
         bytes,
         usedAt: Date.now(),
       } satisfies Entry);
+      // Enumerate keys and sizes only. getAll() would clone every cached
+      // PDF and image into memory for each crop written by the viewer.
+      const entryKeys: [IDBValidKey, number][] = [];
+      let total = 0;
+      const request = store.index("eviction").openKeyCursor();
+      request.onsuccess = () => {
+        const cursor = request.result;
+        if (cursor) {
+          const [, size] = cursor.key as [number, number];
+          entryKeys.push([cursor.primaryKey, size]);
+          total += size;
+          cursor.continue();
+          return;
+        }
+        for (const [entryKey, size] of entryKeys) {
+          if (total <= LIMIT) break;
+          store.delete(entryKey);
+          total -= size;
+        }
+      };
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error);
     });
-    const entries = await new Promise<Entry[]>((resolve, reject) => {
-      const req = db.transaction("entries").objectStore("entries").getAll();
-      req.onsuccess = () => resolve(req.result);
-      req.onerror = () => reject(req.error);
-    });
-    let total = entries.reduce((n, e) => n + e.bytes, 0);
-    if (total > LIMIT) {
-      const tx = db.transaction("entries", "readwrite");
-      for (const entry of entries.sort((a, b) => a.usedAt - b.usedAt)) {
-        if (total <= LIMIT) break;
-        tx.objectStore("entries").delete(entry.key);
-        total -= entry.bytes;
-      }
-    }
   } catch {
     /* Cache denial never discards the durable cloud data. */
   }

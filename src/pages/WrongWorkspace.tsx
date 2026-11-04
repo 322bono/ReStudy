@@ -21,7 +21,6 @@ import { downloadSelectedPdf } from "../services/documents";
 import { edgeCall } from "../services/supabase";
 import "../styles/wrong-workspace.css";
 import OriginalAnalysis from "../components/OriginalAnalysis";
-import { prepareWrongAnalysis } from "../services/wrong-analysis";
 import "../styles/original-analysis.css";
 
 type SavedQuestion = Question & {
@@ -31,8 +30,9 @@ type SavedQuestion = Question & {
 };
 export type WrongWorkspaceProps = {
   id: string;
-  autoAnalyzeIds?: string[];
-  onAutoAnalysisComplete?: () => void;
+  analysisPending: boolean;
+  analysisCompleted: boolean;
+  onAnalyze: () => void;
   state: AppState;
   onBack: () => void;
   onBank: (scope: any) => void;
@@ -97,8 +97,9 @@ const messageOf = (cause: unknown) =>
 
 export default function WrongWorkspace({
   id,
-  autoAnalyzeIds = [],
-  onAutoAnalysisComplete,
+  analysisPending,
+  analysisCompleted,
+  onAnalyze,
   state,
   onBack,
   onBank,
@@ -129,6 +130,7 @@ export default function WrongWorkspace({
   const [busy, setBusy] = useState(""),
     [error, setError] = useState(""),
     [message, setMessage] = useState("");
+  const working = !!busy || analysisPending;
   const [preparationKind, setPreparationKind] = useState("complete");
   const [preparationOpen, setPreparationOpen] = useState(false),
     [loadingJobs, setLoadingJobs] = useState(false);
@@ -143,12 +145,8 @@ export default function WrongWorkspace({
     mounted = useRef(true),
     selectedJob = useRef<string | undefined>(undefined);
   activeId.current = id;
-  const stopApi = useRef(false),
-    apiStart = useRef(0);
-  const [apiElapsed, setApiElapsed] = useState(0);
   const [savedReview, setSavedReview] = useState<any>(),
     [loadingReview, setLoadingReview] = useState(true);
-  const automaticStarted = useRef("");
   async function loadReview() {
     const forId = id;
     const result = await api(`questions/${forId}/review`);
@@ -159,7 +157,10 @@ export default function WrongWorkspace({
     let alive = true;
     setLoadingReview(true);
     setSavedReview(undefined);
-    loadReview()
+    api(`questions/${id}/review`)
+      .then((result) => {
+        if (alive) setSavedReview(result);
+      })
       .catch((cause) => {
         if (alive) setError(messageOf(cause));
       })
@@ -169,29 +170,7 @@ export default function WrongWorkspace({
     return () => {
       alive = false;
     };
-  }, [id, state.questions, state.concepts]);
-  useEffect(() => {
-    const request = autoAnalyzeIds.join(",");
-    if (
-      !request ||
-      loadingReview ||
-      automaticStarted.current === request ||
-      locked.current
-    )
-      return;
-    automaticStarted.current = request;
-    void act("API 자동 분석", () => startAutomatic(autoAnalyzeIds));
-  }, [autoAnalyzeIds, loadingReview]);
-  useEffect(() => {
-    if (!busy.includes("API")) return;
-    // The durable runner already polls this job. Keep the display clock local.
-    const timer = setInterval(() => {
-      setApiElapsed(Math.floor((Date.now() - apiStart.current) / 1000));
-    }, 1000);
-    return () => {
-      clearInterval(timer);
-    };
-  }, [busy, id]);
+  }, [id, state.questions, state.concepts, analysisCompleted]);
 
   async function loadJobs(preferred?: string): Promise<Job | undefined> {
     if (!question) return;
@@ -256,13 +235,9 @@ export default function WrongWorkspace({
   }, [id, question?.materialId]);
 
   async function act(name: string, work: () => Promise<void>) {
-    if (locked.current) return;
+    if (locked.current || analysisPending) return;
     const forId = id;
     locked.current = true;
-    if (name.includes("API")) {
-      apiStart.current = Date.now();
-      setApiElapsed(0);
-    }
     setBusy(name);
     setError("");
     setMessage("");
@@ -285,42 +260,6 @@ export default function WrongWorkspace({
     setInspection(undefined);
     setPrompt("");
     setPart(1);
-  }
-  async function startAutomatic(ids: string[]) {
-    stopApi.current = false;
-    const failures: string[] = [];
-    try {
-      for (let index = 0; index < ids.length; index++) {
-        if (stopApi.current || !mounted.current) break;
-        const target = state.questions.find((item) => item.id === ids[index]);
-        const source = state.materials.find(
-          (item) => item.id === target?.materialId,
-        );
-        if (!target || !source) continue;
-        setMessage(
-          `${index + 1}/${ids.length} · ${target.number}번 원본을 분석하고 저장합니다.`,
-        );
-        try {
-          const completed = await prepareWrongAnalysis(target.id, () => stopApi.current || !mounted.current);
-          if (!completed) break;
-          if (mounted.current && target.id === id) await loadReview();
-        } catch (cause) {
-          failures.push(`${target.number}번: ${messageOf(cause)}`);
-        }
-      }
-      if (mounted.current) {
-        if (failures.length) setError(failures.join("\n"));
-        setMessage(
-          stopApi.current
-            ? "완료된 분석은 저장했습니다. 남은 문제는 오답 노트에서 다시 열어 분석할 수 있습니다."
-            : failures.length
-              ? "완료된 분석은 저장했습니다. 실패한 문제는 다시 분석할 수 있습니다."
-              : "저장된 분석을 불러왔습니다. 준비된 추가 문항을 바로 풀 수 있습니다.",
-        );
-      }
-    } finally {
-      if (mounted.current) onAutoAnalysisComplete?.();
-    }
   }
   async function createExternal() {
     if (!question || !material)
@@ -469,15 +408,6 @@ export default function WrongWorkspace({
           다시 풀기
         </Button>
       </header>
-      {busy.includes("API") && (
-        <div className="ww-feedback" role="status">
-          분석 중 · {apiElapsed}초
-          <Button variant="ghost" size="sm" onClick={() => {
-            stopApi.current = true;
-            setMessage("현재 요청은 서버에서 마무리하고 다음 문제부터 멈춥니다.");
-          }}>다음 분석 멈추기</Button>
-        </div>
-      )}
       <div className="ww-study-layout">
         <aside className="ww-source" aria-label="저장된 원본 문제">
           <div className="ww-source-heading">
@@ -529,17 +459,9 @@ export default function WrongWorkspace({
             loading={loadingReview}
             onBank={onBank}
           />
-          {!savedReview?.hasSavedAnalysis &&
-            !busy &&
-            !autoAnalyzeIds.length && (
+          {!loadingReview && !savedReview?.hasSavedAnalysis && !working && (
               <div className="ww-analysis-start">
-                <Button
-                  busy={busy === "API 분석"}
-                  disabled={!!busy}
-                  onClick={() => act("API 분석", () => startAutomatic([id]))}
-                >
-                  이 문제 분석하기
-                </Button>
+                <Button onClick={onAnalyze}>이 문제 분석하기</Button>
               </div>
             )}
           <details
@@ -560,7 +482,7 @@ export default function WrongWorkspace({
                 준비할 문항
                 <select
                   value={preparationKind}
-                  disabled={!!busy}
+                  disabled={working}
                   onChange={(e) => setPreparationKind(e.target.value)}
                 >
                   <option value="complete">
@@ -578,7 +500,7 @@ export default function WrongWorkspace({
               <div className="ww-actions">
                 <Button
                   variant="secondary"
-                  disabled={!!busy || loadingJobs}
+                  disabled={working || loadingJobs}
                   busy={busy === "외부 작업 준비"}
                   onClick={() =>
                     act("외부 작업 준비", createExternal)
@@ -593,7 +515,7 @@ export default function WrongWorkspace({
                   <select
                     id={`${fieldId}-jobs`}
                     value={job?.id || ""}
-                    disabled={!!busy}
+                    disabled={working}
                     onChange={(event) => {
                       const selected = event.target.value;
                       void act("작업 열기", async () => {
@@ -630,7 +552,7 @@ export default function WrongWorkspace({
                     <Button
                       variant="ghost"
                       size="sm"
-                      disabled={!!busy}
+                      disabled={working}
                       busy={busy === "작업 갱신"}
                       onClick={() =>
                         act("작업 갱신", async () => {
@@ -651,7 +573,7 @@ export default function WrongWorkspace({
                         <select
                           id={`${fieldId}-part`}
                           value={part}
-                          disabled={!!busy}
+                          disabled={working}
                           onChange={(event) => {
                             setPart(Number(event.target.value));
                             setPrompt("");
@@ -669,7 +591,7 @@ export default function WrongWorkspace({
                       </label>
                       <Button
                         variant="secondary"
-                        disabled={!!busy}
+                        disabled={working}
                         busy={busy === "프롬프트 복사"}
                         onClick={() =>
                           act("프롬프트 복사", async () => {
@@ -719,7 +641,7 @@ export default function WrongWorkspace({
                     <Button
                       variant="secondary"
                       size="sm"
-                      disabled={!!busy}
+                      disabled={working}
                       busy={busy === "원본 범위 내보내기"}
                       onClick={() =>
                         act("원본 범위 내보내기", async () => {
@@ -743,7 +665,7 @@ export default function WrongWorkspace({
                         maxLength={12000000}
                         placeholder="restudy.v1 JSON 또는 JSON 코드 블록"
                         value={raw}
-                        disabled={!!busy}
+                        disabled={working}
                         onChange={(event) => {
                           setRaw(event.target.value);
                           setInspection(undefined);
@@ -752,7 +674,7 @@ export default function WrongWorkspace({
                     </label>
                     <Button
                       variant="secondary"
-                      disabled={!!busy || !raw.trim()}
+                      disabled={working || !raw.trim()}
                       busy={busy === "분석 결과 등록"}
                       onClick={() => act("분석 결과 등록", inspect)}
                     >

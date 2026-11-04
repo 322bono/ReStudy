@@ -1,7 +1,11 @@
 import { aiFailureText } from "../domain/ai-status";
 import { edgeCall } from "./supabase";
 
-export async function prepareWrongAnalysis(problemId: string, shouldStop: () => boolean) {
+export async function prepareWrongAnalysis(
+  problemId: string,
+  shouldStop: () => boolean,
+  canRetry: () => boolean = () => true,
+) {
   const call = (body: Record<string, unknown>) => edgeCall("analyze-problem", body);
   const start = () => call({ action: "wrong_review", problemId });
   let job = await start();
@@ -17,12 +21,14 @@ export async function prepareWrongAnalysis(problemId: string, shouldStop: () => 
     }
     const code = job.provider_error ?? job.last_error;
     const wait = Date.parse(job.available_at ?? "") - Date.now();
-    if (retries < 1 && ["invalid_response", "timeout", "provider_error", "network_error", "all_providers_failed"].includes(code) && wait <= 15000) {
+    if (retries < 1 && canRetry() && ["invalid_response", "timeout", "provider_error", "network_error", "all_providers_failed"].includes(code) && wait <= 15000) {
       await new Promise((resolve) => setTimeout(resolve, Math.max(1000, wait)));
       if (shouldStop()) return false;
-      retries++;
-      job = await start();
-      continue;
+      if (canRetry()) {
+        retries++;
+        job = await start();
+        continue;
+      }
     }
     if (job.status === "waiting")
       throw new Error("일일 분석 한도 또는 대기 상태를 확인한 뒤 이 문제 분석하기를 눌러 주세요.");
@@ -32,4 +38,87 @@ export async function prepareWrongAnalysis(problemId: string, shouldStop: () => 
     throw new Error(aiFailureText(code) + retryAt);
   }
   return job.status === "completed";
+}
+
+type WrongAnalysisResult =
+  | { id: string; status: "completed" }
+  | { id: string; status: "failed"; message: string };
+
+export type WrongAnalysisProgress = {
+  currentId: string | null;
+  pendingIds: string[];
+  results: WrongAnalysisResult[];
+  stopped: number;
+};
+
+export function createWrongAnalysisQueue(onProgress: (progress: WrongAnalysisProgress) => void) {
+  let currentId: string | null = null;
+  let pendingIds: string[] = [];
+  let results: WrongAnalysisResult[] = [];
+  let stopped = 0;
+  let retryCurrent = true;
+  let disposed = false;
+
+  function publish() {
+    if (!disposed) onProgress({ currentId, pendingIds: [...pendingIds], results: [...results], stopped });
+  }
+
+  async function run() {
+    while (!disposed && pendingIds.length) {
+      const id = pendingIds.shift()!;
+      currentId = id;
+      retryCurrent = true;
+      publish();
+      try {
+        if (await prepareWrongAnalysis(id, () => disposed, () => retryCurrent)) {
+          results.push({ id, status: "completed" });
+        }
+      } catch (cause) {
+        results.push({
+          id,
+          status: "failed",
+          message: cause instanceof Error ? cause.message : "분석 요청을 처리하지 못했습니다.",
+        });
+      }
+      currentId = null;
+    }
+    publish();
+  }
+
+  return {
+    enqueue(ids: string[]) {
+      if (disposed || !ids.length) return;
+      if (!currentId) {
+        results = [];
+        stopped = 0;
+      }
+      const known = new Set([
+        currentId,
+        ...pendingIds,
+        ...results.filter((result) => result.status === "completed").map(({ id }) => id),
+      ]);
+      const added = new Set(ids.filter((id) => !known.has(id)));
+      if (!added.size) return;
+      results = results.filter(({ id }) => !added.has(id));
+      pendingIds.push(...added);
+      if (currentId) publish();
+      else void run();
+    },
+    stop() {
+      if (disposed || !pendingIds.length) return;
+      retryCurrent = false;
+      stopped += pendingIds.length;
+      pendingIds = [];
+      publish();
+    },
+    remove(ids: string[]) {
+      if (disposed || !pendingIds.length) return;
+      const removed = new Set(ids);
+      pendingIds = pendingIds.filter((id) => !removed.has(id));
+      publish();
+    },
+    dispose() {
+      disposed = true;
+    },
+  };
 }

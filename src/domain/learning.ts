@@ -72,7 +72,7 @@ function select(
   pool: any[],
   cids: string[],
   count: number,
-  state: LearningState,
+  state: Pick<LearningState, "results">,
   excluded: string[] = [],
 ): any[] {
   const excludedSet = new Set(excluded);
@@ -647,7 +647,7 @@ export function repeatWeak(state: LearningState): any {
     unique(chosen.map((item) => item.conceptId)),
   );
 }
-function updateReview(session: any, item: any, state: LearningState) {
+function updateReview(session: any, item: any, state: Pick<LearningState, "results">) {
   const understood = new Set<string>(session.understoodConceptIds || []);
   for (const cid of itemConcepts(item)) {
     if (item.result === "correct") understood.add(cid);
@@ -706,7 +706,7 @@ function updateReview(session: any, item: any, state: LearningState) {
 export function answerStudy(
   input: any,
   body: StudyAnswer,
-  state: LearningState,
+  state: Pick<LearningState, "questions" | "results" | "mistakes">,
 ): { session: any; attempt?: any; mistakes: any[] } {
   const session = clone(input),
     item = find<any>(
@@ -1073,7 +1073,7 @@ export function originalReview(
 export function answerSolve(
   input: any,
   body: SolveAnswer,
-  state: LearningState,
+  state: Pick<LearningState, "mistakes">,
 ): { session: any; mistakes: any[] } {
   const session = clone(input),
     qid = body?.questionId;

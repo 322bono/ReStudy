@@ -1,5 +1,5 @@
 import {AppError} from '../context.ts';
-import {material,publicQuestion,put,row,rows,pageRows,signed,state,value,type Ctx} from './repository.ts';
+import {material,mistake,publicQuestion,put,row,rows,pageRows,signed,state,value,type Ctx} from './repository.ts';
 import {importContent,validate} from './content.ts';
 import {exportData,restoreData} from './backup.ts';
 import{saveOutline,documentIndex}from'./pdf-index.ts';
@@ -13,29 +13,44 @@ const learnState=(s:any)=>({...s,questions:s.questions.filter((q:any)=>q.regions
 async function saveStudy(ctx:Ctx,session:any){await put(ctx,'study_sessions',session.id,session);return publicStudy(session)}
 async function learningMutation(ctx:Ctx,kind:'study'|'solve',id:string,body:any,reveal=false){
  for(let attempt=0;attempt<4;attempt++){
-  const r=await row(ctx,kind==='study'?'study_sessions':'solve_sessions',id),current=value(r),s=learnState(await state(ctx,true));
-  const result:any=kind==='solve'?answerSolve(current,body,s):reveal?{...revealStudy(current,body.itemId),mistakes:[]}:answerStudy(current,body,s);
+  const current=value(await row(ctx,kind==='study'?'study_sessions':'solve_sessions',id));
+  let result:any;
+  if(reveal)result={...revealStudy(current,body.itemId),mistakes:[]};
+  else if(kind==='solve'){
+   const {questionId,result:grade,drawingOnly}=body;
+   const needsMistake=!drawingOnly&&['correct','wrong'].includes(grade)&&current.questionIds?.includes(questionId)&&!Object.hasOwn(current.answers,questionId);
+   const mistakes=needsMistake?(await rows(ctx,'wrong_answers',{problem_id:questionId})).map(mistake).filter(m=>!m.archived):[];
+   result=answerSolve(current,body,{mistakes});
+  }else if(current.mode==='memory'&&!current.originQuestionIds?.length){
+   result=answerStudy(current,body,{questions:[],results:[],mistakes:[]});
+  }else{
+   result=answerStudy(current,body,learnState(await state(ctx,true)));
+  }
   const {data,error}=await ctx.admin.rpc('save_learning_session',{p_user_id:ctx.user.id,p_kind:kind,p_id:id,p_version:current.version||0,p_data:result.session,p_attempt:result.attempt||null,p_mistakes:result.mistakes||[]});
   if(error)throw new AppError('학습 기록을 저장하지 못했습니다. 다시 시도하세요.',500);
-  if(data)return reveal?{answer:result.answer,explanation:result.explanation,session:publicStudy(data)}:kind==='solve'?solvePublic(data):publicStudy(data);
+  if(data){
+   if(reveal)return {answer:result.answer,explanation:result.explanation,session:publicStudy(data)};
+   if(kind==='solve')return body.drawingOnly&&body.minimal===true?{saved:true}:solvePublic(data);
+   return publicStudy(data);
+  }
  }
  throw new AppError('다른 화면에서 기록이 변경됐습니다. 다시 열어 주세요.',409);
 }
 async function asset(ctx:Ctx,path:string){
  const p=path.replace(/^\/api\//,'').split('?')[0].split('/'),query=new URLSearchParams(path.split('?')[1]||'');let storagePath='';
  if(p[0]==='materials'){
-  const m=await row(ctx,'documents',p[1]);if(p[2]==='file')storagePath=m.data.originalPath;
-  else if(p[2]==='page'){const [page]=await pageRows(ctx,m.id,Number(p[3]));if(!page)throw new AppError('페이지를 찾을 수 없습니다.',404);storagePath=page.image_path;}
+  if(p[2]==='file')storagePath=(await row(ctx,'documents',p[1],'originalPath:data->>originalPath')).originalPath;
+  else if(p[2]==='page'){const [page]=await rows(ctx,'document_pages',{document_id:p[1],number:Number(p[3])},'image_path');if(!page)throw new AppError('페이지를 찾을 수 없습니다.',404);storagePath=page.image_path;}
  }else if(p[0]==='questions'&&p[2]==='image'){
-  const q=await row(ctx,'problems',p[1]);
+  const q=await row(ctx,'problems',p[1],'id,document_id,data');
   let data=q.data,paths:string[]=[];const sessionId=query.get('session');
   if(sessionId){const session=value(await row(ctx,'solve_sessions',sessionId)),snapshot=session.questionSnapshots?.find((q:any)=>q.id===p[1]);if(!snapshot)throw new AppError('이 풀이의 원본 문항이 아닙니다.',403);data=snapshot;paths=snapshot.imagePaths||[];}
-  else paths=(await rows(ctx,'problem_regions',{problem_id:q.id})).sort((a:any,b:any)=>a.part-b.part).map((r:any)=>r.image_path);
+  else paths=(await rows(ctx,'problem_regions',{problem_id:q.id},'part,image_path')).sort((a:any,b:any)=>a.part-b.part).map((r:any)=>r.image_path);
   const region=data.regions?.[Number(p[3])];if(!region)throw new AppError('준비된 원본 영역이 없습니다.',404);
-  const [page]=await pageRows(ctx,q.document_id,region.page);if(page?.data.kind==='answers')throw new AppError('정답·해설 페이지는 문제로 제공하지 않습니다.',409);
+  const [page]=await rows(ctx,'document_pages',{document_id:q.document_id,number:region.page},'kind:data->>kind');if(page?.kind==='answers')throw new AppError('정답·해설 페이지는 문제로 제공하지 않습니다.',409);
   storagePath=paths[Number(p[3])];
  }
- if(!storagePath)throw new AppError('준비된 원본 이미지가 없습니다.',404);return {url:await signed(ctx,storagePath)};
+ if(!storagePath)throw new AppError('준비된 원본 이미지가 없습니다.',404);return {url:await signed(ctx,storagePath),storagePath};
 }
 export async function handle(ctx:Ctx,input:any):Promise<any>{
  const path=String(input.path||'').replace(/^\//,''),method=String(input.method||'GET').toUpperCase(),b=input.body||{},url=new URL('https://app.invalid/'+path),p=url.pathname.slice(1).split('/'),route=p[0],id=p[1],action=p[2];
@@ -65,10 +80,10 @@ export async function handle(ctx:Ctx,input:any):Promise<any>{
   if(method==='DELETE'){await put(ctx,'documents',id,{...r.data,archived:true},{title:r.title,subject:r.subject,kind:r.kind,status:r.status,content_hash:r.content_hash});return {archived:true};}
   if(action==='page-kind'){
    if(!['content','answers','uncertain'].includes(b.kind)||['processing','uploaded'].includes(r.status))throw new AppError('사전 처리 완료 후 페이지 종류를 변경하세요.');
-   const pages=await rows(ctx,'document_pages'),page=pages.find((pg:any)=>pg.document_id===id&&pg.number===b.page);if(!page)throw new AppError('페이지를 찾을 수 없습니다.');
+   const [page]=await rows(ctx,'document_pages',{document_id:id,number:b.page});if(!page)throw new AppError('페이지를 찾을 수 없습니다.');
    const {error}=await ctx.db.from('document_pages').update({data:{...page.data,kind:b.kind,manualKind:true}}).eq('id',page.id).eq('user_id',ctx.user.id);if(error)throw new AppError('페이지 종류를 저장하지 못했습니다.');return {ok:true};
   }
-  const s=await state(ctx,true);return {material:material(r),pages:s.pages.filter((pg:any)=>pg.materialId===id),questions:s.questions.filter((q:any)=>q.materialId===id&&!q.mergedInto).map(publicQuestion)};
+  const [s,pages]=await Promise.all([state(ctx),pageRows(ctx,id,undefined,true)]);return {material:material(r),pages:pages.map(pg=>({...pg.data,number:pg.number,materialId:pg.document_id,imagePath:pg.image_path})),questions:s.questions.filter((q:any)=>q.materialId===id&&!q.mergedInto).map(publicQuestion)};
  }
  if(route==='content'){
   const s=await state(ctx,true),pkg=content(s);
@@ -112,6 +127,7 @@ export async function handle(ctx:Ctx,input:any):Promise<any>{
  }
  if(route==='solve'){
   if(!id){const s=learnState(await state(ctx,true)),qs=(b.questionIds||[]).map((id:string)=>s.questions.find((q:any)=>q.id===id));if(!qs.length||qs.some((q:any)=>!q||!q.imagePaths?.length))throw new AppError('저장된 원본 크롭이 있는 문항을 선택하세요.');const session=createSolve(qs);await put(ctx,'solve_sessions',session.id,session);return solvePublic(session);}
+  if(action==='answer'||action==='drawing')return learningMutation(ctx,'solve',id,{...b,drawingOnly:action==='drawing'});
   const ss=value(await row(ctx,'solve_sessions',id));
   if(action==='answer-keys'){
    // One owner-authorized read prepares the selected session's saved reviews.
@@ -124,7 +140,6 @@ export async function handle(ctx:Ctx,input:any):Promise<any>{
    return{answerKeys};
   }
   if(action==='answer-key'){const q=ss.questionSnapshots.find((q:any)=>q.id===p[3]);if(!q)throw new AppError('이 풀이의 문항이 아닙니다.');const s=learnState(await state(ctx,true)),relations=await rows(ctx,'problem_similarities'),review=originalReview(q,s,relations);return {available:!!review.answer,answer:review.answer,explanation:review.explanation,review};}
-  if(action==='answer'||action==='drawing')return learningMutation(ctx,'solve',id,{...b,drawingOnly:action==='drawing'});
   return solvePublic(ss);
  }
  throw new AppError('지원하지 않는 요청입니다.',404);

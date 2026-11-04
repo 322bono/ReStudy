@@ -48,60 +48,80 @@ function Drawing({
   strokes: Stroke[];
   onChange: (s: Stroke[]) => void;
 }) {
-  const current = useRef<Stroke | null>(null),
+  const paper = useRef<HTMLDivElement>(null),
+    current = useRef<{ pointerId: number; stroke: Stroke } | null>(null),
     [draft, setDraft] = useState<Stroke | null>(null);
+  const active = pen && !disabled;
   useEffect(() => {
-    if (disabled || !pen) {
+    if (!active) {
       current.current = null;
       setDraft(null);
+      return;
     }
-  }, [disabled, pen]);
-  const pos = (e: React.PointerEvent<SVGSVGElement>) => {
+    const surface = paper.current;
+    if (!surface) return;
+    // Block panning here even when the browser bypasses touch-action.
+    const preventPan = (event: TouchEvent) => {
+      if (event.cancelable) event.preventDefault();
+    };
+    surface.addEventListener("touchmove", preventPan, { passive: false });
+    return () => surface.removeEventListener("touchmove", preventPan);
+  }, [active]);
+  const pos = (e: React.PointerEvent<HTMLDivElement>) => {
     const r = e.currentTarget.getBoundingClientRect();
     return {
       x: Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)),
       y: Math.max(0, Math.min(1, (e.clientY - r.top) / r.height)),
     };
   };
-  const end = () => {
-    if (current.current && !disabled) {
-      onChange([...strokes, current.current]);
-      current.current = null;
-      setDraft(null);
-    }
+  const cancel = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (current.current?.pointerId !== e.pointerId) return;
+    current.current = null;
+    setDraft(null);
   };
   return (
-    <div className="drawing-paper" style={{ width: `${zoom * 100}%` }}>
+    <div
+      ref={paper}
+      className={active ? "drawing-paper pen-active" : "drawing-paper"}
+      style={{ width: `${zoom * 100}%` }}
+      onPointerDown={(e) => {
+        if (!active || !e.isPrimary || e.button !== 0 || current.current) return;
+        e.preventDefault();
+        e.currentTarget.setPointerCapture(e.pointerId);
+        const stroke = {
+          color: "#3730a3",
+          width: 0.0025,
+          region,
+          points: [pos(e)],
+        };
+        current.current = { pointerId: e.pointerId, stroke };
+        setDraft(stroke);
+      }}
+      onPointerMove={(e) => {
+        if (!active || current.current?.pointerId !== e.pointerId) return;
+        const { stroke } = current.current;
+        stroke.points.push(pos(e));
+        setDraft({ ...stroke });
+      }}
+      onPointerUp={(e) => {
+        if (!active || current.current?.pointerId !== e.pointerId) return;
+        const { stroke } = current.current;
+        stroke.points.push(pos(e));
+        cancel(e);
+        onChange([...strokes, stroke]);
+      }}
+      onPointerCancel={cancel}
+      onLostPointerCapture={cancel}
+    >
       <SecureImage
         alt={`${question.number}번 원본 문제${question.regions.length > 1 ? ` · 영역 ${region + 1}` : ""}`}
         draggable={false}
         path={`questions/${question.id}/image/${region}?session=${sessionId}`}
       />
       <svg
-        className={pen && !disabled ? "pen-active" : ""}
-        aria-disabled={disabled}
-        style={disabled ? { pointerEvents: "none" } : undefined}
+        aria-hidden="true"
         viewBox="0 0 1000 1000"
         preserveAspectRatio="none"
-        onPointerDown={(e) => {
-          if (!pen || disabled) return;
-          e.preventDefault();
-          e.currentTarget.setPointerCapture(e.pointerId);
-          current.current = {
-            color: "#3730a3",
-            width: 0.0025,
-            region,
-            points: [pos(e)],
-          };
-          setDraft({ ...current.current });
-        }}
-        onPointerMove={(e) => {
-          if (!current.current || disabled) return;
-          current.current.points.push(pos(e));
-          setDraft({ ...current.current });
-        }}
-        onPointerUp={end}
-        onPointerCancel={end}
       >
         {[...strokes, ...(draft ? [draft] : [])]
           .filter((s) => s.region === region)
@@ -264,6 +284,7 @@ export function Solve({
       api(`solve/${id}/drawing`, "POST", {
         questionId: q.id,
         strokes: next,
+        minimal: true,
       }).catch((e) => onError(e.message));
     }, 500);
   };
@@ -271,7 +292,11 @@ export function Solve({
     if (saveTimer.current) clearTimeout(saveTimer.current);
     setBusy(true);
     try {
-      await api(`solve/${id}/drawing`, "POST", { questionId: q.id, strokes });
+      await api(`solve/${id}/drawing`, "POST", {
+        questionId: q.id,
+        strokes,
+        minimal: true,
+      });
       setIndex(next);
       return true;
     } catch (e) {

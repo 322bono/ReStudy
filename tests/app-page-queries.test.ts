@@ -9,6 +9,8 @@ function fixture() {
     document_pages: [{ id: 'page', user_id: 'owner', document_id: 'doc', number: 73, image_path: 'owner/doc/73.png', kind: 'content', width: 595, height: 842, data: { kind: 'content', width: 595, height: 842, items: ['large OCR coordinates'] } }],
     problems: [{ id: 'q', user_id: 'owner', document_id: 'doc', data: { regions: [{ page: 73 }] } }],
     problem_regions: [{ user_id: 'owner', problem_id: 'q', part: 0, image_path: 'owner/doc/q.png' }],
+    solve_sessions: [{ id: 'solve', user_id: 'owner', data: { id: 'solve', status: 'active', questionIds: ['q'], questionSnapshots: [{ id: 'q' }], drawings: {}, answers: {} } }],
+    study_sessions: [{ id: 'study', user_id: 'owner', data: { id: 'study', mode: 'memory', status: 'active', items: [{ id: 'item', answer: 'saved answer' }] } }],
   };
   const from = (table: string) => {
     const read = { table, columns: '', filters: {} as Record<string, unknown> };
@@ -21,18 +23,22 @@ function fixture() {
     return query;
   };
   const sign = vi.fn(async (path: string) => ({ data: { signedUrl: `https://signed.invalid/${path}` }, error: null }));
-  const ctx = { user: { id: 'owner' }, db: { from, storage: { from: () => ({ createSignedUrl: sign }) } }, admin: {} };
+  const rpc = vi.fn(async (_name: string, args: any) => ({ data: { ...args.p_data, version: 1 }, error: null }));
+  const ctx = { user: { id: 'owner' }, db: { from, storage: { from: () => ({ createSignedUrl: sign }) } }, admin: { rpc } };
   return { ctx: ctx as any, reads, sign, tables };
 }
 
 test('opening one saved page reads only its metadata and never the library OCR payload', async () => {
   const f = fixture();
-  await handle(f.ctx, { path: 'asset', method: 'POST', body: { path: 'materials/doc/page/73' } });
+  const image = await handle(f.ctx, { path: 'asset', method: 'POST', body: { path: 'materials/doc/page/73' } });
   const page = f.reads.find(read => read.table === 'document_pages')!;
+  expect(f.reads).toHaveLength(1);
   expect(page.filters).toEqual({ user_id: 'owner', document_id: 'doc', number: 73 });
   expect(page.columns).not.toContain('*');
   expect(page.columns.split(',')).not.toContain('data');
+  expect(page.columns).not.toContain('text');
   expect(f.sign).toHaveBeenCalledWith('owner/doc/73.png', 180);
+  expect(image.storagePath).toBe('owner/doc/73.png');
 });
 
 test('opening one crop reads only its source page and scoped stored region paths', async () => {
@@ -50,6 +56,7 @@ test('learning loads page metadata without copying the stored OCR coordinates', 
   expect(result.pages[0]).not.toHaveProperty('items');
   expect(f.tables.document_pages[0].data.items).toEqual(['large OCR coordinates']);
   expect(f.reads.find(read=>read.table==='document_pages')?.columns).not.toContain('*');
+  expect(f.reads.find(read=>read.table==='document_pages')?.columns).not.toContain('text');
 });
 
 test('lightweight crop lookup still rejects an answer page', async()=>{
@@ -57,4 +64,33 @@ test('lightweight crop lookup still rejects an answer page', async()=>{
   f.tables.document_pages[0].kind='answers';
   await expect(handle(f.ctx,{path:'asset',method:'POST',body:{path:'questions/q/image/0'}})).rejects.toThrow('정답·해설');
   expect(f.sign).not.toHaveBeenCalled();
+});
+
+test('saving a drawing reads only the selected solve session', async () => {
+  const f = fixture();
+  const result = await handle(f.ctx, { path: 'solve/solve/drawing', method: 'POST', body: { questionId: 'q', strokes: [{ color: 'black' }] } });
+  expect(result.drawings).toEqual({ q: [{ color: 'black' }] });
+  expect(f.reads.map(read => read.table)).toEqual(['solve_sessions']);
+});
+
+test('grading an original reads only its mistake record and selected session', async () => {
+  const f = fixture();
+  await handle(f.ctx, { path: 'solve/solve/answer', method: 'POST', body: { questionId: 'q', result: 'wrong' } });
+  expect(f.reads.map(read => read.table)).toEqual(['solve_sessions', 'wrong_answers']);
+  expect(f.reads[1].filters).toEqual({ user_id: 'owner', problem_id: 'q' });
+});
+
+test('revealing a study snapshot reads only that study session', async () => {
+  const f = fixture();
+  const result = await handle(f.ctx, { path: 'study/study/reveal', method: 'POST', body: { itemId: 'item' } });
+  expect(result.answer).toBe('saved answer');
+  expect(f.reads.map(read => read.table)).toEqual(['study_sessions']);
+});
+
+test('drawing autosave can acknowledge persistence without returning the full solve snapshot', async () => {
+  const f = fixture();
+  const strokes = [{ color: 'black' }];
+  const result = await handle(f.ctx, { path: 'solve/solve/drawing', method: 'POST', body: { questionId: 'q', strokes, minimal: true } });
+  expect(result).toEqual({ saved: true });
+  expect(f.ctx.admin.rpc).toHaveBeenCalledWith('save_learning_session', expect.objectContaining({ p_data: expect.objectContaining({ drawings: { q: strokes } }) }));
 });

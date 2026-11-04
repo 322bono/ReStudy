@@ -204,6 +204,7 @@ export default function App() {
     >
       <RestudyApp
         key={user}
+        userId={user}
         onSettings={() => {
           location.hash = "settings";
           setSettings(true);

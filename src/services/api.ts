@@ -1,4 +1,5 @@
 import { edgeCall, getSupabase } from "./supabase";
+import { cacheGet, cachePut } from "./cache";
 import type { Material } from "../../lib/types";
 
 type MaterialProgress = Pick<Material, "id" | "status" | "paused" | "progress" | "message" | "error" | "failedPage" | "completedPages">;
@@ -99,6 +100,7 @@ type AssetEntry = {
   key: string;
   path: string;
   url: string;
+  storagePath?: string;
   until: number;
   bytes: number;
   users: number;
@@ -190,30 +192,56 @@ async function loadAsset(
   if (pending) return pending;
   const loading = (async () => {
     let blob: Blob | undefined,
-      signedUrl = "";
+      signedUrl = "",
+      storagePath: string | undefined,
+      savedImageKey: string | undefined;
     if (image) {
       const signed = await loadAsset(path, false, owner, generation);
-      const response = await fetch(signed.url);
-      if (!response.ok)
-        throw new Error("저장된 원본 이미지를 내려받지 못했습니다.");
-      blob = await response.blob();
+      // Signing resolves the current saved version and rechecks access, even
+      // when the same crop was cached while viewing a different solve session.
+      if (signed.storagePath?.startsWith(`${owner}/`)) {
+        savedImageKey = `saved-image:${signed.storagePath}`;
+        const saved = await cacheGet<Blob>(owner, savedImageKey);
+        if (saved instanceof Blob) {
+          blob = saved;
+          savedImageKey = undefined;
+        }
+      }
+      if (generation !== assetGeneration || assetOwner !== owner)
+        throw changedAsset();
+      if (!blob) {
+        const response = await fetch(signed.url);
+        if (!response.ok)
+          throw new Error("저장된 원본 이미지를 내려받지 못했습니다.");
+        blob = await response.blob();
+      }
     } else {
       const original = /^materials\/([^/?]+)\/file$/.exec(path);
       if (original)
         blob = await (
           await import("./documents")
         ).loadOriginalBlob(original[1]);
-      else
-        signedUrl = (await cloudApi<{ url: string }>("asset", "POST", { path }))
-          .url;
+      else {
+        const signed = await cloudApi<{ url: string; storagePath?: string }>(
+          "asset", "POST", { path },
+        );
+        signedUrl = signed.url;
+        storagePath = signed.storagePath;
+      }
     }
     const current = await assetContext();
     if (generation !== assetGeneration || current.owner !== owner)
       throw changedAsset();
+    if (blob && savedImageKey) {
+      void cachePut(owner, savedImageKey, blob, () =>
+        generation === assetGeneration && assetOwner === owner,
+      );
+    }
     const entry: AssetEntry = {
       key,
       path,
       url: blob ? URL.createObjectURL(blob) : signedUrl,
+      storagePath,
       until: blob ? Infinity : Date.now() + 120000,
       bytes: blob?.size || 0,
       users: 0,

@@ -6,6 +6,7 @@ const mocked = vi.hoisted(() => ({
   edgeCall: vi.fn(),
   getSession: vi.fn(),
   saveQuestion: vi.fn(),
+  storedImages: new Map<string, Blob>(),
   authChanged: undefined as undefined | ((event: string, session: any) => void),
 }));
 vi.mock("../src/services/supabase", () => ({
@@ -24,6 +25,13 @@ vi.mock("../src/services/supabase", () => ({
 vi.mock("../src/services/documents", () => ({
   saveQuestion: mocked.saveQuestion,
 }));
+vi.mock("../src/services/cache", () => ({
+  cacheGet: async (owner: string, name: string) =>
+    mocked.storedImages.get(`${owner}:${name}`) ?? null,
+  cachePut: async (owner: string, name: string, value: Blob) => {
+    mocked.storedImages.set(`${owner}:${name}`, value);
+  },
+}));
 import {
   acquireImageAsset,
   assetUrl,
@@ -37,6 +45,7 @@ const originalFetch = globalThis.fetch;
 let imageFetch: ReturnType<typeof vi.fn>;
 beforeEach(() => {
   vi.clearAllMocks();
+  mocked.storedImages.clear();
   mocked.owner = "owner";
   mocked.currentUser.mockResolvedValue({ id: "owner" });
   mocked.getSession.mockImplementation(async () => ({
@@ -105,6 +114,36 @@ describe("private saved-image reuse", () => {
     const retry = await acquireImageAsset("questions/question/image/0");
     expect(await (await originalFetch(retry.url)).text()).toBe("saved image");
     retry.release();
+  });
+
+  it("reuses an authorized saved crop after a reload or under a solve snapshot alias", async () => {
+    mocked.edgeCall.mockResolvedValue({
+      url: "https://signed.invalid/image",
+      storagePath: "owner/document/crop/old.png",
+    });
+    const first = await acquireImageAsset("questions/question/image/0");
+    first.release();
+    clearAssetCache();
+
+    const reopened = await acquireImageAsset("questions/question/image/0?session=solve");
+    expect(await (await originalFetch(reopened.url)).text()).toBe("saved image");
+    expect(imageFetch).toHaveBeenCalledTimes(1);
+    expect(mocked.edgeCall).toHaveBeenCalledTimes(2);
+    reopened.release();
+  });
+
+  it("downloads an edited crop at a fresh storage path", async () => {
+    mocked.edgeCall
+      .mockResolvedValueOnce({ url: "https://signed.invalid/old", storagePath: "owner/doc/old.png" })
+      .mockResolvedValueOnce({ url: "https://signed.invalid/new", storagePath: "owner/doc/new.png" });
+    (await acquireImageAsset("questions/question/image/0")).release();
+    invalidateAssetCache("questions/question/");
+    imageFetch.mockResolvedValueOnce(new Response("new crop"));
+
+    const updated = await acquireImageAsset("questions/question/image/0");
+    expect(await (await originalFetch(updated.url)).text()).toBe("new crop");
+    expect(imageFetch).toHaveBeenCalledTimes(2);
+    updated.release();
   });
 
   it("does not publish image bytes downloaded across an account change", async () => {

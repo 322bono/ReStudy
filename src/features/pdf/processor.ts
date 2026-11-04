@@ -575,7 +575,7 @@ function joinRangeHeadings(lines: PageTextItem[]): PageTextItem[] {
   for (const opener of lines) {
     if (!/^[\[［【(（|｜]\s*(?:\d{1,4}\s*(?:[~～\-–—]\s*)?)?$/.test(opener.text) || consumed.has(opener)) continue;
     const neighbours = lines.filter((line) =>
-      line.x >= right(opener) - .002 &&
+      line !== opener && line.x >= right(opener) - .002 &&
       Math.abs(line.y - opener.y) < Math.max(.004, opener.height * .45),
     ).sort((a, b) => a.x - b.x);
     const fragments = [opener];
@@ -600,14 +600,15 @@ function joinRangeHeadings(lines: PageTextItem[]): PageTextItem[] {
 
 /** Keep table cells separate; join adjacent fragments of an ordinary text line. */
 function textLines(items: PageTextItem[]): PageTextItem[] {
+  const fragments = items
+    .filter((item) => item.text.trim() &&
+      [item.x, item.y, item.width, item.height].every(Number.isFinite))
+    .map((item) => ({ ...item, text: item.text.trim() }))
+    .sort(order);
   const lines: PageTextItem[] = [];
-  for (const source of [...items].sort(order)) {
-    if (
-      !source.text.trim() ||
-      ![source.x, source.y, source.width, source.height].every(Number.isFinite)
-    )
-      continue;
-    const item = { ...source, text: source.text.trim() };
+  // Generic line joining skips numeric cells, which can move the separator
+  // across a narrow number in a split range heading.
+  for (const item of joinRangeHeadings(fragments)) {
     const previous = lines.findLast(
       (l) =>
         Math.abs(l.y - item.y) <
@@ -627,7 +628,7 @@ function textLines(items: PageTextItem[]): PageTextItem[] {
       );
     } else lines.push(item);
   }
-  return joinRangeHeadings(lines)
+  return lines
     .sort(order)
     .filter((l) => !(l.y > 0.94 && /^[\s\-–—]*\d{1,4}[\s\-–—]*$/.test(l.text)));
 }
