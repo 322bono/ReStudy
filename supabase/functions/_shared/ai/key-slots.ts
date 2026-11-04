@@ -1,4 +1,5 @@
-import { generationModels,catalogVersion,generationContractVersion,isGenerationModel } from "./catalog.ts";
+import { generationModels,catalogVersion,generationContractVersion,isGenerationModel,requiresFreeProject } from "./catalog.ts";
+import { verifyGoogleFreeProject } from "./google-free-project.ts";
 import { decryptKey, encryptKey, type Provider } from "./crypto.ts";
 import { ProviderError } from "./providers.ts";
 import { discoverProviderModels, ModelDiscoveryError } from "./providers-discovery.ts";
@@ -10,18 +11,21 @@ export function checked(result: { data: any; error: any }): any { if (result.err
 export async function readProfile(ctx: AuthContext): Promise<Json> { return checked(await ctx.admin.from("profiles").select("data").eq("user_id", ctx.user.id).maybeSingle())?.data ?? {}; }
 export async function loadProviders(ctx: AuthContext): Promise<any[]> { return checked(await ctx.admin.from("ai_providers").select("provider,data").eq("user_id", ctx.user.id)) ?? []; }
 export async function loadSlots(ctx: AuthContext): Promise<Json[]> { return checked(await ctx.admin.from("ai_key_slots").select("*").eq("user_id", ctx.user.id).order("id")) ?? []; }
-export function slotModels(slot: Json): typeof generationModels {
+const availableModels = (verifierConfigured: boolean) =>
+  generationModels.filter(m => verifierConfigured || !requiresFreeProject(m.provider, m.id));
+export function slotModels(slot: Json, verifierConfigured = !!verifyGoogleFreeProject): typeof generationModels {
   const ids = Array.isArray(slot.data?.modelIds) ? slot.data.modelIds : [];
-  return generationModels.filter(m => m.provider === slot.provider && ids.includes(m.id));
+  return availableModels(verifierConfigured).filter(m => m.provider === slot.provider && ids.includes(m.id));
 }
-export function publicSlot(slot: Json): Json {
+export function publicSlot(slot: Json, verifierConfigured = !!verifyGoogleFreeProject): Json {
   const d=slot.data??{},state=providerState(slot.provider,d,true);
-  if(slot.provider!=='gemini'||d.generation_contract_version!==generationContractVersion)state.generation_verified=false;
-  const available=slotModels(slot),saved=Array.isArray(d.selectedModels)?d.selectedModels:undefined;
+  if(slot.provider!=='gemini'||![generationContractVersion,'validated-json-v2-gemma4'].includes(d.generation_contract_version))state.generation_verified=false;
+  const available=slotModels(slot,verifierConfigured),saved=Array.isArray(d.selectedModels)?d.selectedModels:undefined;
   const selected=saved?.filter((id:string)=>available.some(model=>model.id===id))??[];
   // Adapt historic nonempty Gemini selections without rewriting stored IDs.
   // An explicitly empty configured pool remains disabled.
-  const selectedModels=saved?.length===0&&d.poolConfigured===true?[]:selected.length?selected:available.map(model=>model.id);
+  const selectedModels=d.poolConfigured!==true ? available.map(model=>model.id) :
+    saved?.length===0 ? [] : selected.length ? selected : available.map(model=>model.id);
   return {...state,enabled:state.enabled&&slot.provider==='gemini',id:slot.id,label:d.label??'API 키',legacy:d.legacy===true,quotaGroup:d.quotaGroup??'shared',models:available,selectedModels,notice:slot.provider==='nvidia'?'기존 키는 보존됩니다. 과금 없는 모델 전용 정책으로 NVIDIA 생성은 중지되어 있습니다.':undefined};
 }
 function group(value: unknown): string {
@@ -50,7 +54,7 @@ export async function credentialAction(body: Json, ctx: AuthContext, master: str
   const slots=await loadSlots(ctx);
   if(action==='status'){
     const [profile,jobs,usage]=await Promise.all([readProfile(ctx),ctx.admin.from('ai_jobs').select('id,kind,status,attempts,available_at,created_at,updated_at,data').eq('user_id',ctx.user.id).order('created_at',{ascending:false}).limit(30).then(checked),ctx.admin.from('ai_usage_logs').select('id,job_id,data,created_at').eq('user_id',ctx.user.id).order('created_at',{ascending:false}).limit(50).then(checked)]);
-    return{providers: (['nvidia','gemini'] as Provider[]).map(provider=>{const credentials=slots.filter(s=>s.provider===provider).map(publicSlot);return{...providerState(provider,credentials[0]??{},credentials.length>0),provider,credentials};}),models:generationModels,settings:sanitizeSettings(profile.ai_settings),encryption_configured:!!master,
+    return{providers: (['nvidia','gemini'] as Provider[]).map(provider=>{const credentials=slots.filter(s=>s.provider===provider).map(slot=>publicSlot(slot));return{...providerState(provider,credentials[0]??{},credentials.length>0),provider,credentials};}),models:availableModels(!!verifyGoogleFreeProject),settings:sanitizeSettings(profile.ai_settings),encryption_configured:!!master,free_project_verification_configured:!!verifyGoogleFreeProject,
       jobs:jobs.map((r:Json)=>({id:r.id,kind:r.kind,status:r.status,attempts:r.attempts,available_at:r.available_at,created_at:r.created_at,updated_at:r.updated_at,last_error:r.data?.last_error??null})),
       usage:usage.map((r:Json)=>({id:r.id,job_id:r.job_id,created_at:r.created_at,...Object.fromEntries(['provider','credential_id','key_label','model','kind','success','attempt','duration_ms','error','diagnostic','response_metadata','http_status','usage'].filter(k=>r.data?.[k]!==undefined).map(k=>[k,r.data[k]]))}))};
   }
@@ -67,6 +71,7 @@ export async function credentialAction(body: Json, ctx: AuthContext, master: str
     if(provider==='nvidia'&&body.enabled)throw new AiError('free_only_policy');
     const changes:Json={enabled:body.enabled,quotaGroup:group(body.quotaGroup??slot.data.quotaGroup)};
     if(body.selectedModels!==undefined){const allowed=slotModels(slot).map(m=>m.id);if(!Array.isArray(body.selectedModels)||body.selectedModels.length>50||body.selectedModels.some((id:unknown)=>typeof id!=='string'||!allowed.includes(id)))throw new AiError('invalid_model');changes.selectedModels=[...new Set(body.selectedModels)];changes.poolConfigured=true;}
+    if(body.autoModels===true)changes.poolConfigured=false;
     await patchSlot(ctx,slot,changes);return{ok:true};
   }
   if(!['save','check','discover'].includes(action))throw new AiError('invalid_action');

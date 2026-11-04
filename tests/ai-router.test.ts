@@ -3,6 +3,7 @@ import { runTask, type ProviderState } from '../supabase/functions/_shared/ai/ro
 
 // Transport-only fixtures: no live API calls and no user database writes.
 const primary = 'gemma-4-26b-a4b-it', fallback = 'gemma-4-31b-it';
+const flash = 'gemini-3.8-flash', flashLite = 'gemini-3.5-flash-lite';
 const output = { questions: [{ type: 'short_answer', difficulty: 'easy', prompt: '테스트', answer: '2', explanation: '테스트 해설', options: [], misconception_tags: [], source_citations: ['source-a'] }] };
 const state = (): ProviderState => ({ provider: 'gemini', enabled: true, model: primary, access: 'free_confirmed', status: 'connected', selectedModels: [primary, fallback] });
 const input = { kind: 'generate_questions' as const, prompt: '테스트 자료', sourceIds: ['source-a'], count: 1 };
@@ -68,18 +69,69 @@ describe('durable no-charge routing', () => {
     expect(await runTask(input, ctx)).toMatchObject({ status: 'succeeded', model: fallback }); expect(calls).toBe(2);
   });
   it('tries the fallback only when the provider identifies a per-model quota', async () => {
-    let calls = 0;
-    const ctx = context(0, [state()], (async () => ++calls === 1 ? new Response(JSON.stringify({ error: { details: [{ violations: [{ quotaDimensions: { model: primary } }] }] } }), { status: 429 }) : response()) as typeof fetch);
-    expect(await runTask(input, ctx)).toMatchObject({ status: 'succeeded', model: fallback }); expect(calls).toBe(2);
+    const seen: string[] = [];
+    const slots = ['a', 'b'].map(credentialId => ({ ...state(), credentialId }));
+    const ctx = context(0, slots, (async url => {
+      const model = String(url).includes(primary) ? primary : fallback;
+      seen.push(model);
+      return model === primary ? new Response(JSON.stringify({ error: { details: [{ violations: [{ quotaDimensions: { model } }] }] } }), { status: 429 }) : response();
+    }) as typeof fetch);
+    expect(await runTask(input, ctx)).toMatchObject({ status: 'succeeded', model: fallback });
+    expect(seen).toEqual([primary, fallback]);
   });
-  it('rotates credentials while keeping the smaller allowed model first', async () => {
+  it('rotates both models across jobs while distributing them over credentials', async () => {
     const keys: string[] = [];
-    const slots = ['a', 'b', 'c', 'd'].map(credentialId => ({ ...state(), credentialId, selectedModels: [fallback, primary] }));
-    for (const rotationIndex of [0, 2, 4, 6]) {
+    const slots = ['a', 'b'].map(credentialId => ({ ...state(), credentialId, selectedModels: [fallback, primary] }));
+    for (const [rotationIndex, model] of [primary, fallback, primary, fallback].entries()) {
       const ctx = context(rotationIndex, slots); ctx.getKey = async (_provider?: string, credentialId?: string) => { keys.push(credentialId!); return 'test-only-key'; };
-      expect(await runTask(input, ctx)).toMatchObject({ status: 'succeeded', model: primary });
+      expect(await runTask(input, ctx)).toMatchObject({ status: 'succeeded', model });
     }
-    expect(keys).toEqual(['a', 'b', 'c', 'd']);
+    expect(keys).toEqual(['a', 'a', 'b', 'b']);
+  });
+  it('avoids persisted quota cooldowns even when a sibling key lacks its own copy', async () => {
+    const transport = vi.fn(async () => response());
+    const slots = [
+      { ...state(), credentialId: 'a' },
+      { ...state(), credentialId: 'b', quotaCooldowns: { '': new Date(1060000).toISOString() } },
+    ];
+    expect(await runTask(input, context(0, slots, transport as typeof fetch))).toMatchObject({ status: 'paused', retryAt: 1060000 });
+    expect(transport).not.toHaveBeenCalled();
+  });
+  it('checks each Flash inference with the trusted billing verifier', async () => {
+    const events: string[] = [];
+    const flashSlot = { ...state(), model: flash, selectedModels: [flash] };
+    const transport = (async () => {
+      events.push('inference');
+      return events.length === 2 ? new Response('{}', { status: 503 }) : response();
+    }) as typeof fetch;
+    const ctx = {
+      ...context(0, [flashSlot], transport),
+      verifyFreeProject: async (key: string) => { events.push(key); return '123456789012'; },
+    };
+    expect(await runTask(input, ctx)).toMatchObject({ status: 'succeeded', model: flash });
+    expect(events).toEqual(['test-only-key', 'inference', 'test-only-key', 'inference']);
+  });
+  it('falls back to Gemma when billing cannot be verified for any Flash on a key', async () => {
+    const seen: string[] = [];
+    const verifiedKeys: string[] = [];
+    const slot = { ...state(), selectedModels: [flash, flashLite, primary] };
+    const ctx = {
+      ...context(0, [slot], (async url => { seen.push(String(url)); return response(); }) as typeof fetch),
+      allowPaid: true,
+      preferredModel: flash,
+      verifyFreeProject: async (key: string) => { verifiedKeys.push(key); return undefined; },
+    };
+    expect(await runTask(input, ctx)).toMatchObject({ status: 'succeeded', model: primary });
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toContain(primary);
+    expect(verifiedKeys).toEqual(['test-only-key']);
+  });
+  it('never sends Flash inference based on a saved free attestation or allowPaid', async () => {
+    const transport = vi.fn(async () => response());
+    const slot = { ...state(), model: flash, selectedModels: [flash] };
+    const ctx = { ...context(0, [slot], transport as typeof fetch), allowPaid: true };
+    expect(await runTask(input, ctx)).toMatchObject({ status: 'paused', lastError: 'billing_confirmation_required' });
+    expect(transport).not.toHaveBeenCalled();
   });
   it('shares timeout health across one account group without blocking another group', async () => {
     const first = { ...state(), credentialId: 'a', quotaGroup: 'account' };
@@ -129,7 +181,11 @@ describe('durable no-charge routing', () => {
     await expect(runTask(input, ctx)).rejects.toThrow(); expect(calls).toBe(1);
   });
   it('honors a selected allowed role model while retaining fallback', async () => {
-    const ctx = { ...context(), preferredProvider: 'gemini' as const, preferredModel: fallback };
+    const slots = [
+      { ...state(), credentialId: 'a', selectedModels: [primary] },
+      { ...state(), credentialId: 'b', selectedModels: [fallback] },
+    ];
+    const ctx = { ...context(0, slots), preferredProvider: 'gemini' as const, preferredModel: fallback };
     expect(await runTask(input, ctx)).toMatchObject({ status: 'succeeded', model: fallback });
   });
   it('rejects generation that ignores requested type or difficulty', async () => {

@@ -1,9 +1,10 @@
 import type { Provider } from "./crypto.ts";
-import { modelFor,isGenerationModel,type ModelDefinition } from "./catalog.ts";
+import { modelFor,isGenerationModel,requiresFreeProject,type ModelDefinition } from "./catalog.ts";
+import type { FreeProjectVerifier } from "./google-free-project.ts";
 import { outputSchema, type TaskKind } from "./schemas.ts";
 
 export class ProviderError extends Error {
-  constructor(public code: "rate_limited" | "auth_error" | "provider_error" | "network_error" | "timeout" | "invalid_response" | "model_unavailable" | "request_invalid" | "model_access_denied", public retryAt?: number, public status?: number,public quotaScope:'group'|'model'='group',public diagnostic?:string,public responseMetadata?:ResponseMetadata) { super(code); }
+  constructor(public code: "rate_limited" | "auth_error" | "provider_error" | "network_error" | "timeout" | "invalid_response" | "model_unavailable" | "request_invalid" | "model_access_denied" | "billing_confirmation_required", public retryAt?: number, public status?: number,public quotaScope:'group'|'model'='group',public diagnostic?:string,public responseMetadata?:ResponseMetadata) { super(code); }
 }
 export type ResponseMetadata={finish_reason:string;content_chars:number;reasoning_chars:number;tool_calls:number;usage:Record<string,number>;request_model?:string;schema?:Record<string,unknown>};
 function nvidiaOptions(model:ModelDefinition){return {...(model.nvidiaThinking==='disabled'?{chat_template_kwargs:{enable_thinking:false}}:{}),...(model.nvidiaReasoningEffort?{reasoning_effort:model.nvidiaReasoningEffort}:{})};}
@@ -116,9 +117,10 @@ export async function checkConnection(provider: Provider, model: string, key: st
   }
   if (provider === "gemini" && (!data.supportedGenerationMethods?.includes("generateContent") || data.name !== `models/${model}`)) throw new ProviderError("model_unavailable");
 }
-export async function generate(provider: Provider, model: string, key: string, input: ProviderInput, transport: typeof fetch, now: number,timeoutMs=20000): Promise<{ raw: unknown; usage: Record<string, number>;metadata:ResponseMetadata }> {
+export async function generate(provider: Provider, model: string, key: string, input: ProviderInput, transport: typeof fetch, now: number,timeoutMs=20000,verifyFreeProject?:FreeProjectVerifier): Promise<{ raw: unknown; usage: Record<string, number>;metadata:ResponseMetadata }> {
   const definition=modelFor(provider,model);if(!definition)throw new ProviderError('model_unavailable');
   if(!isGenerationModel(provider,model))throw new ProviderError('model_access_denied',undefined,undefined,'group','free_only_policy');
+  const flash = requiresFreeProject(provider, model);
   validateHeaderKey(key);
   validateProviderInput(input,definition);
   if(!Number.isInteger(timeoutMs)||timeoutMs<1||timeoutMs>125000)throw new ProviderError('request_invalid',undefined,undefined,'group','timeout_invalid');
@@ -139,12 +141,16 @@ export async function generate(provider: Provider, model: string, key: string, i
     // Gemma's hosted guide documents system/image/thinking support, but does
     // not promise Gemini's responseFormat/schema or store extensions. Ask for
     // JSON in the prompt; the parser and task validator remain mandatory.
-    generationConfig: { maxOutputTokens: Math.min(input.kind==='wrong_review'?4096:8192,definition.maxOutputTokens??8192), thinkingConfig: { thinkingLevel: definition.geminiThinkingLevel??"MINIMAL" } },
+    generationConfig: { maxOutputTokens: Math.min(input.kind==='wrong_review'?4096:8192,definition.maxOutputTokens??8192), thinkingConfig: { thinkingLevel: flash ? "LOW" : definition.geminiThinkingLevel??"MINIMAL" }, ...(flash ? { responseMimeType: "application/json" } : {}) },
   };
   const serialized=JSON.stringify(body);
   // Google's inline limit covers the complete request, including base64
   // expansion, system instruction and JSON overhead (official limit: 20MB).
   if(new TextEncoder().encode(serialized).byteLength>20_000_000)throw new ProviderError('request_invalid',undefined,undefined,'group','request_size_exceeded');
+  if (flash) {
+    const project = await verifyFreeProject?.(key).catch(() => undefined);
+    if (!project) throw new ProviderError("billing_confirmation_required", undefined, undefined, "group", "free_project_unverified");
+  }
   let response: Response;
   try { response = await transport(url, { method: "POST", headers, body: serialized, redirect: "error", signal: AbortSignal.timeout(timeoutMs) }); }
   catch(error) { throw new ProviderError(error instanceof Error&&['TimeoutError','AbortError'].includes(error.name)?'timeout':"network_error"); }

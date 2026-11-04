@@ -1,5 +1,6 @@
 const messages:Record<string,string>={timeout:'AI 응답을 110초 동안 기다렸지만 대기 시간이 초과됐습니다. 저장된 분할부터 다시 이어갈 수 있습니다.',network_error:'AI 제공자 연결이 끊겼습니다. 저장된 작업에서 다시 시도할 수 있습니다.',provider_error:'AI 제공자 서버에서 오류가 발생했습니다.',rate_limited:'AI 제공자의 사용 한도에 도달했습니다. 표시된 재시도 시각 이후에 다시 진행하세요.',auth_error:'API 키 인증에 실패했습니다. 설정에서 키를 확인하세요.',model_access_denied:'이 키에서 해당 모델을 사용할 권한이 없습니다.',model_unavailable:'해당 모델의 접근 경로를 찾지 못했습니다.',request_invalid:'모델이 요청 형식이나 출력 한도를 거절했습니다.',invalid_response:'AI 응답이 필요한 JSON 구조와 맞지 않아 저장하지 않았습니다.',source_text_too_large:'요청 본문이 모델 한도를 넘습니다. 범위를 줄여 주세요.',billing_confirmation_required:'무료 사용 계정 여부를 설정에서 확인해 주세요.',no_available_provider:'사용 가능한 키·모델이 없습니다. 연결 상태, 선택 모델과 무료 사용 확인을 점검하세요.',all_providers_failed:'이번 실행을 완료하지 못했습니다. 저장된 분할을 이어서 준비할 수 있습니다.',processing_failed:'결과 처리 또는 저장 중 오류가 발생했습니다. 저장된 작업을 다시 이어갈 수 있습니다.'};
-messages.free_only_policy='무료 전용 Gemma 4 모델만 호출할 수 있습니다. 설정에서 Google API 연결을 확인하세요.';
+messages.billing_confirmation_required='Google 프로젝트의 결제 미연결 상태를 확인하지 못했습니다. 확인 가능한 무료 모델을 사용하거나 설정에서 연결을 확인하세요.';
+messages.free_only_policy='지원되는 무료 모델을 선택해 주세요. 설정에서 Google API 연결을 확인할 수 있습니다.';
 messages.source_incomplete='모델이 원본에서 풀이에 필요한 조건을 읽지 못했습니다. 출처 보기에서 지문·보기·그림이 모두 포함됐는지 확인한 뒤 다시 분석해 주세요.';
 export const aiFailureText=(code:unknown)=>typeof code==='string'?(messages[code]??'작업을 완료하지 못했습니다. 연결 설정과 최근 시도 내역을 확인하세요.'):'아직 완료된 결과가 없습니다.';
 const diagnostics:Record<string,string>={

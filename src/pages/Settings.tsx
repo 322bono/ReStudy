@@ -80,6 +80,7 @@ type Preferences = {
 type Row = Record<string, unknown>;
 type SettingsData = Preferences & {
   providers: ProviderState[];
+  freeProjectVerificationConfigured: boolean;
   usage: Row[];
   jobs: Row[];
 };
@@ -217,6 +218,7 @@ function readSettings(value: unknown): SettingsData {
     dailyLimit: data.dailyLimit as number,
     maxRetries: data.maxRetries as number,
     allowPaid: data.allowPaid === true,
+    freeProjectVerificationConfigured: data.free_project_verification_configured === true,
     modelRoles,
     providers: providers.map((provider) => {
       const row = rows.find((item) => item.provider === provider) || {};
@@ -446,7 +448,11 @@ function CredentialCard({ provider, credential, allowPaid, busy, onAction, onRep
       return <label key={model.id} className="cloud-model-choice" htmlFor={`${fieldId}-model-${model.id}`}><input id={`${fieldId}-model-${model.id}`} type="checkbox" checked={checked} disabled={!!busy || !checked && !allowed} onChange={(event) => setSelected((current) => event.target.checked ? [...new Set([...current, model.id])] : current.filter((id) => id !== model.id))} /><span><strong>{model.label}</strong>{model.label !== model.id ? <code>{model.id}</code> : null}<small>{modelDetails(model)}</small>{reason ? <small className="cloud-model-reason">{reason}</small> : null}</span></label>;
     })}{missing.map((modelId) => <label key={modelId} className="cloud-model-choice" htmlFor={`${fieldId}-missing-${modelId}`}><input id={`${fieldId}-missing-${modelId}`} type="checkbox" checked disabled={!!busy} onChange={() => setSelected((current) => current.filter((id) => id !== modelId))} /><span><strong>{modelId}</strong><small>현재 목록에서 확인되지 않은 저장된 선택 · 선택 해제 가능</small></span></label>)}</div>{!credential.models.length ? <p className="cloud-help">이 키에서 확인한 모델 목록이 없습니다. 모델 목록을 갱신해 주세요.</p> : null}
       <label className="cloud-field cloud-quota-group" htmlFor={`${fieldId}-group`}><span>한도 그룹</span><input id={`${fieldId}-group`} value={quotaGroup} maxLength={64} disabled={!!busy} placeholder="shared" onChange={(event) => setQuotaGroup(event.target.value)} /><small>같은 프로젝트·계정의 키는 같은 한도 그룹을 사용하세요.</small></label>
-      {!selected.length ? <p className="cloud-help">선택한 모델이 없으면 이 키는 생성 작업에서 제외됩니다.</p> : null}<Button size="sm" variant="secondary" disabled={!!busy || !dirty} busy={busy === `models-${actionId}`} onClick={() => onAction(`models-${actionId}`, "credential.toggle", { ...payload, enabled: credential.enabled, selectedModels: selected, quotaGroup: quotaGroup.trim() || "shared" }, "선택 모델과 한도 그룹을 저장했습니다.")}>선택 모델·한도 그룹 저장</Button>
+      {!selected.length ? <p className="cloud-help">선택한 모델이 없으면 이 키는 생성 작업에서 제외됩니다.</p> : null}
+      <div className="cloud-actions">
+        <Button size="sm" variant="secondary" disabled={!!busy || !dirty} busy={busy === `models-${actionId}`} onClick={() => onAction(`models-${actionId}`, "credential.toggle", { ...payload, enabled: credential.enabled, selectedModels: selected, quotaGroup: quotaGroup.trim() || "shared" }, "선택 모델과 한도 그룹을 저장했습니다.")}>선택 모델·한도 그룹 저장</Button>
+        <Button size="sm" variant="ghost" disabled={!!busy || !credential.models.length} busy={busy === `auto-models-${actionId}`} onClick={() => onAction(`auto-models-${actionId}`, "credential.toggle", { ...payload, enabled: credential.enabled, autoModels: true, quotaGroup: quotaGroup.trim() || "shared" }, "이 키의 사용 가능한 모델을 자동으로 선택합니다.")}>사용 가능한 모델 자동 선택</Button>
+      </div>
     </details>
     {deleting ? <div className="cloud-delete-confirm"><p>‘{credential.label}’ 키만 삭제할까요?</p><div className="cloud-actions"><Button variant="danger" size="sm" disabled={!!busy} busy={busy === `delete-${actionId}`} onClick={async () => { if (await onAction(`delete-${actionId}`, "credential.delete", payload, "선택한 API 키를 삭제했습니다.")) setDeleting(false); }}>이 키 삭제</Button><Button variant="ghost" size="sm" disabled={!!busy} onClick={() => setDeleting(false)}>취소</Button></div></div> : null}
   </article>;
@@ -739,7 +745,9 @@ export default function Settings({
               <section className="cloud-section">
                 <div className="cloud-section-title">
                   <h2>AI 서비스</h2>
-                  <p>무료 전용 Gemma 4 두 모델만 사용합니다. 유료 모델로 전환하지 않습니다.</p>
+                  <p>{settings.freeProjectVerificationConfigured
+                    ? "Gemini Flash는 Google에서 결제 미연결을 확인한 요청에만 사용합니다."
+                    : "Gemma 4를 사용할 수 있습니다. Gemini Flash를 쓰려면 서버에 Google 결제 확인 연결이 필요합니다."}</p>
                 </div>
                 <div className="cloud-provider-grid">
                   {settings.providers.filter(provider=>provider.provider==='gemini').map((provider) => <article className="cloud-provider" key={provider.provider}>
@@ -769,7 +777,7 @@ export default function Settings({
                     </p>
                   </div>
                   <div className="cloud-form-grid">
-                    <div className="cloud-field"><span>사용 모델</span><strong>Gemma 4 26B · 31B</strong><small>26B를 먼저 사용하고 필요할 때 31B로 이어갑니다.</small></div>
+                    <div className="cloud-field"><span>사용 모델</span><strong>무료 모델 자동 순환</strong><small>사용 가능한 모델을 번갈아 쓰고 한도에 걸린 모델은 잠시 건너뜁니다.</small></div>
                     <label className="cloud-field" htmlFor={`${id}-daily`}>
                       <span>하루 최대 AI 작업 수</span>
                       <NumberInput

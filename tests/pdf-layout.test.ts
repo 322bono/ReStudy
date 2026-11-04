@@ -247,6 +247,46 @@ describe("evidence-based question crops", () => {
     expect(result[1].text).not.toContain("다른 문항의 그래프");
   });
 
+  it("shares a table when PDF text omits the graphics around the number range", () => {
+    const badge = (text: string, y: number) => ({
+      ...line(text, .51111, y, .04803, .01764),
+      fontName: "question-badge",
+    });
+    const result = detectProblems([page(78, [
+      badge("309", .07896),
+      line("다음 중 옳지 않은 것은?", .51111, .107, .32, .01082),
+      line("⑤ 앞 문항의 마지막 선택지", .51111, .32, .31, .01082),
+      { ...line("310~311", .51927, .36056, .06144, .00941), fontName: "question-badge" },
+      line("표는 공통 자료를 나타낸 것이다.", .59759, .36061, .29, .01082),
+      line("표의 마지막 행", .58667, .47223, .29, .00941),
+      badge("310", .50026),
+      line("공통 자료의 특징을 설명하시오.", .51111, .52796, .35, .01082),
+      badge("311", .66307),
+      line("위 표를 해석한 내용으로 옳은 것은?", .51111, .69077, .35, .01082),
+    ])]);
+    expect(result.map(q => q.number)).toEqual([309, 310, 311]);
+    const [previous, first, second] = result;
+    expect([previous.sharedRegionCount, first.sharedRegionCount, second.sharedRegionCount]).toEqual([0, 1, 1]);
+    expect(first.regions[0]).toEqual(second.regions[0]);
+    expect(first.regions[0].y).toBeLessThan(.36056);
+    expect(first.regions[0].y + first.regions[0].h).toBeGreaterThan(.48164);
+    expect(previous.regions[0].y + previous.regions[0].h).toBeLessThan(.36056);
+    expect(first.text).toContain("표의 마지막 행");
+    expect(second.text).toContain("표의 마지막 행");
+  });
+
+  it("keeps an ordinary numeric interval with the preceding question", () => {
+    const result = detectProblems([page(1, [
+      line("309. 표의 값으로 옳은 것은?", .1, .1),
+      line("310~311", .1, .2, .05),
+      line("표에 기록된 온도 범위", .16, .2, .28),
+      line("310. 별개의 값을 구하시오.", .1, .4),
+      line("311. 별개의 값을 구하시오.", .1, .65),
+    ])]);
+    expect(result.map(q => q.sharedRegionCount)).toEqual([0, 0, 0]);
+    expect(result[0].text).toContain("표에 기록된 온도 범위");
+  });
+
   it("retains all choices beside a late question number in the other column", () => {
     const badge = (text: string, x: number, y: number) => ({
       ...line(text, x, y, .04, .016),

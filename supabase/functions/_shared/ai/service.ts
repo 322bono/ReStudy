@@ -1,5 +1,6 @@
 import { decryptKey, encode64, type Provider } from "./crypto.ts";
 import { modelFor,catalogVersion,isGenerationModel } from "./catalog.ts";
+import { verifyGoogleFreeProject } from "./google-free-project.ts";
 import { AiError, checked, loadSlots, publicSlot, patchSlot, readProfile, type AuthContext } from "./credentials.ts";
 import { cacheKey, processJob, validId, validateRequest, type Job, type JobRequest, type JobStore } from "./jobs.ts";
 import { providerState, sanitizeSettings, type Settings } from "./settings.ts";
@@ -130,7 +131,7 @@ export async function providerContext(ctx: AuthContext, jobId: string, settings:
   const quotas=checked(await ctx.admin.from('ai_quota_cooldowns').select('provider,quota_group,model,cooldown_until').eq('user_id',ctx.user.id));
   const role = input.images?.length ? "vision" : input.kind !== "analyze_problem" ? "generation" : "analysis";
   const choice = settings.modelRoles?.[role]; const candidate = choice && modelFor(choice.provider, choice.model),selected=candidate&&isGenerationModel(candidate.provider,candidate.id)?candidate:undefined;
-  return { mode: 'gemini_only', allowPaid: false, ...(selected ? { preferredProvider: selected.provider,preferredModel:selected.id } : {}), providers: slots.map(slot=>({...publicSlot(slot),provider:slot.provider,credentialId:slot.id,modelStates:Object.fromEntries(health.filter((h:Json)=>h.credential_id===slot.id).map((h:Json)=>[h.model,h.data])),quotaCooldowns:Object.fromEntries(quotas.filter((q:Json)=>q.provider===slot.provider&&q.quota_group===(slot.data.quotaGroup??'shared')).map((q:Json)=>[q.model,q.cooldown_until]))})) as RouterContext['providers'],
+  return { mode: 'gemini_only', allowPaid: false, verifyFreeProject:verifyGoogleFreeProject, ...(selected ? { preferredProvider: selected.provider,preferredModel:selected.id } : {}), providers: slots.map(slot=>({...publicSlot(slot),provider:slot.provider,credentialId:slot.id,modelStates:Object.fromEntries(health.filter((h:Json)=>h.credential_id===slot.id).map((h:Json)=>[h.model,h.data])),quotaCooldowns:Object.fromEntries(quotas.filter((q:Json)=>q.provider===slot.provider&&q.quota_group===(slot.data.quotaGroup??'shared')).map((q:Json)=>[q.model,q.cooldown_until]))})) as RouterContext['providers'],
     getKey: async (provider,credentialId) => {
       if (!master) throw new AiError("encryption_not_configured", 503);
       const record = checked(await ctx.admin.from("ai_key_slots").select("*").eq("user_id", ctx.user.id).eq("provider", provider).eq('id',credentialId).maybeSingle());

@@ -550,6 +550,7 @@ const BARE = /^\s*(\d{1,4})\s*$/;
 const NUMERIC_CELL = /^\s*\d+[.)．]?\s*$/;
 const RANGE =
   /^(?:\s*[\[［【(（|｜]|\s*(?:Questions?|문항)\s+)\s*(\d{1,4})\s*[~～\-–—]\s*(\d{1,4})\s*[\]］】)）|｜]?/i;
+const BARE_RANGE = /^(\d{1,4})\s*[~～\-–—]\s*(\d{1,4})(?=\s|$)/;
 const BRACKETED_RANGE =
   /^[\[［【(（|｜]\s*\d{1,4}\s*[~～\-–—]\s*\d{1,4}\s*[\]］】)）|｜]/;
 const ANSWERS =
@@ -855,7 +856,8 @@ function detectPage(layout: Layout, badgeStyles: Set<string>): ProblemCandidate[
   columns(layout);
   const rangeStarts: { column: number; top: number }[] = [];
   for (const line of layout.lines) {
-    const match = RANGE.exec(line.text);
+    const explicit = RANGE.exec(line.text);
+    const match = explicit ?? BARE_RANGE.exec(line.text);
     if (
       !match ||
       +match[1] < 1 ||
@@ -867,6 +869,14 @@ function detectPage(layout: Layout, badgeStyles: Set<string>): ProblemCandidate[
       0,
       layout.columns.findIndex(([l, r]) => line.x >= l && line.x < r),
     );
+    if (!explicit) {
+      // Drawn delimiters can be absent from the text layer. Verify the range
+      // against the first following question's badge font and alignment.
+      const next = layout.anchors.find((a) => a.column === column && a.line.y > line.y);
+      if (+match[1] === +match[2] || !line.fontName || next?.number !== +match[1] ||
+          next.line.fontName !== line.fontName || Math.abs(next.line.x - line.x) > .025)
+        continue;
+    }
     rangeStarts.push({ column, top: line.y });
     const members = layout.anchors.filter(
       (a) =>

@@ -1,12 +1,11 @@
 import type { Provider } from "./crypto.ts";
 
-export const catalogVersion='2026-11-03-no-charge-gemma4';
-export const generationContractVersion='validated-json-v2-gemma4';
+export const catalogVersion='2026-11-05-verified-free-google';
+export const generationContractVersion='validated-json-v3-verified-free';
 const nvidiaOrder=['nvidia/nemotron-3.5-lightning-30b-a3b','nvidia/nemotron-3.5-bolt-e4b','openai/gpt-oss-20b','nvidia/nemotron-3.5-super-vl-120b-a12b','nvidia/nemotron-3-super-120b-a12b','nvidia/nemotron-3-ultra-550b-a55b'];
 export function nvidiaModelRank(id:string){const index=nvidiaOrder.indexOf(id);return index<0?nvidiaOrder.length:index;}
 export type ModelDefinition = { provider: Provider; id: string; label: string; text: boolean; image: boolean; structured: boolean; maxInputTokens: number; maxInputChars: number; roles: string[]; documentation: string; maxOutputTokens?: number; requestModel?:string; nvidiaThinking?:'disabled'; nvidiaReasoningEffort?: 'none'|'low'; geminiThinkingLevel?:'LOW'|'MINIMAL'; freeEligible?: boolean; pricingDocumentation?: string; legacy?: boolean };
-// Request fields rechecked against official documentation and NVIDIA /v1/models
-// on 2026-11-04. Catalog version above tracks the unchanged no-charge policy.
+// Request fields and free eligibility are checked against provider documentation.
 // Eligibility is not a claim about a particular key's billing or quota.
 // NVIDIA's public list does not authenticate a key. Its hosted endpoint output
 // limit can be lower than the model's context window (notably GPT-OSS-20B).
@@ -28,14 +27,18 @@ export const models: ModelDefinition[] = [
   { provider: "gemini", id: "gemma-4-31b-it", label: "Gemma 4 31B · 무료 본문·이미지", text:true,image:true,structured:true,maxInputTokens:262144,maxInputChars:48000,maxOutputTokens:8192,geminiThinkingLevel:'MINIMAL',freeEligible:true,pricingDocumentation:'https://ai.google.dev/gemini-api/docs/pricing',roles:['concept_analysis','image_analysis','question_generation'],documentation:'https://ai.google.dev/gemma/docs/core/gemma_on_gemini_api' },
 ];
 export function modelFor(provider: Provider, id: string): ModelDefinition | undefined { return models.find((model) => model.provider === provider && model.id === id); }
-// This is an application policy, not a user-editable billing preference. Gemini
-// Flash has both free and paid rates; key metadata cannot prove a free project.
-// Gemma 4's documented paid tier is unavailable (checked 2026-11-03):
-// https://ai.google.dev/gemini-api/docs/pricing#gemma-4
-// Keep historic definitions above readable without permitting their execution.
 export function isGenerationModel(provider: Provider, id: string): boolean {
-  return provider === 'gemini' && (id === 'gemma-4-26b-a4b-it' || id === 'gemma-4-31b-it');
+  return provider === "gemini" && modelFor(provider, id)?.freeEligible === true;
+}
+export function requiresFreeProject(provider: Provider, id: string): boolean {
+  return isGenerationModel(provider, id) && id !== "gemma-4-26b-a4b-it" && id !== "gemma-4-31b-it";
 }
 export const generationModels = models.filter(model => isGenerationModel(model.provider, model.id));
-export function generationModelRank(id: string): number { return id === 'gemma-4-26b-a4b-it' ? 0 : 1; }
-export function defaultModel(provider: Provider): string { return (generationModels.find(model => model.provider === provider) ?? models.find(model => model.provider === provider && !model.legacy))!.id; }
+const generationOrder = ["gemma-4-26b-a4b-it", "gemini-3.5-flash-lite", "gemma-4-31b-it", "gemini-3.6-flash", "gemini-3.8-flash"];
+export function generationModelRank(id: string): number {
+  const rank = generationOrder.indexOf(id);
+  return rank < 0 ? generationOrder.length : rank;
+}
+export function defaultModel(provider: Provider): string {
+  return provider === "gemini" ? generationOrder[0] : models.find(model => model.provider === provider && !model.legacy)!.id;
+}

@@ -30,9 +30,17 @@ Supabase 기본 서버 환경의 URL/service-role/anon 키는 Edge Functions에 
 
 최초 계정은 서버에서 승인한 `setup_tokens`의 해시·만료·1회용 링크로만 만듭니다. 아이디와 비밀번호는 사용자가 앱 화면에서 직접 정합니다. 기본 비밀번호, 공개 회원가입, 이메일 주소 노출용 로그인 조회 API가 없습니다.
 
-설정 → AI 연결에서 사용자가 NVIDIA/Gemini 키를 입력합니다. 키는 전송 직후 입력란에서 제거되고 AES-GCM으로 서버에 저장됩니다. 무료 사용 확인과 모델 역할을 검토한 뒤 연결을 확인하세요. NVIDIA 모델 목록은 공개 응답일 수 있어 키 검증으로 간주하지 않고 짧은 실제 요청으로 확인합니다. Gemini 모델 목록 인증 확인과 실제 생성 성공은 구분합니다.
+설정 → AI 연결에서 Google Gemini API 키를 입력합니다. 키는 전송 직후 입력란에서 제거되고 AES-GCM으로 서버에 저장됩니다. 모델 목록 인증 확인과 실제 생성 성공은 별도로 표시합니다. 기본값은 키에서 조회된 지원 모델의 자동 선택입니다. 같은 Google 프로젝트의 여러 키에는 같은 한도 그룹을 지정합니다.
 
-유료 사용은 기본 꺼짐입니다. 키/한도/모델 오류로 생성할 수 없으면 남은 작업을 저장하고 외부 JSON 경로를 사용합니다. 가져오기·학습·재풀이는 AI를 호출하지 않습니다.
+Gemma 4의 두 호스팅 모델은 무료 전용입니다. Gemini 3.5 Flash-Lite, 3.6 Flash, 3.8 Flash는 Google의 결제 미연결 확인을 통과한 키로 호출할 수 있습니다. 모델·키 오류가 나면 사용 가능한 무료 후보를 순환하고, 모두 제한되면 남은 작업을 저장합니다. 가져오기·학습·재풀이는 AI를 호출하지 않습니다.
+
+### Gemini Flash의 무료 프로젝트 확인
+
+1. Google Cloud에서 무료 AI Studio 키가 속한 프로젝트에 대해 읽기 전용 검증 서비스 계정을 준비합니다. API Keys API, Resource Manager API, Cloud Billing API를 사용할 수 있어야 합니다.
+2. 검증 계정에 프로젝트별로 `apikeys.keys.lookup`과 `resourcemanager.projects.get`만 허용합니다. API 키 열람·생성, 프로젝트 변경, 결제 관리 권한은 필요하지 않습니다. [키 소속 조회](https://docs.cloud.google.com/api-keys/docs/reference/rest/v2/keys/lookupKey)와 [프로젝트 결제 조회](https://docs.cloud.google.com/billing/docs/reference/rest/v1/projects/getBillingInfo)를 참고합니다.
+3. 해당 서비스 계정의 JSON 자격 증명은 Supabase Edge Function Secrets의 `RE_GOOGLE_FREE_PROJECT_VERIFIER`에 등록합니다. 이 값은 서버에서만 사용합니다.
+
+서버는 각 Flash 추론 직전에 실제 Gemini 키가 속한 프로젝트를 찾고, 해당 프로젝트의 결제 계정 연결이 비어 있는지 확인합니다. Google 인증·조회에 실패하면 해당 키의 Flash 후보를 건너뜁니다. 사용자가 체크한 무료 사용 항목과 앱 설정값은 결제 조회를 대신하지 않습니다.
 
 ## GitHub Pages
 
