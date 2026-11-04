@@ -12,6 +12,7 @@ import {
   Crop,
   X,
   AlertCircle,
+  ListChecks,
 } from "lucide-react";
 import type { Concept, Material, Page, Question, Region } from "@/lib/types";
 import { api } from "@/lib/client";
@@ -63,6 +64,9 @@ export function Viewer({
     [splitIndex, setSplitIndex] = useState(0),
     [splitAxis, setSplitAxis] = useState<"x" | "y">("y"),
     [splitRatio, setSplitRatio] = useState(50);
+  const [batchMode, setBatchMode] = useState(false);
+  const [wrongIds, setWrongIds] = useState<string[]>([]);
+  const registering = useRef(false);
   const navigation = pageNavigation(data?.pages || [], requestedPage);
   const page = navigation.page ?? requestedPage;
   useEffect(() => {
@@ -132,6 +136,7 @@ export function Viewer({
   if (!data) return <div className="loading">자료를 여는 중…</div>;
   const q = data.questions.find((q) => q.id === selected),
     p = data.pages.find((p) => p.number === page);
+  const wrongSelection = new Set(wrongIds);
   const choose = (q: Question) => {
     setSelected(q.id);
     setMergeId("");
@@ -144,6 +149,40 @@ export function Viewer({
     setStartPage(q.page || q.regions[0]?.page || 1);
     setNumber(String(q.number));
     setUnit(q.unit);
+  };
+  const chooseForViewer = (question: Question) => {
+    if (!batchMode) {
+      choose(question);
+      return;
+    }
+    if (registering.current) return;
+    if (!wrongSelection.has(question.id) && wrongIds.length >= 200) {
+      onError("한 번에 200문제까지 등록할 수 있습니다.");
+      return;
+    }
+    setWrongIds((current) =>
+      current.includes(question.id)
+        ? current.filter((id) => id !== question.id)
+        : [...current, question.id],
+    );
+  };
+  const register = async (ids: string[]) => {
+    if (!ids.length || registering.current) return;
+    registering.current = true;
+    setBusy("오답 추가");
+    try {
+      const result = await api("mistakes", "POST", { questionIds: ids });
+      await onChange();
+      onRegistered(
+        result.questionIds || ids,
+        result.autoAnalyzeQuestionIds || [],
+      );
+    } catch (error) {
+      onError((error as Error).message);
+    } finally {
+      registering.current = false;
+      setBusy("");
+    }
   };
   const begin = (question?: Question) => {
     if (!manage) return;
@@ -223,6 +262,51 @@ export function Viewer({
           원본 열기
         </SecureLink>
       </div>
+      {!edit && data.questions.length > 0 && (
+        <div className="viewer-selection">
+          {batchMode ? (
+            <>
+              <div className="viewer-selection-info">
+                <strong aria-live="polite">{wrongIds.length}문제 선택</strong>
+                <span>PDF 영역이나 목록의 번호를 누르세요.</span>
+              </div>
+              <div className="viewer-selection-actions">
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={!!busy}
+                  onClick={() => {
+                    setWrongIds([]);
+                    setBatchMode(false);
+                  }}
+                >
+                  취소
+                </Button>
+                <Button
+                  size="sm"
+                  disabled={!wrongIds.length || !!busy}
+                  busy={busy === "오답 추가"}
+                  onClick={() => register(wrongIds)}
+                >
+                  {wrongIds.length
+                    ? `${wrongIds.length}문제 오답 등록`
+                    : "선택한 문제 등록"}
+                </Button>
+              </div>
+            </>
+          ) : (
+            <Button
+              size="sm"
+              variant="secondary"
+              disabled={!!busy}
+              onClick={() => setBatchMode(true)}
+            >
+              <ListChecks size={16} />
+              여러 문제 오답 등록
+            </Button>
+          )}
+        </div>
+      )}
       {data.material.error && (
         <div className="notice error">
           <AlertCircle size={17} />
@@ -378,24 +462,36 @@ export function Viewer({
                 />
                 {!edit &&
                   data.questions.flatMap((question) =>
-                    question.regions
-                      .filter((r) => r.page === page)
-                      .map((r, i) => (
+                    question.regions.map((r, i) =>
+                      r.page === page &&
+                      (!batchMode || i >= (question.sharedRegionCount ?? 0)) ? (
                         <button
                           key={question.id + "-" + i}
                           aria-label={`${question.number}번 문제 선택`}
-                          className={`question-box ${selected === question.id ? "selected" : ""} ${question.confirmed ? "confirmed" : ""}`}
+                          aria-pressed={
+                            batchMode
+                              ? wrongSelection.has(question.id)
+                              : undefined
+                          }
+                          disabled={batchMode && !!busy}
+                          className={`question-box ${(batchMode ? wrongSelection.has(question.id) : selected === question.id) ? "selected" : ""} ${question.confirmed ? "confirmed" : ""}`}
                           style={{
                             left: `${r.x * 100}%`,
                             top: `${r.y * 100}%`,
                             width: `${r.w * 100}%`,
                             height: `${r.h * 100}%`,
                           }}
-                          onClick={() => choose(question)}
+                          onClick={() => chooseForViewer(question)}
                         >
-                          <span>{question.number}</span>
+                          <span>
+                            {batchMode && wrongSelection.has(question.id) && (
+                              <Check size={12} />
+                            )}
+                            {question.number}
+                          </span>
                         </button>
-                      )),
+                      ) : null,
+                    ),
                   )}
                 {edit &&
                   [...regions, ...(drag ? [drag] : [])]
@@ -421,12 +517,14 @@ export function Viewer({
             )}
           </div>
         </section>
-        <aside className="question-sidebar">
+        <aside
+          className={`question-sidebar${batchMode ? " batch-selecting" : ""}`}
+        >
           <div className="question-list-heading">
             <h3>
               문제 <small>{data.questions.length}</small>
             </h3>
-            {manage && (
+            {manage && !batchMode && (
               <IconButton
                 label="문제 직접 추가"
                 disabled={!p || p.kind === "answers"}
@@ -452,16 +550,25 @@ export function Viewer({
                   <button
                     key={question.id}
                     data-number={question.number}
-                    className={`question-list-item ${selected === question.id ? "active" : ""}`}
-                    onClick={() => choose(question)}
+                    aria-pressed={
+                      batchMode ? wrongSelection.has(question.id) : undefined
+                    }
+                    disabled={batchMode && !!busy}
+                    className={`question-list-item ${(batchMode ? wrongSelection.has(question.id) : selected === question.id) ? "active" : ""}`}
+                    onClick={() => chooseForViewer(question)}
                   >
                     <span>
                       <strong>{question.number}번</strong>
                       <small>
-                        {question.unit ||
-                          `${question.page || question.regions[0]?.page}쪽`}
+                        {batchMode
+                          ? `PDF ${question.page}쪽`
+                          : question.unit ||
+                            `${question.page || question.regions[0]?.page}쪽`}
                       </small>
                     </span>
+                    {batchMode && wrongSelection.has(question.id) && (
+                      <Check size={16} aria-hidden="true" />
+                    )}
                   </button>
                 ))
             ) : (
@@ -544,7 +651,7 @@ export function Viewer({
                 취소
               </Button>
             </div>
-          ) : q ? (
+          ) : q && !batchMode ? (
             <div className="question-detail">
               <div className="row-between">
                 <h3>{q.number}번</h3>
@@ -657,7 +764,9 @@ export function Viewer({
                           min={1}
                           max={9999}
                           value={splitNumber ? Number(splitNumber) : undefined}
-                          onValueChange={(value) => setSplitNumber(String(value))}
+                          onValueChange={(value) =>
+                            setSplitNumber(String(value))
+                          }
                           onEmpty={() => setSplitNumber("")}
                         />
                       </label>
@@ -733,18 +842,7 @@ export function Viewer({
               <Button
                 variant="primary"
                 busy={!!busy}
-                onClick={() =>
-                  act("오답 추가", async () => {
-                    const result = await api("mistakes", "POST", {
-                      questionIds: [q.id],
-                    });
-                    await onChange();
-                    onRegistered(
-                      result.questionIds || [q.id],
-                      result.autoAnalyzeQuestionIds || [],
-                    );
-                  })
-                }
+                onClick={() => register([q.id])}
               >
                 <Plus size={15} />
                 오답 추가
