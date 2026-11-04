@@ -30,9 +30,12 @@ import { AddMistakes, Mistakes, type MistakeFilters } from "./mistakes";
 import { Solve } from "./solve";
 import { StudyPlayer, StudySetup } from "./learning";
 import { ContentManager } from "./content-manager";
+import { materialProgress } from "../src/services/api";
 const MaterialWorkspace = lazy(() => import("../src/pages/MaterialWorkspace"));
 const Bank = lazy(() => import("../src/pages/Bank"));
 const WrongWorkspace = lazy(() => import("../src/pages/WrongWorkspace"));
+const isPreparing = (material: { status: string; paused?: boolean }) =>
+  ["processing", "uploaded"].includes(material.status) && !material.paused;
 type View = { name: string; id?: string; page?: number; manage?: boolean };
 const navigation = [
   { id: "home", title: "홈", icon: Home },
@@ -125,19 +128,40 @@ export default function RestudyApp({
       window.removeEventListener("hashchange", pop);
     };
   }, [refresh, notify]);
+  const preparingIds = state?.materials.filter(isPreparing).map((material) => material.id).sort().join(",");
   useEffect(() => {
-    if (
-      !state?.materials.some(
-        (m) => ["processing", "uploaded"].includes(m.status) && !m.paused,
-      )
-    )
-      return;
-    const timer = setInterval(
-      () => refresh().catch((e) => notify(e.message)),
-      1500,
-    );
-    return () => clearInterval(timer);
-  }, [state?.materials, refresh, notify]);
+    if (!preparingIds) return;
+    const ids = preparingIds.split(",");
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout>;
+    async function poll() {
+      if (controller.signal.aborted) return;
+      try {
+        const updates = await materialProgress(ids, controller.signal);
+        if (controller.signal.aborted) return;
+        if (updates.length !== ids.length || updates.some((material) => !isPreparing(material))) {
+          await refresh();
+        } else {
+          const byId = new Map(updates.map((material) => [material.id, material]));
+          setState((previous) => previous && {
+            ...previous,
+            materials: previous.materials.map((material) => {
+              const update = byId.get(material.id);
+              return update && isPreparing(material) ? { ...material, ...update } : material;
+            }),
+          });
+        }
+      } catch {
+        // Keep the last saved progress when the connection is temporarily busy.
+      }
+      if (!controller.signal.aborted) timer = setTimeout(poll, 3000);
+    }
+    timer = setTimeout(poll, 3000);
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [preparingIds, refresh]);
   const navigate = (next: View) => {
     setMoreOpen(false);
     if (next.name === "bank") bankReturn.current = view;

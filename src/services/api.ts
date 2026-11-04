@@ -1,4 +1,21 @@
 import { edgeCall, getSupabase } from "./supabase";
+import type { Material } from "../../lib/types";
+
+type MaterialProgress = Pick<Material, "id" | "status" | "paused" | "progress" | "message" | "error" | "failedPage" | "completedPages">;
+
+export async function materialProgress(ids: string[], signal: AbortSignal): Promise<MaterialProgress[]> {
+  const db = getSupabase();
+  const { data: { session } } = await db.auth.getSession();
+  if (!session) throw new Error("다시 로그인해 주세요.");
+  const { data, error } = await db.from("documents")
+    .select("id,status,paused:data->paused,progress:data->progress,message:data->>message,error:data->>error,failedPage:data->failedPage,completedPages:data->completedPages")
+    .eq("user_id", session.user.id)
+    .in("id", ids)
+    .abortSignal(signal);
+  if (error) throw new Error("자료 진행 상태를 읽지 못했습니다.");
+  return data as MaterialProgress[];
+}
+
 export async function cloudApi<T = any>(
   path: string,
   method = "GET",
