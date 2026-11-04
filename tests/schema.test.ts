@@ -20,6 +20,23 @@ async function database(skipSlots=false){
   return db;
 }
 afterEach(async()=>{await db?.close()});
+test('archiving selected wrong answers preserves history and survives a stale solve update', async () => {
+ const c=await database(),doc=crypto.randomUUID(),otherDoc=crypto.randomUUID(),problem=crypto.randomUUID(),otherProblem=crypto.randomUUID(),mistake=crypto.randomUUID(),otherMistake=crypto.randomUUID(),session=crypto.randomUUID();
+ await c.query("insert into documents(id,user_id,title,subject,kind) values($1,$2,'교재','한국사','문제집'),($3,$4,'교재','한국사','문제집')",[doc,owner,otherDoc,other]);
+ await c.query('insert into problems(id,user_id,document_id,number,page,data) values($1,$2,$3,1,1,$4),($5,$6,$7,1,1,$4)',[problem,owner,doc,{explanation:'저장한 해설'},otherProblem,other,otherDoc]);
+ await c.query('insert into wrong_answers(id,user_id,problem_id,data) values($1,$2,$3,$4),($5,$6,$7,$4)',[mistake,owner,problem,{reviewCount:2,archived:false},otherMistake,other,otherProblem]);
+ await c.query('insert into solve_sessions(id,user_id,data) values($1,$2,$3)',[session,owner,{version:0}]);
+ const archive=()=>c.query<{ids:string[]}>('select archive_wrong_answers($1,$2) ids',[owner,[mistake,otherMistake]]);
+ await c.exec('set role service_role');
+ expect((await archive()).rows[0].ids).toEqual([mistake]);
+ expect((await archive()).rows[0].ids).toEqual([mistake]);
+ await c.query("select save_learning_session($1,'solve',$2,0,$3,null,$4)",[owner,session,{answers:{[problem]:{result:'correct'}}},[{id:mistake,reviewCount:3,archived:false}]]);
+ expect((await c.query<{data:unknown}>('select data from wrong_answers where id=$1',[mistake])).rows[0].data).toMatchObject({archived:true,reviewCount:3});
+ expect((await c.query<{data:unknown}>('select data from wrong_answers where id=$1',[otherMistake])).rows[0].data).toEqual({archived:false,reviewCount:2});
+ expect((await c.query<{data:unknown}>('select data from problems where id=$1',[problem])).rows[0].data).toEqual({explanation:'저장한 해설'});
+ await c.exec('reset role;set role authenticated');
+ await expect(archive()).rejects.toThrow(/permission/);
+});
 test('wrong review atomically saves only for the correct user, lease and problem version', async () => {
  const c=await database(),doc=crypto.randomUUID(),problem=crypto.randomUUID(),job=crypto.randomUUID(),lease=crypto.randomUUID();
  await c.query('insert into documents(id,user_id,title,subject,kind) values($1,$2,$3,$4,$5)',[doc,owner,'검증','과학','문제집']);

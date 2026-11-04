@@ -882,6 +882,9 @@ button svg {
 .selection-bar > span {
   margin-right: auto;
 }
+.mistake-selection {
+  flex-wrap: wrap;
+}
 .selection-bar .button {
   font-size: 11px;
   min-height: 31px;

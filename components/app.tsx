@@ -583,7 +583,13 @@ export default function RestudyApp({
                 onSolve={solve}
                 onConcept={(id) => navigate({ name: "wrong", id })}
                 onOpen={open}
-                onRefresh={refresh}
+                onRemoved={(ids) => {
+                  const archived = new Set(ids);
+                  setState((current) => current && {
+                    ...current,
+                    mistakes: current.mistakes.filter((m) => !archived.has(m.id)),
+                  });
+                }}
                 onError={notify}
               />
             )}

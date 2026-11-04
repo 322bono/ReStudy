@@ -164,7 +164,7 @@ export function Mistakes({
   onSolve,
   onConcept,
   onOpen,
-  onRefresh,
+  onRemoved,
   onError,
 }: {
   state: AppState;
@@ -174,12 +174,16 @@ export function Mistakes({
   onSolve: (ids: string[]) => void;
   onConcept: (id: string) => void;
   onOpen: (id: string, page?: number) => void;
-  onRefresh: () => Promise<void>;
+  onRemoved: (ids: string[]) => void;
   onError: (s: string) => void;
 }) {
   const { subject, material, unit, status, search } = filters;
   const [selected, setSelected] = useState<string[]>([]);
   const [detail, setDetail] = useState<any>();
+  const [removeIds, setRemoveIds] = useState<string[]>([]);
+  const [removing, setRemoving] = useState(false);
+  const [removeError, setRemoveError] = useState("");
+  const [removeNotice, setRemoveNotice] = useState("");
   function change(patch: Partial<MistakeFilters>) {
     onFilters({ ...filters, ...patch });
     setSelected([]);
@@ -207,15 +211,37 @@ export function Mistakes({
           String(q.number).includes(search) ||
           d.title.includes(search)),
     );
-  const remove = async (id: string) => {
+  function confirmRemoval(ids: string[]) {
+    setDetail(undefined);
+    setRemoveError("");
+    setRemoveNotice("");
+    setRemoveIds(ids);
+  }
+  async function remove() {
+    setRemoving(true);
+    setRemoveError("");
     try {
-      await api(`mistakes/${id}`, "DELETE");
-      await onRefresh();
-      setDetail(undefined);
+      const { archivedIds } = await api<{ archivedIds: string[] }>(
+        "mistakes/archive",
+        "POST",
+        { ids: removeIds },
+      );
+      const archived = new Set(archivedIds);
+      const questionIds = new Set(
+        state.mistakes.filter((m) => archived.has(m.id)).map((m) => m.questionId),
+      );
+      onRemoved(archivedIds);
+      setSelected((ids) => ids.filter((id) => !questionIds.has(id)));
+      setRemoveNotice(archived.size
+        ? `오답 ${archived.size}개를 목록에서 뺐습니다.`
+        : "제외할 오답이 없습니다.");
+      setRemoveIds([]);
     } catch (e) {
-      onError((e as Error).message);
+      setRemoveError((e as Error).message);
+    } finally {
+      setRemoving(false);
     }
-  };
+  }
   return (
     <>
       <div className="page-heading">
@@ -298,11 +324,18 @@ export function Mistakes({
           전체 선택
         </Button>
       </div>
+      {removeNotice && <p className="muted" role="status">{removeNotice}</p>}
       {selected.length > 0 && (
-        <div className="selection-bar">
+        <div className="selection-bar mistake-selection">
           <span>{selected.length}개 선택</span>
           <Button variant="ghost" onClick={() => setSelected([])}>
             선택 해제
+          </Button>
+          <Button
+            variant="secondary"
+            onClick={() => confirmRemoval(rows.filter(({ q }) => selected.includes(q.id)).map(({ m }) => m.id))}
+          >
+            선택한 오답 빼기
           </Button>
           <Button onClick={() => onSolve(selected)}>
             <RotateCcw size={15} />
@@ -398,6 +431,13 @@ export function Mistakes({
                   다시 풀기
                   <ArrowRight size={14} />
                 </Button>
+                <Button
+                  variant="ghost"
+                  aria-label={`${q.number}번 오답 노트에서 빼기`}
+                  onClick={() => confirmRemoval([m.id])}
+                >
+                  오답 빼기
+                </Button>
               </div>
             </article>
           ))
@@ -490,11 +530,24 @@ export function Mistakes({
             >
               저장된 분석 보기
             </Button>
-            <Button variant="ghost" onClick={() => remove(detail.mistake.id)}>
+            <Button variant="ghost" onClick={() => confirmRemoval([detail.mistake.id])}>
               <Trash2 size={14} />
-              오답에서 제거
+              오답 빼기
             </Button>
             <Button onClick={() => setDetail(undefined)}>닫기</Button>
+          </div>
+        </Dialog>
+      )}
+      {removeIds.length > 0 && (
+        <Dialog
+          title={`오답 ${removeIds.length}개 빼기`}
+          onClose={() => { if (!removing) setRemoveIds([]); }}
+        >
+          <p>오답 목록에서 제외합니다. 원본 문제와 분석, 풀이 기록은 보관되며 같은 문제를 다시 등록할 수 있습니다.</p>
+          {removeError && <p className="error" role="alert">{removeError}</p>}
+          <div className="dialog-footer">
+            <Button variant="secondary" disabled={removing} onClick={() => setRemoveIds([])}>취소</Button>
+            <Button variant="danger" busy={removing} onClick={remove}>오답 빼기</Button>
           </div>
         </Dialog>
       )}

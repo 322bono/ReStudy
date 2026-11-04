@@ -85,8 +85,16 @@ export async function handle(ctx:Ctx,input:any):Promise<any>{
  if(route==='questions'&&action==='mapping'&&method==='PATCH')return importContent(ctx,{concepts:[],items:[],mappings:[{questionId:id,...b}]});
  if(route==='questions'&&action==='review'&&method==='GET'){const s=learnState(await state(ctx,true)),q=s.questions.find((q:any)=>q.id===id);if(!q)throw new AppError('원본 문항을 찾을 수 없습니다.',404);return originalReview(q,s,await rows(ctx,'problem_similarities'));}
  if(route==='mistakes'){
+  if((id==='archive'&&method==='POST')||(id&&method==='DELETE')){
+   const ids:unknown=method==='DELETE'?[id]:b.ids;
+   if(!Array.isArray(ids)||!ids.length||ids.some(value=>typeof value!=='string'||!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(value)))throw new AppError('제외할 오답을 선택하세요.');
+   const {data,error}=await ctx.admin.rpc('archive_wrong_answers',{p_user_id:ctx.user.id,p_ids:[...new Set(ids)]});
+   if(error)throw new AppError('오답을 제외하지 못했습니다. 다시 시도해 주세요.',500);
+   if(method==='DELETE'&&!data?.length)throw new AppError('오답 기록을 찾을 수 없습니다.',404);
+   return {archived:true,archivedIds:data};
+  }
   const s=await state(ctx);
-  if(id){const m=await row(ctx,'wrong_answers',id);if(method==='DELETE'){await put(ctx,'wrong_answers',id,{...m.data,archived:true},{problem_id:m.problem_id});return {archived:true};}return {mistake:{...value(m),questionId:m.problem_id,resolved:m.data.resolved??m.data.lastResult==='correct'},attempts:s.sessions.filter((ss:any)=>ss.answers?.[m.problem_id]).map((ss:any)=>({sessionId:ss.id,...ss.answers[m.problem_id],strokes:ss.drawings?.[m.problem_id]||[]}))};}
+  if(id){const m=await row(ctx,'wrong_answers',id);return {mistake:{...value(m),questionId:m.problem_id,resolved:m.data.resolved??m.data.lastResult==='correct'},attempts:s.sessions.filter((ss:any)=>ss.answers?.[m.problem_id]).map((ss:any)=>({sessionId:ss.id,...ss.answers[m.problem_id],strokes:ss.drawings?.[m.problem_id]||[]}))};}
   if(method!=='POST')return s.mistakes;
   const selected:any[]=[],ambiguous:number[]=[],missing:number[]=[];
   if(b.questionIds!==undefined&&(!Array.isArray(b.questionIds)||b.questionIds.length>200||b.questionIds.some((id:unknown)=>typeof id!=='string')))throw new AppError('한 번에 원본 문항을 200개까지 등록할 수 있습니다.');
