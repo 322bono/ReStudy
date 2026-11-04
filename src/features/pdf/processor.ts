@@ -550,6 +550,8 @@ const BARE = /^\s*(\d{1,4})\s*$/;
 const NUMERIC_CELL = /^\s*\d+[.)．]?\s*$/;
 const RANGE =
   /^(?:\s*[\[［【(（|｜]|\s*(?:Questions?|문항)\s+)\s*(\d{1,4})\s*[~～\-–—]\s*(\d{1,4})\s*[\]］】)）|｜]?/i;
+const BRACKETED_RANGE =
+  /^[\[［【(（|｜]\s*\d{1,4}\s*[~～\-–—]\s*\d{1,4}\s*[\]］】)）|｜]/;
 const ANSWERS =
   /^\s*(?:정답\s*(?:(?:과|및|[·ㆍ/])\s*해설|해설)?|빠른\s*정답|해답|해설(?:지)?|정답표|Answers?(?:\s*(?:key|sheet))?|Solutions?(?:\s+(?:and\s+)?(?:answers?|explanations?))?)(?:\s*[:：-].*|\s*\d+|\s*)$/i;
 const ANSWER_ENTRY =
@@ -565,6 +567,36 @@ const clamp = (value: number, low = 0, high = 1) =>
 const right = (item: PageTextItem) => item.x + item.width;
 const bottom = (item: PageTextItem) => item.y + item.height;
 const order = (a: PageTextItem, b: PageTextItem) => a.y - b.y || a.x - b.x;
+
+/** Rejoin an explicit passage heading without joining ordinary numeric cells. */
+function joinRangeHeadings(lines: PageTextItem[]): PageTextItem[] {
+  const consumed = new Set<PageTextItem>();
+  const headings = new Map<PageTextItem, PageTextItem>();
+  for (const opener of lines) {
+    if (!/^[\[［【(（|｜]\s*(?:\d{1,4}\s*(?:[~～\-–—]\s*)?)?$/.test(opener.text) || consumed.has(opener)) continue;
+    const neighbours = lines.filter((line) =>
+      line.x >= right(opener) - .002 &&
+      Math.abs(line.y - opener.y) < Math.max(.004, opener.height * .45),
+    ).sort((a, b) => a.x - b.x);
+    const fragments = [opener];
+    let heading = { ...opener };
+    for (const part of neighbours.slice(0, 4)) {
+      if (consumed.has(part) || part.x - right(heading) > .015) break;
+      fragments.push(part);
+      heading = {
+        ...heading,
+        text: heading.text + " " + part.text,
+        width: right(part) - opener.x,
+        height: Math.max(bottom(heading), bottom(part)) - opener.y,
+      };
+      if (!BRACKETED_RANGE.test(heading.text)) continue;
+      headings.set(opener, heading);
+      for (const fragment of fragments.slice(1)) consumed.add(fragment);
+      break;
+    }
+  }
+  return lines.filter((line) => !consumed.has(line)).map((line) => headings.get(line) ?? line);
+}
 
 /** Keep table cells separate; join adjacent fragments of an ordinary text line. */
 function textLines(items: PageTextItem[]): PageTextItem[] {
@@ -595,7 +627,7 @@ function textLines(items: PageTextItem[]): PageTextItem[] {
       );
     } else lines.push(item);
   }
-  return lines
+  return joinRangeHeadings(lines)
     .sort(order)
     .filter((l) => !(l.y > 0.94 && /^[\s\-–—]*\d{1,4}[\s\-–—]*$/.test(l.text)));
 }
@@ -781,8 +813,17 @@ function area(
   fullWidth = false,
 ): { region: Region; text: string } {
   const [left, rightEdge] = fullWidth ? [0, 1] : layout.columns[column];
-  const footer=layout.lines.find(l=>l.y>.9&&(BARE.test(l.text)||/^\d{1,4}\s+[^\d]/.test(l.text)||/\s\d{1,4}$/.test(l.text)));
-  if(footer&&footer.y>top+.025)end=Math.min(end,footer.y-.004);
+  const inColumn = (line: PageTextItem) => line.x >= left && line.x < rightEdge;
+  const lastChoice = layout.lines.findLast(
+    (line) => inColumn(line) && line.y >= top && line.y < end && CHOICE.test(line.text),
+  );
+  const footer = layout.lines.find((line) =>
+    line.y > .9 && line.y > top + .025 && line.y < end &&
+    (!lastChoice || line.y - .008 > bottom(lastChoice)) &&
+    !layout.anchors.some((anchor) => anchor.line === line) &&
+    (BARE.test(line.text) || /^\d{1,4}\s+[^\d]/.test(line.text) || /\s\d{1,4}$/.test(line.text)),
+  );
+  if (footer) end = footer.y - .004;
   const y = clamp(top - 0.007),
     y1 = clamp(Math.max(y + 0.01, end - 0.004));
   // Full column bands preserve diagrams, equations and tables omitted by OCR.

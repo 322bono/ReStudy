@@ -20,7 +20,7 @@ import{mergeRegions,splitRegions}from'../domain/problem-regions';
 import { downloadPrivateFile, uploadPrivateFile } from "./private-files";
 
 export const PDF_ENGINE_VERSION = "browser-pdf-2026-11-01-v1";
-export const PDF_LAYOUT_VERSION = "local-layout-2026-11-04-v5";
+export const PDF_LAYOUT_VERSION = "local-layout-2026-11-04-v6";
 const BUCKET = "study-files",
   MAX_PAGES = 500;
 type Row = Record<string, any>;

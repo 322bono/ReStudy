@@ -247,6 +247,57 @@ describe("evidence-based question crops", () => {
     expect(result[1].text).not.toContain("다른 문항의 그래프");
   });
 
+  it("retains all choices beside a late question number in the other column", () => {
+    const badge = (text: string, x: number, y: number) => ({
+      ...line(text, x, y, .04, .016),
+      fontName: "workbook-number",
+    });
+    const result = detectProblems([page(72, [
+      badge("344", .084, .51),
+      line("다음 중 옳은 것은?", .084, .535, .3, .011),
+      badge("345", .084, .9033),
+      line("다음 주장을 설명하시오.", .084, .928, .3, .011),
+      badge("347", .519, .593),
+      line("밑줄 친 부분에 대한 설명으로 옳은 것은?", .519, .618, .35, .011),
+      line("③ 셋째 선택지", .519, .863, .29, .0113),
+      line("④ 넷째 선택지", .519, .9013, .29, .0113),
+      line("⑤ 다섯째 선택지", .519, .9203, .35, .0113),
+      line("72", .084, .9513, .023, .0143),
+    ])]);
+    expect(result.map(q => q.number)).toEqual([344, 345, 347]);
+    const question = result[2];
+    expect(question.text).toContain("⑤ 다섯째 선택지");
+    expect(question.regions[0].y + question.regions[0].h).toBeGreaterThan(.9316);
+  });
+
+  it("joins an explicitly bracketed range split into PDF text tokens without changing the question numbers", () => {
+    const result = detectProblems([page(73, [
+      line("351. 다음 문제를 푸시오.", .528, .069),
+      line("[", .5282, .4364, .0061, .011),
+      line("352", .5349, .4364, .0264, .011),
+      line("~", .5619, .4364, .011, .011),
+      line("353", .5735, .4364, .027, .011),
+      line("] 빈출 자료", .6011, .4364, .0782, .011),
+      line("다음 사례를 읽고 물음에 답하시오.", .528, .457),
+      line("카페에서 일하는 갑의 사례", .543, .489),
+      line("352. 기회비용을 구하시오.", .528, .584),
+      line("⑤ 마지막 선택지", .528, .684),
+      line("353. 위 사례와 관련해 옳은 것은?", .528, .753),
+      line("보기", .71, .800, .03),
+      line("ㄱ. 명시적 비용은 30만 원이다.", .543, .816),
+      line("355. 별개의 답을 구하시오.", .528, .93),
+    ])]);
+    expect(result.map(q => q.number)).toEqual([351, 352, 353, 355]);
+    const [previous, first, second, next] = result;
+    expect(first.regions[0]).toEqual(second.regions[0]);
+    expect(first.sharedRegionCount).toBe(1);
+    expect(second.sharedRegionCount).toBe(1);
+    expect(first.text).toContain("카페에서 일하는 갑의 사례");
+    expect(second.text).toContain("ㄱ. 명시적 비용");
+    expect(previous.text).not.toContain("카페에서 일하는 갑의 사례");
+    expect(next.sharedRegionCount).toBe(0);
+  });
+
   it("retains a shared passage across adjacent pages only within its explicit number range", () => {
     const result = detectProblems([
       page(1, [
