@@ -51,6 +51,16 @@ export interface ProblemCandidate {
   sharedRegionCount?: number;
 }
 
+export interface SharedContextCheck {
+  page: number;
+  startNumber: number;
+  endNumber: number;
+  region: Region;
+  linkedNumbers: number[];
+  missingNumbers: number[];
+  status: "complete" | "partial" | "unmatched";
+}
+
 export type PageProgress = (progress: number, message?: string) => void;
 const PAGE_PIXELS = 14_000_000;
 
@@ -878,15 +888,10 @@ function detectPage(layout: Layout, badgeStyles: Set<string>): ProblemCandidate[
         continue;
     }
     rangeStarts.push({ column, top: line.y });
-    const members = layout.anchors.filter(
-      (a) =>
-        a.number >= +match[1] && a.number <= +match[2] && a.line.y > line.y,
-    );
-    if (!members.length) continue;
-    const first = Math.min(
-      ...members.filter((a) => a.column === column).map((a) => a.line.y),
-      ...members.map((a) => a.line.y),
-    );
+    // A passage can end a column or page before its first question appears.
+    const first = layout.anchors.find(
+      (a) => a.column === column && a.line.y > line.y,
+    )?.line.y ?? .975;
     const fullWidth =
       layout.columns.length > 1 &&
       layout.lines.some(
@@ -925,22 +930,12 @@ function detectPage(layout: Layout, badgeStyles: Set<string>): ProblemCandidate[
       anchor.line.y,
       Math.min(0.975, ...after),
     );
-    const context = layout.shared
-      .filter(
-        (s) =>
-          s.start <= anchor.number &&
-          anchor.number <= s.end &&
-          (s.fullWidth ||
-            s.column < anchor.column ||
-            (s.column === anchor.column && s.top < anchor.line.y)),
-      )
-      .at(-1);
     return {
       number: anchor.number,
       page: layout.page.number,
       unit: "",
-      text: context ? `${context.text}\n${crop.text}` : crop.text,
-      regions: context ? [{ ...context.region }, crop.region] : [crop.region],
+      text: crop.text,
+      regions: [crop.region],
       confidence: Math.min(
         layout.page.source === "ocr" ? 0.58 : 0.76,
         anchor.line.confidence ?? 1,
@@ -949,7 +944,7 @@ function detectPage(layout: Layout, badgeStyles: Set<string>): ProblemCandidate[
       ),
       confirmed: false,
       source: layout.page.source,
-      sharedRegionCount: context ? 1 : 0,
+      sharedRegionCount: 0,
     };
   });
 }
@@ -967,8 +962,13 @@ function continuationStart(lines: PageTextItem[], previous: ProblemCandidate | u
 }
 
 /** Finds review candidates from observed markers; never fills missing numbers. */
-export function detectProblems(pages: PreparedPage[], chapterStarts: number[] = []): ProblemCandidate[] {
+export function analyzeProblemLayout(pages: PreparedPage[], chapterStarts: number[] = []): {
+  problems: ProblemCandidate[];
+  sharedContextChecks: SharedContextCheck[];
+} {
   const questions: ProblemCandidate[] = [];
+  const sharedContextChecks: SharedContextCheck[] = [];
+  let active: { shared: Shared; check: SharedContextCheck; lastNumber: number } | undefined;
   const layouts: Layout[] = [];
   for (const page of [...pages].sort((a, b) => a.number - b.number)) {
     const lines = textLines([...page.items,...(page.numberMarkers??[])]);
@@ -1015,38 +1015,6 @@ export function detectProblems(pages: PreparedPage[], chapterStarts: number[] = 
       layout.kind !== "answers"
     ) {
       const priorPageNumber = previous.page.number;
-      const prior = questions.filter((q) => q.page === priorPageNumber);
-      const first = layout.anchors[0];
-      const preceding = first
-        ? lines.filter((l) => l.y < first.line.y - 0.005)
-        : [];
-      if (
-        prior.length &&
-        candidates.length &&
-        preceding.every((l) => CONTINUED.test(l.text))
-      ) {
-        for (const shared of previous.shared) {
-          const lastNumber = prior.at(-1)!.number;
-          if (!(
-            shared.start <= lastNumber &&
-            lastNumber < shared.end &&
-            candidates[0].number === lastNumber + 1
-          ))
-            continue;
-          for (const q of candidates)
-            if (
-              !q.sharedRegionCount &&
-              shared.start <= q.number &&
-              q.number <= shared.end
-            ) {
-              q.regions.unshift({ ...shared.region });
-              q.sharedRegionCount = 1;
-              q.text = `${shared.text}\n${q.text}`;
-              q.confidence = Math.min(q.confidence, 0.6);
-            }
-          layout.shared.push(shared);
-        }
-      }
       const last = questions
         .filter((q) => q.regions.at(-1)?.page === priorPageNumber)
         .at(-1);
@@ -1069,7 +1037,59 @@ export function detectProblems(pages: PreparedPage[], chapterStarts: number[] = 
         last.confidence = Math.min(last.confidence, 0.6);
       }
     }
+    if (previous && (previous.page.number !== page.number - 1 ||
+        starts.has(page.number) || previous.kind === "answers" || layout.kind === "answers"))
+      active = undefined;
+    // Traverse printed reading order once. A new range, numbering reset,
+    // chapter or skipped page closes the previous passage's scope.
+    const events: { column: number; top: number; shared?: Shared; question?: ProblemCandidate }[] = [
+      ...layout.shared.map(shared => ({ column: shared.column, top: shared.top, shared })),
+      ...candidates.map((question, i) => ({
+        column: layout.anchors[i].column, top: layout.anchors[i].line.y, question,
+      })),
+    ];
+    events.sort((a, b) => a.column - b.column || a.top - b.top);
+    for (const event of events) {
+      if (event.shared) {
+        const shared = event.shared;
+        const check: SharedContextCheck = {
+          page: page.number, startNumber: shared.start, endNumber: shared.end,
+          region: { ...shared.region }, linkedNumbers: [], missingNumbers: [], status: "unmatched",
+        };
+        sharedContextChecks.push(check);
+        active = { shared, check, lastNumber: shared.start - 1 };
+        continue;
+      }
+      const question = event.question;
+      if (!question || !active) continue;
+      if (question.number < active.shared.start || question.number > active.shared.end ||
+          question.number <= active.lastNumber) {
+        active = undefined;
+        continue;
+      }
+      question.regions.unshift({ ...active.shared.region });
+      question.sharedRegionCount = 1;
+      question.text = `${active.shared.text}\n${question.text}`;
+      if (active.shared.region.page !== page.number)
+        question.confidence = Math.min(question.confidence, .6);
+      active.check.linkedNumbers.push(question.number);
+      active.lastNumber = question.number;
+      if (question.number === active.shared.end) active = undefined;
+    }
     questions.push(...candidates);
   }
-  return questions;
+  for (const check of sharedContextChecks) {
+    check.missingNumbers = Array.from(
+      { length: check.endNumber - check.startNumber + 1 }, (_, i) => check.startNumber + i,
+    ).filter(number => !check.linkedNumbers.includes(number));
+    check.status = "complete";
+    if (check.missingNumbers.length)
+      check.status = check.linkedNumbers.length ? "partial" : "unmatched";
+  }
+  return { problems: questions, sharedContextChecks };
+}
+
+/** Compatibility entry point for callers that only need the extracted questions. */
+export function detectProblems(pages: PreparedPage[], chapterStarts: number[] = []): ProblemCandidate[] {
+  return analyzeProblemLayout(pages, chapterStarts).problems;
 }

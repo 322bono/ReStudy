@@ -2,7 +2,7 @@ import type { PDFDocumentProxy } from "pdfjs-dist";
 import { getSupabase, currentUser } from "./supabase";
 import {
   closeOcr,
-  detectProblems,
+  analyzeProblemLayout,
   openPdf,
   preparePage,
   prepareNumberMarkers,
@@ -20,7 +20,7 @@ import{mergeRegions,splitRegions}from'../domain/problem-regions';
 import { downloadPrivateFile, uploadPrivateFile } from "./private-files";
 
 export const PDF_ENGINE_VERSION = "browser-pdf-2026-11-01-v1";
-export const PDF_LAYOUT_VERSION = "local-layout-2026-11-05-v8";
+export const PDF_LAYOUT_VERSION = "local-layout-2026-11-05-v9";
 const BUCKET = "study-files",
   MAX_PAGES = 500;
 type Row = Record<string, any>;
@@ -818,8 +818,10 @@ async function runDocument(ctx: Context, job: Job): Promise<void> {
     await edgeCall('app',{path:`materials/${job.id}/outline`,method:'POST',body:{outline:localOutline,processingToken:job.token}});
     const chapters=await list(ctx,'document_chapters','document_id',job.id);
     const contents = prepared.filter((page) => selected.includes(page.number) && !starting.data.tocPages?.includes(page.number));
-    const candidates = textbook ? [] : detectProblems(contents, chapters.map((chapter) => chapter.start_page)),
-      warnings = prepared.flatMap((p) =>
+    const { problems: candidates, sharedContextChecks } = textbook
+      ? { problems: [], sharedContextChecks: [] }
+      : analyzeProblemLayout(contents, chapters.map((chapter) => chapter.start_page));
+    const warnings = prepared.flatMap((p) =>
         (p.warnings || []).map((w) => `${p.number}쪽: ${w}`),
       );
     const existing = await list(ctx, "problems", "document_id", job.id),
@@ -984,6 +986,27 @@ async function runDocument(ctx: Context, job: Job): Promise<void> {
         job,
       );
     }
+    // Verify the persisted geometry too. A preserved manual crop may differ
+    // from the automatic result, so detection alone cannot prove a saved link.
+    for (const check of sharedContextChecks) {
+      const linked = check.linkedNumbers.filter(number => savedQuestions.some(saved =>
+        saved.number === number && saved.data.regions?.some((region: Region) =>
+          region.page === check.region.page &&
+          region.x <= check.region.x + .00001 && region.y <= check.region.y + .00001 &&
+          region.x + region.w >= check.region.x + check.region.w - .00001 &&
+          region.y + region.h >= check.region.y + check.region.h - .00001,
+        ),
+      ));
+      check.missingNumbers = [...new Set([
+        ...check.missingNumbers, ...check.linkedNumbers.filter(number => !linked.includes(number)),
+      ])].sort((a, b) => a - b);
+      check.linkedNumbers = linked;
+      check.status = "complete";
+      if (check.missingNumbers.length) {
+        check.status = linked.length ? "partial" : "unmatched";
+        warnings.push(`PDF ${check.page}쪽 · ${check.startNumber}~${check.endNumber}번 공통 보기에서 ${check.missingNumbers.join(", ")}번 문항 연결을 확인하지 못했습니다.`);
+      }
+    }
     const needsReview =
       warnings.length > 0 ||
       savedQuestions.some((q) => !q.data.confirmed) ||
@@ -997,6 +1020,13 @@ async function runDocument(ctx: Context, job: Job): Promise<void> {
         processedPages: targetPages,
         pageCount: pdf.numPages,
         engineVersion: PDF_ENGINE_VERSION,
+        sharedContextChecks,
+        sharedContextSummary: {
+          groups: sharedContextChecks.length,
+          complete: sharedContextChecks.filter(check => check.status === "complete").length,
+          incomplete: sharedContextChecks.filter(check => check.status !== "complete").length,
+          linkedQuestions: sharedContextChecks.reduce((count, check) => count + check.linkedNumbers.length, 0),
+        },
         warnings: [...new Set(warnings)],
         processingToken: null,
         error: null,

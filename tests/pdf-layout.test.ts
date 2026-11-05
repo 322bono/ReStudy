@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  analyzeProblemLayout,
   detectProblems,
   type PageTextItem,
   type PreparedPage,
@@ -381,6 +382,84 @@ describe("evidence-based question crops", () => {
     expect(result[1].sharedRegionCount).toBe(1);
     expect(result[2].sharedRegionCount).toBe(0);
     expect(result.map((q) => q.number)).toEqual([21, 22, 24]);
+  });
+
+  it("keeps a shared table across a page header and stops at a numbering reset", () => {
+    const result = detectProblems([
+      page(1, [
+        line("[21~22] 다음 표를 보고 답하시오.", .07, .08),
+        line("공통 표의 마지막 행", .07, .3),
+        line("21. 표에서 옳은 것을 고르시오.", .07, .5),
+      ]),
+      page(2, [
+        line("생태계와 환경", .07, .025),
+        line("22. 같은 표에서 답을 구하시오.", .07, .1),
+        line("1. 새 단원에서 답을 구하시오.", .07, .4),
+        line("21. 다른 자료에서 답을 구하시오.", .07, .7),
+      ]),
+    ]);
+    expect(result.map(q => q.sharedRegionCount)).toEqual([1, 1, 0, 0]);
+    expect(result[1].regions[0]).toEqual(result[0].regions[0]);
+    expect(result[1].text).toContain("공통 표의 마지막 행");
+  });
+
+  it("does not reuse an earlier shared passage after the numbering restarts on the same page", () => {
+    const result = detectProblems([page(1, [
+      line("[21~22] 다음 글을 읽고 답하시오.", .07, .07),
+      line("첫 번째 단원의 공통 보기", .07, .15),
+      line("21. 첫 문제", .07, .25),
+      line("22. 둘째 문제", .07, .45),
+      line("1. 새로운 문제", .07, .65),
+      line("21. 다른 자료에서 답을 구하시오.", .07, .85),
+    ])]);
+    expect(result.map(q => q.sharedRegionCount)).toEqual([1, 1, 0, 0]);
+    expect(result[3].text).not.toContain("첫 번째 단원의 공통 보기");
+  });
+
+  it("links a shared table at a page end to questions beginning on the next page", () => {
+    const result = detectProblems([
+      page(1, [
+        line("18. 답을 구하시오.", .07, .1),
+        line("[19~20] 다음 표를 보고 답하시오.", .07, .6),
+        line("다음 쪽 두 문항에 쓰이는 표", .07, .8),
+      ]),
+      page(2, [
+        line("19. 표에 대한 설명을 고르시오.", .07, .1),
+        line("20. 표에서 답을 구하시오.", .07, .5),
+      ]),
+    ]);
+    expect(result.map(q => q.sharedRegionCount)).toEqual([0, 1, 1]);
+    expect(result[1].regions[0].page).toBe(1);
+    expect(result[1].text).toContain("다음 쪽 두 문항에 쓰이는 표");
+    expect(result[0].regions[0].y + result[0].regions[0].h).toBeLessThan(.6);
+  });
+
+  it("audits every number in a shared range without inventing an unrecognized question", () => {
+    const result = analyzeProblemLayout([page(1, [
+      line("[310~312] 다음 표를 보고 답하시오.", .07, .07),
+      line("생물의 특징 표", .07, .15),
+      line("310. 옳은 설명을 고르시오.", .07, .3),
+      line("312. 답을 구하시오.", .07, .6),
+    ])]);
+    expect(result.problems.map(q => q.number)).toEqual([310, 312]);
+    expect(result.problems.every(q => q.sharedRegionCount === 1)).toBe(true);
+    expect(result.sharedContextChecks).toHaveLength(1);
+    expect(result.sharedContextChecks[0]).toMatchObject({
+      page: 1, startNumber: 310, endNumber: 312,
+      linkedNumbers: [310, 312], missingNumbers: [311], status: "partial",
+    });
+  });
+
+  it.each([
+    { nextPage: 3, chapterStarts: [] },
+    { nextPage: 2, chapterStarts: [2] },
+  ])("closes a shared range at a skipped page or chapter boundary $nextPage/$chapterStarts", ({nextPage, chapterStarts}) => {
+    const result = analyzeProblemLayout([
+      page(1, [line("[21~22] 다음 자료를 보시오.", .07, .08), line("21. 답을 구하시오.", .07, .4)]),
+      page(nextPage, [line("22. 다른 단원에서 답을 구하시오.", .07, .1)]),
+    ], chapterStarts);
+    expect(result.problems[1].sharedRegionCount).toBe(0);
+    expect(result.sharedContextChecks[0].missingNumbers).toEqual([22]);
   });
 
   it("joins explicit continuation regions and stops before the next question", () => {

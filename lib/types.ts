@@ -21,6 +21,12 @@ export type Material = {
   localOutline?: any;
   error?: string;
   warnings?: string[];
+  sharedContextSummary?: {
+    groups: number;
+    complete: number;
+    incomplete: number;
+    linkedQuestions: number;
+  };
   message?: string;
   paused?: boolean;
   selectedPages?: number[];

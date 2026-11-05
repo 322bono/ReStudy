@@ -462,6 +462,19 @@ export default function MaterialWorkspace({
           <p className="field-help">
             {doc.message || "저장된 원본과 인식 결과를 사용합니다."}
           </p>
+          {!!doc.sharedContextSummary?.groups && (
+            <p className="field-help">
+              공통 보기 {doc.sharedContextSummary.groups}묶음 · {doc.sharedContextSummary.linkedQuestions}문항 연결
+            </p>
+          )}
+          {!!doc.sharedContextSummary?.incomplete && (
+            <details>
+              <summary>공통 보기 {doc.sharedContextSummary.incomplete}묶음의 연결 미완료</summary>
+              {doc.warnings?.filter(warning => warning.includes("공통 보기에서")).map(warning => (
+                <p key={warning} className="field-help">{warning}</p>
+              ))}
+            </details>
+          )}
           {["uploaded", "processing"].includes(doc.status) && (
             <progress
               aria-label="PDF 분석 진행률"

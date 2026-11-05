@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const mocked = vi.hoisted(() => ({ db: null as any, user: "11111111-1111-4111-8111-111111111111",currentUser:vi.fn(),edgeCall:vi.fn(),openPdf: vi.fn(), preparePage: vi.fn(),prepareNumberMarkers:vi.fn(),renderRegions: vi.fn(), detectProblems: vi.fn(), closeOcr: vi.fn() }));
+const mocked = vi.hoisted(() => ({ db: null as any, sharedContextChecks: [] as any[], user: "11111111-1111-4111-8111-111111111111",currentUser:vi.fn(),edgeCall:vi.fn(),openPdf: vi.fn(), preparePage: vi.fn(),prepareNumberMarkers:vi.fn(),renderRegions: vi.fn(), detectProblems: vi.fn(), closeOcr: vi.fn() }));
 vi.mock("../src/services/supabase", () => ({ getSupabase: () => mocked.db,edgeCall:mocked.edgeCall,currentUser: mocked.currentUser }));
-vi.mock("../src/features/pdf/processor", () => ({ openPdf: mocked.openPdf, preparePage: mocked.preparePage,prepareNumberMarkers:mocked.prepareNumberMarkers,NUMBER_LAYER_VERSION:'test-number-layer',renderRegions: mocked.renderRegions, detectProblems: mocked.detectProblems, closeOcr: mocked.closeOcr }));
+vi.mock("../src/features/pdf/processor", () => ({ openPdf: mocked.openPdf, preparePage: mocked.preparePage,prepareNumberMarkers:mocked.prepareNumberMarkers,NUMBER_LAYER_VERSION:'test-number-layer',renderRegions: mocked.renderRegions, analyzeProblemLayout: (...args: unknown[]) => ({ problems: mocked.detectProblems(...args), sharedContextChecks: mocked.sharedContextChecks }), closeOcr: mocked.closeOcr }));
 import { PDF_ENGINE_VERSION, PDF_LAYOUT_VERSION, pauseMaterial, resumeMaterial, resumePending, saveQuestion, uploadMaterials } from "../src/services/documents";
 
 type Row = Record<string, any>;
@@ -97,6 +97,7 @@ function seedPage(number: number, extra: Row = {}) {
 }
 beforeEach(() => {
   mocked.db = database();
+  mocked.sharedContextChecks = [];
   vi.clearAllMocks();
   mocked.currentUser.mockResolvedValue({ id: mocked.user });
   mocked.openPdf.mockResolvedValue({ numPages: 2, loadingTask: { destroy: vi.fn(async () => {}) } });
@@ -110,6 +111,34 @@ beforeEach(() => {
 const finished = () => vi.waitFor(() => expect(["needs_review", "ready", "error"]).toContain(mocked.db.tables.documents[0].status));
 
 describe("private browser document checkpoints", () => {
+  it("persists incomplete shared-passage checks with the available crops without inventing missing questions", async () => {
+    seedDoc(); seedPage(1); seedPage(2);
+    const shared = { ...region, y: .01, h: .06 };
+    mocked.sharedContextChecks = [{ page: 1, startNumber: 17, endNumber: 18, region: shared, linkedNumbers: [17], missingNumbers: [18], status: "partial" }];
+    mocked.detectProblems.mockReturnValue([{ number: 17, page: 1, text: "공통 보기와 원본", regions: [shared, region], confidence: .7, source: "text", sharedRegionCount: 1 }]);
+    mocked.renderRegions.mockImplementation(async (_pdf, regions) => regions.map(() => new Blob(["crop"])));
+    await resumeMaterial(DOC); await finished();
+    const doc = mocked.db.tables.documents[0];
+    expect(doc.status).not.toBe("error");
+    expect(doc.data.sharedContextChecks).toEqual(mocked.sharedContextChecks);
+    expect(doc.data.sharedContextSummary).toEqual({ groups: 1, complete: 0, incomplete: 1, linkedQuestions: 1 });
+    expect(doc.data.warnings).toContain("PDF 1쪽 · 17~18번 공통 보기에서 18번 문항 연결을 확인하지 못했습니다.");
+    expect(mocked.db.tables.problems.map((q: any) => q.number)).toEqual([17]);
+    expect(mocked.db.tables.problem_regions).toHaveLength(2);
+  });
+  it("checks preserved manual crops before reporting a shared passage as linked", async () => {
+    seedDoc(); seedPage(1); seedPage(2);
+    const shared = { ...region, y: .01, h: .06 };
+    mocked.sharedContextChecks = [{ page: 1, startNumber: 17, endNumber: 17, region: shared, linkedNumbers: [17], missingNumbers: [], status: "complete" }];
+    mocked.detectProblems.mockReturnValue([{ number: 17, page: 1, text: "공통 보기와 원본", regions: [shared, region], confidence: .7, source: "text", sharedRegionCount: 1 }]);
+    mocked.db.tables.problems.push({ id: Q, user_id: mocked.user, document_id: DOC, number: 17, page: 1, data: { source: "manual", confirmed: true, answer: "3", regions: [region] } });
+    mocked.db.tables.problem_regions.push({ user_id: mocked.user, problem_id: Q, part: 0, page: 1, image_path: `${mocked.user}/${DOC}/kept.png`, data: region });
+    await resumeMaterial(DOC); await finished();
+    expect(mocked.db.tables.documents[0].data.sharedContextSummary).toMatchObject({ complete: 0, incomplete: 1, linkedQuestions: 0 });
+    expect(mocked.db.tables.documents[0].data.sharedContextChecks[0]).toMatchObject({ status: "unmatched", missingNumbers: [17] });
+    expect(mocked.db.tables.problems[0].data).toMatchObject({ source: "manual", answer: "3", regions: [region] });
+    expect(mocked.renderRegions).not.toHaveBeenCalled();
+  });
   it("reuses the downloaded OCR checkpoint rows and checks the job lease with small responses", async () => {
     seedDoc(); seedPage(1); seedPage(2);
     await resumeMaterial(DOC); await finished();
