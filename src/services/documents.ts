@@ -35,6 +35,7 @@ type Job = {
   retryPage?: number;
 };
 const jobs = new Map<string, Job>();
+const pendingFiles = new Map<string, Promise<Blob>>();
 const PROCESSING_LEASE_MS=120000;
 function processingDelay(doc:Row):number {
   if(!['uploaded','processing'].includes(doc.status)||!doc.data?.processingToken)return 0;
@@ -109,16 +110,17 @@ async function list(
   table: string,
   column?: string,
   value?: any,
+  columns = "*",
 ): Promise<Row[]> {
   const rows: Row[] = [];
   for (let offset = 0; ; offset += 1000) {
     let query = ctx.db
       .from(table)
-      .select("*")
+      .select(columns)
       .eq("user_id", ctx.user.id)
       .order("id")
       .range(offset, offset + 999);
-    if (column) query = query.eq(column, value);
+    if (column) query = Array.isArray(value) ? query.in(column, value) : query.eq(column, value);
     const { data, error } = await query;
     if (error) throw failure("저장된 페이지와 문항을 읽지 못했습니다.");
     rows.push(...data);
@@ -192,16 +194,26 @@ async function processingPdf(
 }
 async function documentFile(ctx: Context, doc: Row, processing = false): Promise<Blob> {
   const path = ownPath(ctx, doc.id, processing ? doc.data.pdfPath || doc.data.originalPath : doc.data.originalPath);
-  const cached = await cacheGet<Blob>(ctx.user.id, `pdf:${path}`);
-  if (cached instanceof Blob) return cached;
-  const reference = processing && doc.data.pdfPath && doc.data.pdfPath !== doc.data.originalPath ? doc.data.pdfStorage : doc.data.originalStorage;
-  const data = await downloadPrivateFile(path, reference, async (partPath) => {
-    const result = await ctx.db.storage.from(BUCKET).download(partPath);
-    if (result.error || !result.data) throw failure("비공개 원본 파일을 내려받지 못했습니다. 저장 공간과 연결을 확인해 주세요.");
-    return result.data;
-  }, (partPath) => ownPath(ctx, doc.id, partPath));
-  await cachePut(ctx.user.id, `pdf:${path}`, data);
-  return data;
+  const pending = pendingFiles.get(path);
+  if (pending) return pending;
+  const loading = (async () => {
+    const cached = await cacheGet<Blob>(ctx.user.id, `pdf:${path}`);
+    if (cached instanceof Blob) return cached;
+    const reference = processing && doc.data.pdfPath && doc.data.pdfPath !== doc.data.originalPath ? doc.data.pdfStorage : doc.data.originalStorage;
+    const data = await downloadPrivateFile(path, reference, async (partPath) => {
+      const result = await ctx.db.storage.from(BUCKET).download(partPath);
+      if (result.error || !result.data) throw failure("비공개 원본 파일을 내려받지 못했습니다. 저장 공간과 연결을 확인해 주세요.");
+      return result.data;
+    }, (partPath) => ownPath(ctx, doc.id, partPath));
+    await cachePut(ctx.user.id, `pdf:${path}`, data);
+    return data;
+  })();
+  pendingFiles.set(path, loading);
+  try {
+    return await loading;
+  } finally {
+    pendingFiles.delete(path);
+  }
 }
 /** Authenticated private download for original viewers and external PDF export. */
 export async function loadOriginalBlob(id: string): Promise<Blob> {
@@ -442,6 +454,7 @@ export async function uploadMaterials(
       (path, blob) => upload(ctx, path, blob),
     );
     const pdfStorage = pdfPath === originalPath ? originalStorage : await uploadPrivateFile(pdfPath, input.pdf, (path, blob) => upload(ctx, path, blob));
+    await cachePut(ctx.user.id, `pdf:${pdfPath}`, input.pdf);
     const now = new Date().toISOString();
     const row = {
       id,
@@ -513,7 +526,21 @@ function cachedPage(row: Row | undefined, force: boolean): row is Row {
   );
 }
 function preparedFromRow(row: Row): PreparedPage {
-  return { ...row.data, number: row.number, image: new Blob() };
+  return { ...row.data, number: row.number, warnings: row.data.warnings ?? [], image: new Blob() };
+}
+async function recognitionCheckpoints(ctx: Context, documentId: string): Promise<Row[]> {
+  const fields = [
+    "width", "height", "text", "items", "kind", "source", "warnings", "words",
+    "numberMarkers", "numberLayerVersion", "preparationPurpose", "engineVersion",
+    "checkpointComplete", "manualKind",
+  ];
+  const columns = ["id", "number", "image_path", "ocrSchema:data->ocrIndex->>schema_version",
+    ...fields.map((field) => `${field}:data->${field}`)].join(",");
+  const rows = await list(ctx, "document_pages", "document_id", documentId, columns);
+  return rows.map(({ id, number, image_path, ocrSchema, ...data }) => ({
+    id, number, image_path,
+    data: { ...data, ocrIndex: ocrSchema },
+  }));
 }
 async function pageCheckpoint(
   ctx: Context,
@@ -556,19 +583,19 @@ async function pageCheckpoint(
           .eq("user_id", ctx.user.id)
           .eq("id", old.id)
           .eq("updated_at", old.updated_at)
-          .select("*")
+          .select("id,updated_at")
           .maybeSingle()
       : await ctx.db
           .from("document_pages")
           .insert({ id: crypto.randomUUID(), ...base })
-          .select("*")
+          .select("id,updated_at")
           .single();
     if (saved.error?.code === "23505") continue;
     if (saved.error) {
       const code = /^[A-Z0-9]{5}$/.test(saved.error.code || "") ? ` (${saved.error.code})` : "";
       throw failure(`${page.number}쪽의 원본·텍스트 체크포인트를 저장하지 못했습니다${code}. 저장된 페이지는 보관했습니다.`);
     }
-    if (saved.data) return saved.data;
+    if (saved.data) return { ...base, ...saved.data };
   }
   throw failure(
     "페이지가 다른 화면에서 변경되었습니다. 이 페이지를 다시 시도해 주세요.",
@@ -715,6 +742,12 @@ async function runDocument(ctx: Context, job: Job): Promise<void> {
   try {
     const starting = (await one(ctx, "documents", job.id))!;
     const textbook = starting.kind === "교과서";
+    const openSource = async () => {
+      if (!pdf) pdf = await processingPdf(ctx, starting);
+      if (pdf.numPages < 1 || pdf.numPages > MAX_PAGES)
+        throw failure("PDF 페이지 수를 확인해 주세요. 파일당 500쪽까지 처리합니다.");
+      return pdf;
+    };
     if (
       job.controller.signal.aborted ||
       starting.data.paused ||
@@ -736,25 +769,19 @@ async function runDocument(ctx: Context, job: Job): Promise<void> {
       job,
     );
     await ensureJob(ctx, job);
-    pdf = await processingPdf(ctx, starting);
-    if (pdf.numPages < 1 || pdf.numPages > MAX_PAGES)
-      throw failure(
-        "PDF 페이지 수를 확인해 주세요. 파일당 500쪽까지 처리합니다.",
-      );
-    const previousPages = await list(
-      ctx,
-      "document_pages",
-      "document_id",
-      job.id,
-    );
+    const storedPageCount = starting.data.pageCount;
+    const pageCount = Number.isInteger(storedPageCount) && storedPageCount > 0 && storedPageCount <= MAX_PAGES
+      ? storedPageCount as number
+      : (await openSource()).numPages;
+    const previousPages = await recognitionCheckpoints(ctx, job.id);
     const pagesByNumber = new Map(previousPages.map((page) => [page.number, page]));
     const selected = Array.isArray(starting.data.selectedPages)
       ? starting.data.selectedPages
-      : Array.from({ length: pdf.numPages }, (_, i) => i + 1);
+      : Array.from({ length: pageCount }, (_, i) => i + 1);
     const targetPages = [
       ...new Set<number>([...selected, ...(starting.data.tocPages || [])]),
     ]
-      .filter((n) => Number.isInteger(n) && n >= 1 && n <= pdf!.numPages)
+      .filter((n) => Number.isInteger(n) && n >= 1 && n <= pageCount)
       .sort((a, b) => a - b);
     for (const [position, number] of targetPages.entries()) {
       await ensureJob(ctx, job);
@@ -764,7 +791,7 @@ async function runDocument(ctx: Context, job: Job): Promise<void> {
         ownPath(ctx, job.id, old.image_path);
         if(!old.data.ocrIndex||!textbook&&old.data.source==='ocr'&&old.data.numberLayerVersion!==NUMBER_LAYER_VERSION){
           await patchDocument(ctx,job.id,{message:old.data.source==='ocr'?`PDF ${number}쪽 · 저장된 본문을 재사용하고 숫자 영역만 보완 인식합니다.`:`PDF ${number}쪽 · 저장된 페이지의 좌표 인덱스를 정리합니다.`},undefined,job);
-          const numberMarkers=!textbook&&old.data.source==='ocr'&&old.data.numberLayerVersion!==NUMBER_LAYER_VERSION?await prepareNumberMarkers(pdf,number):old.data.numberMarkers??[];
+          const numberMarkers=!textbook&&old.data.source==='ocr'&&old.data.numberLayerVersion!==NUMBER_LAYER_VERSION?await prepareNumberMarkers(await openSource(),number):old.data.numberMarkers??[];
           const saved = await pageCheckpoint(ctx,job,{...preparedFromRow(old),numberMarkers,numberLayerVersion:NUMBER_LAYER_VERSION},old.image_path);
           pagesByNumber.set(number, saved);
         }
@@ -782,7 +809,7 @@ async function runDocument(ctx: Context, job: Job): Promise<void> {
       );
       const cachedFields=!job.force&&job.retryPage!==number?await cacheGet<any>(ctx.user.id,`prepared:${job.id}:${number}:${PDF_ENGINE_VERSION}`):null;
       const cachedImage=cachedFields?await cacheGet<Blob>(ctx.user.id,`prepared-image:${job.id}:${number}:${PDF_ENGINE_VERSION}`):null;
-      const prepared:PreparedPage=cachedFields?.numberLayerVersion===NUMBER_LAYER_VERSION&&(!textbook||cachedFields.preparationPurpose==='textbook')&&cachedImage instanceof Blob?{...cachedFields,image:cachedImage}:await preparePage(pdf, number, undefined, {purpose:textbook?'textbook':'workbook'});
+      const prepared:PreparedPage=cachedFields?.numberLayerVersion===NUMBER_LAYER_VERSION&&(!textbook||cachedFields.preparationPurpose==='textbook')&&cachedImage instanceof Blob?{...cachedFields,image:cachedImage}:await preparePage(await openSource(), number, undefined, {purpose:textbook?'textbook':'workbook'});
       const {image:preparedImage,...preparedFields}=storagePageText(prepared);
       await cachePut(ctx.user.id,`prepared:${job.id}:${number}:${PDF_ENGINE_VERSION}`,preparedFields);
       await cachePut(ctx.user.id,`prepared-image:${job.id}:${number}:${PDF_ENGINE_VERSION}`,preparedImage);
@@ -795,7 +822,7 @@ async function runDocument(ctx: Context, job: Job): Promise<void> {
         ctx,
         job.id,
         {
-          pageCount: pdf.numPages,
+          pageCount,
           completedPages: position + 1,
           progress: Math.floor(((position + 1) / targetPages.length) * 70),
           message: `PDF ${number}쪽 · 선택 범위 ${position + 1}/${targetPages.length}쪽 저장`,
@@ -814,7 +841,7 @@ async function runDocument(ctx: Context, job: Job): Promise<void> {
       throw failure(
         "선택 범위에 아직 저장되지 않은 페이지가 있습니다. 분석을 다시 시도해 주세요.",
       );
-    const localOutline=extractLocalOutline(prepared,starting.data.tocPages??[],pdf.numPages,starting.data.printedPageOffset);
+    const localOutline=extractLocalOutline(prepared,starting.data.tocPages??[],pageCount,starting.data.printedPageOffset);
     await edgeCall('app',{path:`materials/${job.id}/outline`,method:'POST',body:{outline:localOutline,processingToken:job.token}});
     const chapters=await list(ctx,'document_chapters','document_id',job.id);
     const contents = prepared.filter((page) => selected.includes(page.number) && !starting.data.tocPages?.includes(page.number));
@@ -877,7 +904,7 @@ async function runDocument(ctx: Context, job: Job): Promise<void> {
       const regions = normalizedRegions(
           candidate.regions,
           pages,
-          pdf.numPages,
+          pageCount,
           candidate.page,
         ),
         parts = current
@@ -920,7 +947,7 @@ async function runDocument(ctx: Context, job: Job): Promise<void> {
         }
         continue;
       }
-      await commitCrop(ctx, starting, pdf, current, id, fields, regions, job);
+      await commitCrop(ctx, starting, await openSource(), current, id, fields, regions, job);
       await patchDocument(
         ctx,
         job.id,
@@ -962,13 +989,13 @@ async function runDocument(ctx: Context, job: Job): Promise<void> {
       const regions = normalizedRegions(
         storedRegions,
         pages,
-        pdf.numPages,
+        pageCount,
         saved.page,
       );
       await commitCrop(
         ctx,
         starting,
-        pdf,
+        await openSource(),
         saved,
         saved.id,
         {
@@ -1018,7 +1045,7 @@ async function runDocument(ctx: Context, job: Job): Promise<void> {
         progress: 100,
         completedPages: targetPages.length,
         processedPages: targetPages,
-        pageCount: pdf.numPages,
+        pageCount,
         engineVersion: PDF_ENGINE_VERSION,
         sharedContextChecks,
         sharedContextSummary: {

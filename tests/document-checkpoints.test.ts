@@ -190,6 +190,7 @@ describe("private browser document checkpoints", () => {
     await resumeMaterial(DOC);await finished();
     expect(mocked.db.tables.documents[0].status).toBe('needs_review');
     expect(mocked.renderRegions).not.toHaveBeenCalled();expect(mocked.db.uploads).toHaveLength(0);
+    expect(mocked.openPdf).not.toHaveBeenCalled();
     expect(mocked.db.tables.problems[0]).toMatchObject({id:Q,data:{text:'원본',answer:'3',layoutVersion:PDF_LAYOUT_VERSION}});
     expect(mocked.db.tables.problem_regions[0].image_path).toBe(path);
     expect(mocked.db.tables.problems[0].data.revision).not.toBe('old');

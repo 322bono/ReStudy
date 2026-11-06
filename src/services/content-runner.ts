@@ -1,6 +1,6 @@
 import { edgeCall } from './supabase';
 
-type PreparedJob = { id:string; totalParts:number; method?:string; parts?:{part:number}[] };
+type PreparedJob = { id:string; totalParts:number; method?:string; parts?:{part:number}[]; partsVersion?:string };
 type ChildJob = {part:number;status:string;attempts?:number;max_attempts?:number;available_at?:string;lease_until?:string;provider_error?:string;last_error?:string};
 export type ContentRunOptions<T> = {onUpdate?:(job:T)=>void|Promise<void>;shouldStop?:()=>boolean};
 const pause=(ms:number)=>new Promise<void>(resolve=>setTimeout(resolve,ms));
@@ -11,7 +11,11 @@ const transient=new Set(['timeout','network_error','provider_error','rate_limite
 export async function runPreparedJob<T extends PreparedJob>(initial:T,options:ContentRunOptions<T>={}):Promise<T>{
   let job=initial;
   if(job.method&&job.method!=='api')return job;
-  const refresh=async()=>{job=await edgeCall('content-jobs',{action:'get',jobId:job.id});await options.onUpdate?.(job);};
+  const refresh=async()=>{
+    const update=await edgeCall('content-jobs',{action:'get',jobId:job.id,partsVersion:job.partsVersion});
+    job={...job,...update};
+    await options.onUpdate?.(job);
+  };
   const children=()=>((job as T&{apiJobs?:ChildJob[]}).apiJobs??[]);
   const finished=(part:number)=>job.parts?.some(p=>p.part===part)||children().some(c=>Number(c.part)===part&&c.status==='completed');
   const retries=new Map<number,number>();

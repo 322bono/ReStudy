@@ -1,5 +1,5 @@
 "use client";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeft,
   ChevronLeft,
@@ -31,6 +31,7 @@ export function Viewer({
   onError,
   manage = false,
   concepts = [],
+  questions: originalQuestions,
   onRegistered,
 }: {
   id: string;
@@ -40,12 +41,12 @@ export function Viewer({
   onError: (s: string) => void;
   manage?: boolean;
   concepts?: Concept[];
+  questions: Question[];
   onRegistered: (ids: string[], autoAnalyzeIds: string[]) => void;
 }) {
   const [data, setData] = useState<{
       material: Material;
       pages: Page[];
-      questions: Question[];
     }>(),
     [requestedPage, setPage] = useState(initialPage),
     [selected, setSelected] = useState<string>(),
@@ -68,6 +69,7 @@ export function Viewer({
   const [batchMode, setBatchMode] = useState(false);
   const [wrongIds, setWrongIds] = useState<string[]>([]);
   const registering = useRef(false);
+  const questions = useMemo(() => originalQuestions.filter((question) => question.materialId === id && !question.mergedInto), [originalQuestions, id]);
   const navigation = pageNavigation(data?.pages || [], requestedPage);
   const page = navigation.page ?? requestedPage;
   useEffect(() => {
@@ -96,7 +98,7 @@ export function Viewer({
   }, [regions, edit, page]);
   const start = useRef<{ x: number; y: number } | undefined>(undefined);
   const load = useCallback(async () => {
-    const d = await api(`materials/${id}`);
+    const d = await api(`materials/${id}/pages`);
     setData(d);
   }, [id]);
   useEffect(() => {
@@ -158,7 +160,7 @@ export function Viewer({
       />
     );
   if (!data) return <div className="loading">자료를 여는 중…</div>;
-  const q = data.questions.find((q) => q.id === selected),
+  const q = questions.find((q) => q.id === selected),
     p = data.pages.find((p) => p.number === page);
   const wrongSelection = new Set(wrongIds);
   const choose = (q: Question) => {
@@ -286,7 +288,7 @@ export function Viewer({
           원본 열기
         </SecureLink>
       </div>
-      {!edit && data.questions.length > 0 && (
+      {!edit && questions.length > 0 && (
         <div className="viewer-selection">
           {batchMode ? (
             <>
@@ -485,7 +487,7 @@ export function Viewer({
                   zoom={zoom}
                 />
                 {!edit &&
-                  data.questions.flatMap((question) =>
+                  questions.flatMap((question) =>
                     question.regions.map((r, i) =>
                       r.page === page &&
                       (!batchMode || i >= (question.sharedRegionCount ?? 0)) ? (
@@ -546,7 +548,7 @@ export function Viewer({
         >
           <div className="question-list-heading">
             <h3>
-              문제 <small>{data.questions.length}</small>
+              문제 <small>{questions.length}</small>
             </h3>
             {manage && !batchMode && (
               <IconButton
@@ -567,8 +569,8 @@ export function Viewer({
             />
           </div>
           <div className="question-list">
-            {data.questions.length ? (
-              data.questions
+            {questions.length ? (
+              questions
                 .filter((q) => String(q.number).includes(search))
                 .map((question) => (
                   <button
@@ -713,7 +715,7 @@ export function Viewer({
                         onChange={(e) => setMergeId(e.target.value)}
                       >
                         <option value="">선택</option>
-                        {data.questions
+                        {questions
                           .filter((other) => other.id !== q.id)
                           .map((other) => (
                             <option key={other.id} value={other.id}>

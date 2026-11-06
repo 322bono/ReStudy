@@ -10,10 +10,19 @@ import{bankReferences}from'./references.ts';
 
 export const standardJob=(r:any):StandardJob=>({...r.data,id:r.id,documentId:r.document_id});
 function dbError(error:any,message:string){if(error)throw new AppError(message);}
-export async function jobView(ctx:Ctx,id:string){
- const job=await row(ctx,'content_jobs',id),parts=(await rows(ctx,'content_parts')).filter((p:any)=>p.job_id===id);
+export async function jobView(ctx:Ctx,id:string,knownPartsVersion?:string){
+ const partFields='part,total_parts,applied,content_hash';
+ const readParts=(withRaw:boolean)=>rows(ctx,'content_parts',{job_id:id},withRaw?`${partFields},raw`:partFields);
+ const versionOf=(records:any[])=>sha256(JSON.stringify(records.map(part=>[part.part,part.content_hash,part.applied])));
+ const [job,parts]=await Promise.all([
+  row(ctx,'content_jobs',id),
+  readParts(!knownPartsVersion),
+ ]);
+ parts.sort((a,b)=>a.part-b.part);
+ let partsVersion=await versionOf(parts);
+ const partsChanged=partsVersion!==knownPartsVersion;
  const day=new Date(Date.now()+9*3600000).toISOString().slice(0,10);
- const [profile,budget]=await Promise.all([readProfile(ctx),ctx.admin.from('ai_daily_budgets').select('count').eq('user_id',ctx.user.id).eq('day',day).maybeSingle()]);dbError(budget.error,'API 일일 사용량을 읽지 못했습니다.');
+ const [profile,budget,saved]=await Promise.all([readProfile(ctx),ctx.admin.from('ai_daily_budgets').select('count').eq('user_id',ctx.user.id).eq('day',day).maybeSingle(),knownPartsVersion&&partsChanged?readParts(true):parts]);dbError(budget.error,'API 일일 사용량을 읽지 못했습니다.');
  const limit=sanitizeSettings(profile.ai_settings).daily_limit,used=budget.data?.count??0,apiBudget={used,limit,remaining:Math.max(0,limit-used)};
  const {data:apiJobs,error}=await ctx.admin.from('ai_jobs').select('id,status,attempts,max_attempts:data->settings->max_attempts,available_at,lease_until,updated_at,part:data->standardPart,label:data->label,last_error:data->last_error,provider_error:data->last_provider_error,detail:data->last_error_detail').eq('user_id',ctx.user.id).eq('data->>standardJobId',id).order('created_at').limit(1000);dbError(error,'API 진행 상황을 읽지 못했습니다.');
  let attempts:any[]=[];
@@ -27,7 +36,11 @@ export async function jobView(ctx:Ctx,id:string){
  }
  const progress=apiProgress(apiJobs??[],job.data.totalParts,job.data.importedQuestions??0,preparationFailure);
  if(apiBudget.remaining===0&&progress.pending>0&&progress.state!=='running')Object.assign(progress,{state:'paused',errorCode:'daily_limit',message:`앱에 설정된 하루 ${limit}회 작업을 모두 사용했습니다. AI 설정에서 하루 제한을 확인하거나 내일 이어서 준비하세요. 제공자 오류가 아닙니다.`});
- return {...standardJob(job),apiBudget,status:job.status,parts:parts.map((p:any)=>({part:p.part,totalParts:p.total_parts,questions:p.raw.questions?.length||0,applied:p.applied})),preparedConcepts:new Set(parts.flatMap((p:any)=>(p.raw.concepts??[]).map((c:any)=>c.id))).size,preparedFlashcards:new Set(parts.flatMap((p:any)=>(p.raw.flashcards??[]).map((c:any)=>c.id))).size,preparedQuestions:parts.reduce((sum:number,p:any)=>sum+(p.raw.questions?.length??0),0),preparedPreview:parts.filter((p:any)=>p.raw.questions?.length).slice(-1).flatMap((p:any)=>(p.raw.questions??[]).slice(0,5).map((q:any)=>({part:p.part,prompt:q.prompt,answer:q.answer,options:q.options,source_pages:q.source_pages,explanation:q.explanation}))),createdAt:job.created_at,apiJobs:apiJobs??[],apiStatus:progress,apiAttempts:attempts};
+ const view={...standardJob(job),apiBudget,status:job.status,createdAt:job.created_at,apiJobs:apiJobs??[],apiStatus:progress,apiAttempts:attempts,partsVersion};
+ if(!partsChanged)return view;
+ saved.sort((a,b)=>a.part-b.part);
+ if(knownPartsVersion)partsVersion=await versionOf(saved);
+ return {...view,partsVersion,parts:saved.map((p:any)=>({part:p.part,totalParts:p.total_parts,questions:p.raw.questions?.length||0,applied:p.applied})),preparedConcepts:new Set(saved.flatMap((p:any)=>(p.raw.concepts??[]).map((c:any)=>c.id))).size,preparedFlashcards:new Set(saved.flatMap((p:any)=>(p.raw.flashcards??[]).map((c:any)=>c.id))).size,preparedQuestions:saved.reduce((sum:number,p:any)=>sum+(p.raw.questions?.length??0),0),preparedPreview:saved.filter((p:any)=>p.raw.questions?.length).slice(-1).flatMap((p:any)=>(p.raw.questions??[]).slice(0,5).map((q:any)=>({part:p.part,prompt:q.prompt,answer:q.answer,options:q.options,source_pages:q.source_pages,explanation:q.explanation})))};
 }
 export async function createJob(ctx:Ctx,body:any){
  const document=await row(ctx,'documents',String(body.documentId||''));if(document.data.archived)throw new AppError('보관된 자료를 먼저 복원하세요.');
@@ -66,7 +79,7 @@ export async function createJob(ctx:Ctx,body:any){
 export async function apiContinuation(ctx:Ctx,id:string){
  const master=await row(ctx,'content_jobs',id),job=standardJob(master);
  if(job.method==='api'&&job.partSize<=5)return jobView(ctx,id);
- const parts=(await rows(ctx,'content_parts')).filter((p:any)=>p.job_id===id),merged=validateRestudyParts(parts.map((p:any)=>p.raw),job,{chapters:master.data.knownChapters??[],concepts:master.data.knownConcepts??[]});
+ const parts=await rows(ctx,'content_parts',{job_id:id}),merged=validateRestudyParts(parts.map((p:any)=>p.raw),job,{chapters:master.data.knownChapters??[],concepts:master.data.knownConcepts??[]});
  const done=merged.questions??[],remaining=Math.max(0,job.questionCount-done.length);
  if(!remaining&&!['toc','concepts'].includes(job.taskType))return jobView(ctx,id);
  const counts=Object.fromEntries(Object.entries(job.purposeCounts??{practice:job.questionCount}).map(([purpose,count])=>[purpose,Math.max(0,Number(count)-done.filter((q:any)=>q.purpose===purpose).length)]));
@@ -102,8 +115,8 @@ export async function commitPart(ctx:Ctx,jobId:string,input:unknown,reviewed=fal
 export async function handleStandard(ctx:Ctx,input:any){const action=input.action||'list';
  if(action==='api_continuation')return apiContinuation(ctx,input.jobId);
  if(action==='create')return createJob(ctx,input);
- if(action==='list'){const jobs=await rows(ctx,'content_jobs');return {jobs:jobs.filter((j:any)=>!input.documentId||j.document_id===input.documentId).map((j:any)=>({...standardJob(j),status:j.status,createdAt:j.created_at})).sort((a:any,b:any)=>String(b.createdAt??'').localeCompare(String(a.createdAt??'')))};}
- if(action==='get')return jobView(ctx,input.jobId);
+ if(action==='list'){const jobs=await rows(ctx,'content_jobs',input.documentId?{document_id:input.documentId}:{});return {jobs:jobs.map((j:any)=>({...standardJob(j),status:j.status,createdAt:j.created_at})).sort((a:any,b:any)=>String(b.createdAt??'').localeCompare(String(a.createdAt??'')))};}
+ if(action==='get')return jobView(ctx,input.jobId,typeof input.partsVersion==='string'&&/^[a-f0-9]{64}$/.test(input.partsVersion)?input.partsVersion:undefined);
  if(action==='prompt'){const r=await row(ctx,'content_jobs',input.jobId);return {prompt:createExternalPrompt(standardJob(r),Number(input.part||1)),job:standardJob(r)};}
  if(action==='preview')return (await previewPart(ctx,input.jobId,input.raw)).preview;
  if(action==='import'){if(typeof input.previewHash!=='string')throw new AppError('미리보기를 먼저 확인하세요.');const current=await previewPart(ctx,input.jobId,input.raw);if(current.hash!==input.previewHash)throw new AppError('내용이 바뀌었습니다. 다시 검사하세요.');return commitPart(ctx,input.jobId,input.raw,input.reviewed===true);}

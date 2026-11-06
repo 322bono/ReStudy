@@ -155,7 +155,7 @@ export default function RestudyApp({
   const bankReturn = useRef<View>({ name: "study" });
   const notify = useCallback((message: string) => setToast(message), []);
   const refresh = useCallback(async () => {
-    setState(await api<AppState>("state"));
+    setState(await api<AppState>("overview"));
   }, []);
   useEffect(() => {
     refresh().catch((e) => notify(e.message));
@@ -628,6 +628,7 @@ export default function RestudyApp({
                 initialPage={view.page}
                 manage={!!view.manage}
                 concepts={state.concepts}
+                questions={state.questions}
                 onBack={() => navigate(returnView.current)}
                 onChange={refresh}
                 onError={notify}

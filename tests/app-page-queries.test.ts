@@ -1,6 +1,6 @@
 import { expect, test, vi } from 'vitest';
 import { handle } from '../supabase/functions/_shared/app/routes';
-import { state } from '../supabase/functions/_shared/app/repository';
+import { gradingContext, state } from '../supabase/functions/_shared/app/repository';
 
 function fixture() {
   const reads: { table: string; columns: string; filters: Record<string, unknown> }[] = [];
@@ -15,11 +15,15 @@ function fixture() {
   const from = (table: string) => {
     const read = { table, columns: '', filters: {} as Record<string, unknown> };
     reads.push(read);
+    const field = (row: any, path: string) => path.split(/->>?/).reduce((value, key) => value?.[key], row);
     const result = () => {
-      const rows = (tables[table] ?? []).filter(row => Object.entries(read.filters).every(([key, value]) => row[key] === value));
-      return { data: rows.map(({ data, ...row }) => read.columns.includes('kind:data') ? row : { ...row, data }), error: null };
+      const rows = (tables[table] ?? []).filter(row => Object.entries(read.filters).every(([key, value]) => Array.isArray(value) ? value.includes(field(row,key)) : field(row,key) === value));
+      return { data: read.columns === '*' ? rows : rows.map(row => Object.fromEntries(read.columns.split(',').map(column => {
+        const [alias, path = alias] = column.split(':');
+        return [alias, field(row, path)];
+      }))), error: null };
     };
-    const query: any = { select: (columns: string) => { read.columns = columns; return query; }, eq: (key: string, value: unknown) => { read.filters[key] = value; return query; }, range: () => query, order: () => query, maybeSingle: async () => ({ ...result(), data: result().data[0] ?? null }), then: (resolve: any) => Promise.resolve(result()).then(resolve) };
+    const query: any = { select: (columns: string) => { read.columns = columns; return query; }, eq: (key: string, value: unknown) => { read.filters[key] = value; return query; }, in: (key: string, value: unknown[]) => { read.filters[key] = value; return query; }, range: () => query, order: () => query, maybeSingle: async () => ({ ...result(), data: result().data[0] ?? null }), then: (resolve: any) => Promise.resolve(result()).then(resolve) };
     return query;
   };
   const sign = vi.fn(async (path: string) => ({ data: { signedUrl: `https://signed.invalid/${path}` }, error: null }));
@@ -61,7 +65,7 @@ test('learning loads page metadata without copying the stored OCR coordinates', 
 
 test('lightweight crop lookup still rejects an answer page', async()=>{
   const f=fixture();
-  f.tables.document_pages[0].kind='answers';
+  f.tables.document_pages[0].data.kind='answers';
   await expect(handle(f.ctx,{path:'asset',method:'POST',body:{path:'questions/q/image/0'}})).rejects.toThrow('정답·해설');
   expect(f.sign).not.toHaveBeenCalled();
 });
@@ -93,4 +97,42 @@ test('drawing autosave can acknowledge persistence without returning the full so
   const result = await handle(f.ctx, { path: 'solve/solve/drawing', method: 'POST', body: { questionId: 'q', strokes, minimal: true } });
   expect(result).toEqual({ saved: true });
   expect(f.ctx.admin.rpc).toHaveBeenCalledWith('save_learning_session', expect.objectContaining({ p_data: expect.objectContaining({ drawings: { q: strokes } }) }));
+});
+
+test('the viewer fetches page coordinates without OCR text or another library read', async () => {
+  const f = fixture();
+  const result = await handle(f.ctx, { path: 'materials/doc/pages' });
+  expect(f.reads.map(read => read.table)).toEqual(['documents','document_pages']);
+  expect(f.reads[1].filters).toEqual({user_id:'owner',document_id:'doc'});
+  expect(f.reads[1].columns).not.toContain('text:data');
+  expect(result.pages[0]).toMatchObject({number:73,width:595,height:842});
+});
+
+test('the overview keeps the saved crop links and bank counts but omits OCR and session snapshots', async () => {
+  const f = fixture();
+  f.tables.problems[0].data.text = 'large OCR payload';
+  f.tables.problem_regions[0].data = {page:73};
+  f.tables.concepts = [{id:'c',user_id:'owner',data:{}}];
+  f.tables.problem_concepts = [{user_id:'owner',problem_id:'q',concept_id:'c'}];
+  f.tables.concept_questions = [{id:'b',user_id:'owner',concept_id:'c',review_status:'approved',data:{modes:['quiz'],answer:'answer'}}];
+  const result = await handle(f.ctx, { path: 'overview' });
+  expect(result.bankStats).toEqual([{conceptId:'c',count:1,modes:['quiz']}]);
+  expect(result.questions[0]).toMatchObject({id:'q',hasContent:true,imagePaths:['owner/doc/q.png']});
+  expect(result.questions[0]).not.toHaveProperty('text');
+  expect(result.studies[0]).not.toHaveProperty('items');
+  expect(result.sessions[0]).not.toHaveProperty('drawings');
+  expect(f.reads.map(read => read.table)).not.toContain('content_refs');
+  expect(f.reads.find(read => read.table === 'concept_questions')?.columns).not.toContain('answer');
+});
+
+test('grading uses saved region page kinds without fetching any bank or session snapshots', async () => {
+  const f = fixture();
+  f.tables.wrong_answers = [{id:'wrong',user_id:'owner',problem_id:'q',data:{}}];
+  f.tables.problem_concepts = [{user_id:'owner',problem_id:'q',concept_id:'c'}];
+  f.tables.problem_regions[0].page = 73;
+  expect((await gradingContext(f.ctx, [])).questions).toEqual([{id:'q',conceptIds:['c']}]);
+  f.tables.document_pages[0].data.kind = 'answers';
+  expect((await gradingContext(f.ctx, [])).questions).toEqual([]);
+  expect(f.reads.map(read => read.table)).not.toContain('concept_questions');
+  expect(f.reads.map(read => read.table)).not.toContain('solve_sessions');
 });

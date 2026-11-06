@@ -1,7 +1,56 @@
 import {AppError} from '../context.ts';
 import{preparedBankLinks}from'../../../../src/domain/learning.ts';
 export type Ctx={user:{id:string},db:any,admin:any};
-export async function rows(ctx:Ctx,table:string,filters:Record<string,string|number>={},columns='*'){const all:any[]=[];for(let offset=0;;offset+=1000){let query=ctx.db.from(table).select(columns).eq('user_id',ctx.user.id);for(const [column,value]of Object.entries(filters))query=query.eq(column,value);const {data,error}=await query.range(offset,offset+999);if(error)throw new AppError('저장된 자료를 읽지 못했습니다.',500);all.push(...data);if(data.length<1000)return all;}}
+type Filters = Record<string, string | number | string[]>;
+export async function rows(ctx:Ctx,table:string,filters:Filters={},columns='*'){const all:any[]=[];for(let offset=0;;offset+=1000){let query=ctx.db.from(table).select(columns).eq('user_id',ctx.user.id);for(const [column,value]of Object.entries(filters))query=Array.isArray(value)?query.in(column,value):query.eq(column,value);const {data,error}=await query.range(offset,offset+999);if(error)throw new AppError('저장된 자료를 읽지 못했습니다.',500);all.push(...data);if(data.length<1000)return all;}}
+
+async function projectedRows(ctx: Ctx, table: string, columns: string, fields: string[], filters: Filters = {}) {
+ const records = await rows(ctx, table, filters, `${columns},${fields.map(field => `field_${field}:data->${field}`).join(',')}`);
+ return records.map(record => {
+  const data: Record<string, any> = {};
+  for (const field of fields) {
+   const key = `field_${field}`;
+   if (record[key] !== null && record[key] !== undefined) data[field] = record[key];
+   delete record[key];
+  }
+  return { ...record, data };
+ });
+}
+
+const questionColumns = 'id,document_id,number,page,created_at,updated_at';
+const questionFields = ['unit','regions','confidence','confirmed','source','sharedRegionCount','mergedInto','autoRetired','chapterId','createdAt'];
+
+export async function gradingContext(ctx: Ctx, originalIds: string[]) {
+ const history = rows(ctx, 'study_results').then(records => records.map(value));
+ const mistakes = rows(ctx, 'wrong_answers', originalIds.length ? { problem_id: originalIds } : {})
+  .then(records => records.map(mistake).filter(record => !record.archived));
+ if (originalIds.length) {
+  const [results, activeMistakes] = await Promise.all([history, mistakes]);
+  return { results, mistakes: activeMistakes, questions: [] };
+ }
+
+ const [results, activeMistakes, documents, records, regions, links, pages] = await Promise.all([
+  history, mistakes,
+  projectedRows(ctx, 'documents', 'id', ['archived']),
+  projectedRows(ctx, 'problems', 'id,document_id', ['regions','autoRetired']),
+  rows(ctx, 'problem_regions', {}, 'problem_id,page'),
+  rows(ctx, 'problem_concepts', {}, 'problem_id,concept_id'),
+  rows(ctx, 'document_pages', {'data->>kind':'answers'}, 'document_id,number'),
+ ]);
+ const active = new Set(documents.filter(doc => !doc.data.archived).map(doc => doc.id));
+ const answers = new Set(pages.map(page => `${page.document_id}:${page.number}`));
+ const wrongIds = new Set(activeMistakes.map(record => record.questionId));
+ const regionPages = new Map<string, number[]>();
+ const concepts = new Map<string, string[]>();
+ for (const region of regions) regionPages.set(region.problem_id, [...(regionPages.get(region.problem_id) ?? []), region.page]);
+ for (const link of links) concepts.set(link.problem_id, [...(concepts.get(link.problem_id) ?? []), link.concept_id]);
+ const questions = records.filter(record => {
+  if (!wrongIds.has(record.id) || !active.has(record.document_id) || record.data.autoRetired) return false;
+  const numbers = regionPages.get(record.id) ?? (record.data.regions ?? []).map((region: any) => region.page);
+  return numbers.every((page: number) => !answers.has(`${record.document_id}:${page}`));
+ }).map(record => ({ id: record.id, conceptIds: concepts.get(record.id) ?? [] }));
+ return { results, mistakes: activeMistakes, questions };
+}
 /** OCR text is fetched only for the material view that returns it. */
 export async function pageRows(ctx:Ctx,documentId?:string,number?:number,withText=false){
  const all:any[]=[];
@@ -36,11 +85,23 @@ export function value(r:any){return {...r.data,id:r.id,createdAt:r.data?.created
 export async function put(ctx:Ctx,table:string,id:string,data:any,columns:Record<string,unknown>={}){const result=await ctx.db.from(table).upsert({id,user_id:ctx.user.id,...columns,data},{onConflict:table==='concepts'||table==='concept_questions'?'id,user_id':'id'}).select().single();if(result.error)throw new AppError('자료 저장 중 참조 또는 형식을 확인하지 못했습니다.',400);return result.data;}
 export const material=(r:any)=>({...value(r),title:r.title,subject:r.subject,kind:r.kind,status:r.status,hash:r.content_hash});
 export const mistake=(r:any)=>({...value(r),questionId:r.problem_id,resolved:r.data.resolved??r.data.lastResult==='correct'});
-export async function state(ctx:Ctx,withPages=false){
- const names=['documents','problems','problem_regions','problem_concepts','concepts','concept_questions','wrong_answers','study_sessions','solve_sessions','study_results','document_chapters','chapter_concepts','bank_question_concepts','bank_question_origins',...(withPages?['document_pages']:[])];
- const lists=await Promise.all(names.map(t=>t==='document_pages'?pageRows(ctx):rows(ctx,t))),tables=Object.fromEntries(names.map((n,i)=>[n,lists[i]]));
+export async function state(ctx:Ctx,withPages=false,overview=false){
+ const names=['documents','problems','problem_regions','problem_concepts','concepts','concept_questions','wrong_answers','study_sessions','solve_sessions','document_chapters','chapter_concepts','bank_question_concepts',...(!overview?['study_results','bank_question_origins']:[]),...(withPages?['document_pages']:[])];
+ const readTable = (table: string) => {
+  if (table === 'document_pages') return pageRows(ctx);
+  if (!overview) return rows(ctx, table);
+  if (table === 'problems') return projectedRows(ctx, table, questionColumns, questionFields);
+  if (table === 'study_sessions' || table === 'solve_sessions')
+   return projectedRows(ctx, table, 'id,created_at,updated_at', ['status','label','mode','createdAt']);
+  if (table === 'concept_questions') return projectedRows(ctx, table, 'id,concept_id,review_status', ['active','archived','modes','conceptIds']);
+  if (table === 'problem_regions') return rows(ctx, table, {}, 'problem_id,part,image_path,data');
+  return rows(ctx, table);
+ };
+ const lists=await Promise.all(names.map(readTable)),tables=Object.fromEntries(names.map((n,i)=>[n,lists[i]]));
+ tables.bank_question_origins ??= [];
+ tables.study_results ??= [];
  const projection=async(table:string,columns:string)=>{const result:any[]=[];for(let offset=0;;offset+=1000){const page=await ctx.db.from(table).select(columns).eq('user_id',ctx.user.id).range(offset,offset+999);if(page.error)throw new AppError('준비한 문항 연결을 읽지 못했습니다.',500);result.push(...page.data);if(page.data.length<1000)return result;}};
- const [preparedJobs,preparedRefs]=await Promise.all([projection('content_jobs','id,document_id,task_type:data->>taskType,first_target:data->targetQuestions->0->>id,second_target:data->targetQuestions->1->>id'),projection('content_refs','job_id,kind,actual_id')]);
+ const [preparedJobs,preparedRefs]=overview?[[],[]]:await Promise.all([projection('content_jobs','id,document_id,task_type:data->>taskType,first_target:data->targetQuestions->0->>id,second_target:data->targetQuestions->1->>id'),projection('content_refs','job_id,kind,actual_id')]);
  const preparedLinks=preparedBankLinks(preparedJobs,preparedRefs,tables.problems.map((q:any)=>({id:q.id,materialId:q.document_id})));
  const bank=tables.concept_questions.map((r:any)=>({...value(r),preparedQuestionIds:preparedLinks.get(r.id)??[],conceptId:r.concept_id,conceptIds:[...new Set([r.concept_id,...(r.data.conceptIds||[]),...tables.bank_question_concepts.filter((v:any)=>v.question_id===r.id).map((v:any)=>v.concept_id)])],chapterIds:[...new Set([r.data.chapterId,...tables.bank_question_origins.filter((v:any)=>v.question_id===r.id).map((v:any)=>v.chapter_id)].filter(Boolean))],purposes:[...new Set([r.data.purpose,...tables.bank_question_origins.filter((v:any)=>v.question_id===r.id).map((v:any)=>v.purpose)].filter(Boolean))],origins:tables.bank_question_origins.filter((v:any)=>v.question_id===r.id),active:r.review_status==='approved'&&r.data.active!==false&&r.data.archived!==true,reviewStatus:r.review_status}));
  const materials=tables.documents.map(material).filter((m:any)=>!m.archived);

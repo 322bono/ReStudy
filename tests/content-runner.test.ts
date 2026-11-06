@@ -7,10 +7,11 @@ beforeEach(()=>{vi.useFakeTimers();fixture.calls=[];fixture.views=[];fixture.run
 afterEach(()=>vi.useRealTimers());
 test('polls a running part to its durable result before dispatching the next part',async()=>{
  fixture.run.push({result:{status:'running'}},{result:{status:'running'}});
- fixture.views.push(job({apiJobs:[{part:1,status:'running',lease_until:new Date(Date.now()+180000).toISOString()}]}),job({parts:[{part:1}],apiJobs:[{part:1,status:'completed'}]}),job({parts:[{part:1},{part:2}],apiJobs:[{part:1,status:'completed'},{part:2,status:'completed'}]}));
+ fixture.views.push(job({partsVersion:'initial',apiJobs:[{part:1,status:'running',lease_until:new Date(Date.now()+180000).toISOString()}]}),job({parts:[{part:1}],partsVersion:'saved',apiJobs:[{part:1,status:'completed'}]}),job({parts:[{part:1},{part:2}],apiJobs:[{part:1,status:'completed'},{part:2,status:'completed'}]}));
  const promise=runPreparedJob(job());await vi.runAllTimersAsync();expect((await promise).parts).toHaveLength(2);
  expect(fixture.calls.filter(c=>c.name==='ai-request').map(c=>c.part)).toEqual([1,2]);
  expect(fixture.calls.map(c=>c.name)).toEqual(['ai-request','content-jobs','content-jobs','ai-request','content-jobs']);
+ expect(fixture.calls.filter(c=>c.name==='content-jobs').map(c=>c.partsVersion)).toEqual([undefined,'initial','saved']);
 });
 test('honors the provider retry timestamp and keeps graceful stop within the current part',async()=>{
  let stop=false;const retryAt=Date.now()+10000;

@@ -149,7 +149,7 @@ export default function MaterialWorkspace({
         ));
   async function load(selectedId?: string) {
     const [d, list] = await Promise.all([
-      api(`materials/${id}`),
+      api(`materials/${id}/metadata`),
       standard("list", { documentId: id }),
     ]);
     setDoc(d.material);

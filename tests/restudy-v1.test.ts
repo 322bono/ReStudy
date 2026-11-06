@@ -438,6 +438,13 @@ describe("original-analysis job preparation", () => {
     records.content_parts.push({job_id:job.id,user_id:ctx.user.id,part:2,total_parts:5,raw:{...part(2),questions:[]},content_hash:'another'});
     const summary=await jobView(ctx,job.id);
     expect(summary.preparedQuestions).toBe(1);expect(summary.preparedPreview[0]).toMatchObject({part:1,prompt:incoming.questions[0].prompt,options:incoming.questions[0].options,source_pages:[22]});
+    const unchanged=await jobView(ctx,job.id,summary.partsVersion);
+    expect(unchanged.partsVersion).toBe(summary.partsVersion);
+    expect(unchanged).not.toHaveProperty('preparedPreview');
+    records.content_parts[1].applied=true;
+    const changed=await jobView(ctx,job.id,summary.partsVersion);
+    expect(changed.partsVersion).not.toBe(summary.partsVersion);
+    expect(changed.parts?.[1]).toMatchObject({applied:true});
   });
   it('prepares all-in-one API content in small validated units without crop targets',async()=>{
    const {ctx,documentId}=jobContext();

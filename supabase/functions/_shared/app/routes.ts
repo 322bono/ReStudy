@@ -1,5 +1,5 @@
 import {AppError} from '../context.ts';
-import {material,mistake,publicQuestion,put,row,rows,pageRows,signed,state,value,type Ctx} from './repository.ts';
+import {gradingContext,material,mistake,publicQuestion,put,row,rows,pageRows,signed,state,value,type Ctx} from './repository.ts';
 import {importContent,validate} from './content.ts';
 import {exportData,restoreData} from './backup.ts';
 import{saveOutline,documentIndex}from'./pdf-index.ts';
@@ -24,7 +24,7 @@ async function learningMutation(ctx:Ctx,kind:'study'|'solve',id:string,body:any,
   }else if(current.mode==='memory'&&!current.originQuestionIds?.length){
    result=answerStudy(current,body,{questions:[],results:[],mistakes:[]});
   }else{
-   result=answerStudy(current,body,learnState(await state(ctx,true)));
+   result=answerStudy(current,body,await gradingContext(ctx,current.originQuestionIds??[]));
   }
   const {data,error}=await ctx.admin.rpc('save_learning_session',{p_user_id:ctx.user.id,p_kind:kind,p_id:id,p_version:current.version||0,p_data:result.session,p_attempt:result.attempt||null,p_mistakes:result.mistakes||[]});
   if(error)throw new AppError('학습 기록을 저장하지 못했습니다. 다시 시도하세요.',500);
@@ -56,8 +56,9 @@ export async function handle(ctx:Ctx,input:any):Promise<any>{
  const path=String(input.path||'').replace(/^\//,''),method=String(input.method||'GET').toUpperCase(),b=input.body||{},url=new URL('https://app.invalid/'+path),p=url.pathname.slice(1).split('/'),route=p[0],id=p[1],action=p[2];
  if(route==='asset')return asset(ctx,String(b.path||url.searchParams.get('path')||''));
  if(route==='data'&&method==='POST'){if(id==='export')return exportData(ctx,b);if(id==='restore')return restoreData(ctx,b);}
- if(route==='state'){
-  const s=await state(ctx);return {materials:s.materials,chapters:s.chapters,questions:s.questions.map(publicQuestion),concepts:s.concepts,mistakes:s.mistakes,sessions:s.sessions.map(solvePublic),studies:s.studies.map(publicStudy),bankStats:s.concepts.map((c:any)=>({conceptId:c.id,count:s.bank.filter((i:any)=>i.active&&i.conceptIds.includes(c.id)).length,modes:[...new Set(s.bank.filter((i:any)=>i.active&&i.conceptIds.includes(c.id)).flatMap((i:any)=>i.modes||[]))]}))};
+ if(route==='state'||route==='overview'){
+  const overview=route==='overview';
+  const s=await state(ctx,false,overview);return {materials:s.materials,chapters:s.chapters,questions:s.questions.map(publicQuestion),concepts:s.concepts,mistakes:s.mistakes,sessions:overview?s.sessions:s.sessions.map(solvePublic),studies:overview?s.studies:s.studies.map(publicStudy),bankStats:s.concepts.map((c:any)=>({conceptId:c.id,count:s.bank.filter((i:any)=>i.active&&i.conceptIds.includes(c.id)).length,modes:[...new Set(s.bank.filter((i:any)=>i.active&&i.conceptIds.includes(c.id)).flatMap((i:any)=>i.modes||[]))]}))};
  }
  if(route==='bank'){
   const s=learnState(await state(ctx,true));
@@ -77,6 +78,11 @@ export async function handle(ctx:Ctx,input:any):Promise<any>{
   const r=await row(ctx,'documents',id);
   if(action==='outline'&&method==='POST')return saveOutline(ctx,id,b);
   if(action==='index'&&method==='GET')return documentIndex(ctx,id);
+  if(action==='metadata'&&method==='GET')return {material:material(r)};
+  if(action==='pages'&&method==='GET'){
+   const pages=await pageRows(ctx,id);
+   return {material:material(r),pages:pages.map(pg=>({...pg.data,number:pg.number,materialId:pg.document_id,imagePath:pg.image_path}))};
+  }
   if(method==='DELETE'){await put(ctx,'documents',id,{...r.data,archived:true},{title:r.title,subject:r.subject,kind:r.kind,status:r.status,content_hash:r.content_hash});return {archived:true};}
   if(action==='page-kind'){
    if(!['content','answers','uncertain'].includes(b.kind)||['processing','uploaded'].includes(r.status))throw new AppError('사전 처리 완료 후 페이지 종류를 변경하세요.');

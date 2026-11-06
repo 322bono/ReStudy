@@ -7,7 +7,10 @@ type Entry = {
   encoding?: 'blob-bytes-v1';
   mime?: string;
 };
-const LIMIT = 150 * 1024 * 1024;
+const MIB = 1024 * 1024;
+const IMAGE_CACHE_LIMIT = 150 * MIB;
+const PDF_CACHE_LIMIT = 512 * MIB;
+const isPdfKey = (key: IDBValidKey) => typeof key === "string" && key.slice(key.indexOf(":") + 1).startsWith("pdf:");
 let pending: Promise<IDBDatabase> | undefined;
 function database() {
   if (typeof indexedDB === "undefined")
@@ -100,7 +103,9 @@ export async function cachePut(
         value instanceof Blob
           ? value.size
           : new TextEncoder().encode(JSON.stringify(value)).length;
-    if (bytes > 50 * 1024 * 1024) return;
+    const pdf = name.startsWith("pdf:");
+    if (bytes > (pdf ? 128 : 50) * MIB) return;
+    const limit = pdf ? PDF_CACHE_LIMIT : IMAGE_CACHE_LIMIT;
     // Keep durable bytes in IndexedDB, not OS-backed Blob references. This also
     // makes cache eviction safe while an exported/viewed Blob is still in use.
     const binary=value instanceof Blob;
@@ -126,13 +131,15 @@ export async function cachePut(
         const cursor = request.result;
         if (cursor) {
           const [, size] = cursor.key as [number, number];
-          entryKeys.push([cursor.primaryKey, size]);
-          total += size;
+          if (isPdfKey(cursor.primaryKey) === pdf) {
+            entryKeys.push([cursor.primaryKey, size]);
+            total += size;
+          }
           cursor.continue();
           return;
         }
         for (const [entryKey, size] of entryKeys) {
-          if (total <= LIMIT) break;
+          if (total <= limit) break;
           store.delete(entryKey);
           total -= size;
         }

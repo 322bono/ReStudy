@@ -63,7 +63,7 @@ export type Question = {
   number: number;
   page: number;
   unit: string;
-  text: string;
+  text?: string;
   regions: Region[];
   confidence: number;
   confirmed: boolean;
@@ -178,8 +178,8 @@ export type AppState = {
   materials: Material[];
   questions: Question[];
   mistakes: Mistake[];
-  sessions: SolveSession[];
-  studies: StudySession[];
+  sessions: Pick<SolveSession, "id" | "status" | "createdAt">[];
+  studies: Pick<StudySession, "id" | "status" | "createdAt" | "label" | "mode">[];
   concepts: Concept[];
   chapters?: {
     id: string;
