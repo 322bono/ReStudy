@@ -2,6 +2,11 @@ const messages:Record<string,string>={timeout:'AI 응답을 110초 동안 기다
 messages.billing_confirmation_required='Google 프로젝트의 결제 미연결 상태를 확인하지 못했습니다. 확인 가능한 무료 모델을 사용하거나 설정에서 연결을 확인하세요.';
 messages.free_only_policy='지원되는 무료 모델을 선택해 주세요. 설정에서 Google API 연결을 확인할 수 있습니다.';
 messages.source_incomplete='모델이 원본에서 풀이에 필요한 조건을 읽지 못했습니다. 출처 보기에서 지문·보기·그림이 모두 포함됐는지 확인한 뒤 다시 분석해 주세요.';
+messages.answer_disagreement='서로 다른 모델의 정답이 일치하지 않아 분석을 확정하지 않았습니다. 원본 조건·보기 또는 공식 정답을 확인해 주세요.';
+messages.quality_check_failed=messages.answer_disagreement;
+messages.quality_check_pending='다른 무료 모델이 원본과 정답을 대조하고 있습니다.';
+messages.answer_inconsistent='정답과 해설에 모순이 있어 저장하지 않았습니다. 다른 무료 모델로 다시 대조합니다.';
+messages.answer_check_unavailable='정답 대조에 사용할 다른 무료 모델이 지금 없습니다. 모델 사용 한도를 확인한 뒤 이어서 분석해 주세요.';
 export const aiFailureText=(code:unknown)=>typeof code==='string'?(messages[code]??'작업을 완료하지 못했습니다. 연결 설정과 최근 시도 내역을 확인하세요.'):'아직 완료된 결과가 없습니다.';
 const diagnostics:Record<string,string>={
  credential_header_invalid:'API 키의 빈 값·공백·헤더 형식을 확인해 주세요.',

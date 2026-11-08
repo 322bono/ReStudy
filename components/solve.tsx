@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeft,
   ArrowRight,
@@ -14,6 +14,7 @@ import {
   BookOpen,
   CheckCircle2,
   Lightbulb,
+  Eraser,
 } from "lucide-react";
 import { api } from "@/lib/client";
 import type {
@@ -26,30 +27,44 @@ import type {
 import { Badge, Button, Empty, IconButton } from "./ui";
 import { prefetchSecureImages, SecureImage } from "./secure-assets";
 import OriginalAnalysis from "../src/components/OriginalAnalysis";
+import { createDrawingSaver } from "../src/services/solve-drawings";
+import { eraseInk } from "../src/domain/ink";
 import "../src/styles/original-analysis.css";
 import "../src/styles/original-solve.css";
 
 function Drawing({
   question,
   sessionId,
+  snapshotIndex,
   region,
   zoom,
   pen,
+  tool,
+  color,
+  width,
   disabled,
   strokes,
   onChange,
 }: {
   question: Question;
   sessionId: string;
+  snapshotIndex: number;
   region: number;
   zoom: number;
   pen: boolean;
+  tool: "pen" | "eraser";
+  color: string;
+  width: number;
   disabled: boolean;
   strokes: Stroke[];
   onChange: (s: Stroke[]) => void;
 }) {
   const paper = useRef<HTMLDivElement>(null),
-    current = useRef<{ pointerId: number; stroke: Stroke } | null>(null),
+    current = useRef<{
+      pointerId: number;
+      stroke: Stroke;
+      erased?: Stroke[];
+    } | null>(null),
     [draft, setDraft] = useState<Stroke | null>(null);
   const active = pen && !disabled;
   useEffect(() => {
@@ -66,7 +81,7 @@ function Drawing({
     };
     surface.addEventListener("touchmove", preventPan, { passive: false });
     return () => surface.removeEventListener("touchmove", preventPan);
-  }, [active]);
+  }, [active, tool]);
   const pos = (e: React.PointerEvent<HTMLDivElement>) => {
     const r = e.currentTarget.getBoundingClientRect();
     return {
@@ -79,32 +94,65 @@ function Drawing({
     current.current = null;
     setDraft(null);
   };
+  const erase = (e: React.PointerEvent<HTMLDivElement>) => {
+    const gesture = current.current;
+    if (!gesture) return;
+    const point = pos(e),
+      rect = e.currentTarget.getBoundingClientRect();
+    const previous = gesture.erased ?? strokes;
+    const next = eraseInk(
+      previous,
+      region,
+      gesture.stroke.points[gesture.stroke.points.length - 1],
+      point,
+      rect.width,
+      rect.height,
+    );
+    gesture.stroke.points = [point];
+    gesture.erased = next;
+    if (next !== previous) onChange(next);
+  };
   return (
     <div
       ref={paper}
-      className={active ? "drawing-paper pen-active" : "drawing-paper"}
+      className={
+        active
+          ? `drawing-paper pen-active ${tool === "eraser" ? "eraser-active" : ""}`
+          : "drawing-paper"
+      }
       style={{ width: `${zoom * 100}%` }}
       onPointerDown={(e) => {
-        if (!active || !e.isPrimary || e.button !== 0 || current.current) return;
+        if (!active || !e.isPrimary || e.button !== 0 || current.current)
+          return;
         e.preventDefault();
         e.currentTarget.setPointerCapture(e.pointerId);
         const stroke = {
-          color: "#3730a3",
-          width: 0.0025,
+          color,
+          width,
           region,
           points: [pos(e)],
         };
         current.current = { pointerId: e.pointerId, stroke };
-        setDraft(stroke);
+        if (tool === "eraser") erase(e);
+        else setDraft(stroke);
       }}
       onPointerMove={(e) => {
         if (!active || current.current?.pointerId !== e.pointerId) return;
+        if (tool === "eraser") {
+          erase(e);
+          return;
+        }
         const { stroke } = current.current;
         stroke.points.push(pos(e));
         setDraft({ ...stroke });
       }}
       onPointerUp={(e) => {
         if (!active || current.current?.pointerId !== e.pointerId) return;
+        if (tool === "eraser") {
+          erase(e);
+          cancel(e);
+          return;
+        }
         const { stroke } = current.current;
         stroke.points.push(pos(e));
         cancel(e);
@@ -116,7 +164,7 @@ function Drawing({
       <SecureImage
         alt={`${question.number}번 원본 문제${question.regions.length > 1 ? ` · 영역 ${region + 1}` : ""}`}
         draggable={false}
-        path={`questions/${question.id}/image/${region}?session=${sessionId}`}
+        path={`questions/${question.id}/image/${region}?session=${sessionId}&snapshot=${snapshotIndex}`}
       />
       <svg
         aria-hidden="true"
@@ -166,6 +214,9 @@ export function Solve({
   const [session, setSession] = useState<SolveSession>(),
     [index, setIndex] = useState(0),
     [pen, setPen] = useState(false),
+    [tool, setTool] = useState<"pen" | "eraser">("pen"),
+    [penColor, setPenColor] = useState("#111827"),
+    [penWidth, setPenWidth] = useState(0.0025),
     [zoom, setZoom] = useState(1),
     [strokes, setStrokes] = useState<Stroke[]>([]),
     [busy, setBusy] = useState(false),
@@ -176,6 +227,28 @@ export function Solve({
     [helpText, setHelpText] = useState(""),
     [answerText, setAnswerText] = useState("");
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const progressDirty = useRef(false);
+  const refreshRef = useRef(onRefresh);
+  refreshRef.current = onRefresh;
+  const refreshProgress = () => {
+    if (!progressDirty.current) return;
+    progressDirty.current = false;
+    void refreshRef.current().catch((e) => {
+      progressDirty.current = true;
+      onError(e.message);
+    });
+  };
+  const drawingSaver = useMemo(
+    () =>
+      createDrawingSaver((questionId, strokes) =>
+        api(`solve/${id}/drawing`, "POST", {
+          questionId,
+          strokes,
+          minimal: true,
+        }),
+      ),
+    [id],
+  );
   const reviewRef = useRef<HTMLDivElement>(null);
   const answerKeysRef = useRef<{
     id: string;
@@ -229,7 +302,10 @@ export function Solve({
       state.questions.find((q) => q.id === qid);
   useEffect(() => {
     if (!session || summary) return;
-    const nextIds = session.questionIds.slice(index + 1, index + 3);
+    const nextIds = [
+      ...session.questionIds.slice(index + 1, index + 4),
+      ...session.questionIds.slice(Math.max(0, index - 1), index),
+    ];
     const paths = nextIds.flatMap((questionId) => {
       const next =
         session.questions?.find((question) => question.id === questionId) ||
@@ -237,7 +313,7 @@ export function Solve({
       return (
         next?.regions.map(
           (_, region) =>
-            `questions/${questionId}/image/${region}?session=${id}`,
+            `questions/${questionId}/image/${region}?session=${id}&snapshot=${session.questionIds.indexOf(questionId)}`,
         ) || []
       );
     });
@@ -253,9 +329,21 @@ export function Solve({
   useEffect(
     () => () => {
       if (saveTimer.current) clearTimeout(saveTimer.current);
+      void drawingSaver.flush().catch((e) => onError(e.message));
+      refreshProgress();
     },
-    [],
+    [drawingSaver],
   );
+  useEffect(() => {
+    const beforeUnload = (event: BeforeUnloadEvent) => {
+      if (drawingSaver.dirty()) {
+        event.preventDefault();
+        event.returnValue = "";
+      }
+    };
+    window.addEventListener("beforeunload", beforeUnload);
+    return () => window.removeEventListener("beforeunload", beforeUnload);
+  }, [drawingSaver]);
   if (failure)
     return (
       <Empty
@@ -279,47 +367,40 @@ export function Solve({
     if (answered || busy) return;
     setStrokes(next);
     session.drawings[q.id] = next;
+    drawingSaver.change(q.id, next);
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => {
-      api(`solve/${id}/drawing`, "POST", {
-        questionId: q.id,
-        strokes: next,
-        minimal: true,
-      }).catch((e) => onError(e.message));
+      void drawingSaver.flush().catch((e) => onError(e.message));
     }, 500);
   };
-  const move = async (next: number) => {
+  const move = (next: number) => {
     if (saveTimer.current) clearTimeout(saveTimer.current);
-    setBusy(true);
-    try {
-      await api(`solve/${id}/drawing`, "POST", {
-        questionId: q.id,
-        strokes,
-        minimal: true,
-      });
-      setIndex(next);
-      return true;
-    } catch (e) {
-      onError((e as Error).message);
-      return false;
-    } finally {
-      setBusy(false);
-    }
+    setIndex(next);
+    void drawingSaver.flush().catch((e) => onError(e.message));
   };
   const answer = async (result: Result) => {
     setBusy(true);
     if (saveTimer.current) clearTimeout(saveTimer.current);
     try {
-      const s = await api<SolveSession>(`solve/${id}/answer`, "POST", {
-        questionId: q.id,
-        result,
-        strokes,
-        answerText,
-      });
+      await drawingSaver.flush();
+      const progress = await api<Pick<SolveSession, "answers" | "status">>(
+        `solve/${id}/answer`,
+        "POST",
+        {
+          questionId: q.id,
+          result,
+          strokes,
+          answerText,
+          minimal: true,
+        },
+      );
+      const s = { ...session, ...progress };
       setSession(s);
-      await onRefresh();
-      if (s.status === "complete") setSummary(true);
-      else setIndex(s.questionIds.findIndex((q) => !s.answers[q]));
+      progressDirty.current = true;
+      if (s.status === "complete") {
+        setSummary(true);
+        refreshProgress();
+      } else setIndex(s.questionIds.findIndex((q) => !s.answers[q]));
     } catch (e) {
       onError((e as Error).message);
     } finally {
@@ -428,7 +509,17 @@ export function Solve({
         <IconButton
           label="오답 노트로"
           onClick={async () => {
-            if (await move(index)) onBack();
+            if (saveTimer.current) clearTimeout(saveTimer.current);
+            setBusy(true);
+            try {
+              await drawingSaver.flush();
+              refreshProgress();
+              onBack();
+            } catch (e) {
+              onError((e as Error).message);
+            } finally {
+              setBusy(false);
+            }
           }}
         >
           <ArrowLeft size={20} />
@@ -498,6 +589,70 @@ export function Solve({
           </IconButton>
         </div>
       </div>
+      {pen && !answered && (
+        <div className="solve-pen-strip">
+          <div
+            className="solve-pen-tools"
+            role="toolbar"
+            aria-label="필기 도구"
+          >
+            <button
+              type="button"
+              title="펜"
+              aria-label="펜 선택"
+              aria-pressed={tool === "pen"}
+              disabled={busy}
+              onClick={() => setTool("pen")}
+            >
+              <PenLine size={18} />
+            </button>
+            <div className="pen-palette" role="group" aria-label="펜 색상">
+              {[
+                ["빨간색", "#dc2626"],
+                ["검은색", "#111827"],
+                ["파란색", "#2563eb"],
+              ].map(([label, color]) => (
+                <button
+                  key={color}
+                  type="button"
+                  className="pen-color"
+                  title={label}
+                  aria-label={`${label} 펜`}
+                  aria-pressed={penColor === color && tool === "pen"}
+                  disabled={busy}
+                  onClick={() => {
+                    setPenColor(color);
+                    setTool("pen");
+                  }}
+                >
+                  <span style={{ backgroundColor: color }} />
+                </button>
+              ))}
+            </div>
+            <select
+              title="펜 굵기"
+              aria-label="펜 굵기"
+              value={penWidth}
+              disabled={busy}
+              onChange={(e) => setPenWidth(Number(e.target.value))}
+            >
+              <option value={0.0013}>가는선</option>
+              <option value={0.0025}>보통</option>
+              <option value={0.0045}>굵은선</option>
+            </select>
+            <button
+              type="button"
+              title="획 지우개 · 닿은 획 지우기"
+              aria-label="획 지우개"
+              aria-pressed={tool === "eraser"}
+              disabled={busy}
+              onClick={() => setTool("eraser")}
+            >
+              <Eraser size={18} />
+            </button>
+          </div>
+        </div>
+      )}
       <div className="solve-scroll">
         <div className={`solve-content ${review ? "has-analysis" : ""}`}>
           <div className="solve-source-images">
@@ -506,9 +661,13 @@ export function Solve({
                 key={q.id + "-" + i}
                 question={q}
                 sessionId={id}
+                snapshotIndex={index}
                 region={i}
                 zoom={zoom}
                 pen={pen}
+                tool={tool}
+                color={penColor}
+                width={penWidth}
                 disabled={!!answered || busy}
                 strokes={strokes}
                 onChange={changeDrawing}

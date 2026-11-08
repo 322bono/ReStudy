@@ -15,6 +15,19 @@ test("cached results finish without polling or creating a content job", async ()
   expect(edgeCall.mock.calls).toEqual([["analyze-problem", { action: "wrong_review", problemId: "q" }]]);
 });
 
+test('continues the saved verification stages automatically without a manual approval step', async () => {
+  vi.useFakeTimers();
+  edgeCall.mockResolvedValueOnce({id:'job',status:'running'})
+    .mockResolvedValueOnce({id:'job',status:'waiting',last_error:'quality_check_pending'})
+    .mockResolvedValueOnce({id:'job',status:'running'})
+    .mockResolvedValueOnce({id:'job',status:'waiting',last_error:'quality_check_pending'})
+    .mockResolvedValueOnce({id:'job',status:'completed'});
+  const work=prepareWrongAnalysis('q',()=>false);
+  await vi.runAllTimersAsync();
+  await expect(work).resolves.toBe(true);
+  expect(edgeCall.mock.calls.filter(([,body])=>body.action==='wrong_review')).toHaveLength(3);
+});
+
 test("one original is submitted and the leased job is polled until completion", async () => {
   vi.useFakeTimers();
   edgeCall.mockResolvedValueOnce({ id: "running", status: "running" }).mockResolvedValueOnce({ status: "completed" });

@@ -15,6 +15,7 @@ const result = {
 it("requests only the four review sections and sends all saved image regions", async () => {
   const transport = vi.fn(async (_url: unknown, request?: RequestInit) => {
     const body = JSON.parse(String(request?.body));
+    expect(body.generationConfig.thinkingConfig.thinkingLevel).toBe('HIGH');
     const parts = body.contents[0].parts;
     expect(parts).toHaveLength(3);
     expect(parts[1].inlineData.data).toBe("AAAA");

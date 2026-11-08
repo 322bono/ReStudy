@@ -85,10 +85,12 @@ export function value(r:any){return {...r.data,id:r.id,createdAt:r.data?.created
 export async function put(ctx:Ctx,table:string,id:string,data:any,columns:Record<string,unknown>={}){const result=await ctx.db.from(table).upsert({id,user_id:ctx.user.id,...columns,data},{onConflict:table==='concepts'||table==='concept_questions'?'id,user_id':'id'}).select().single();if(result.error)throw new AppError('자료 저장 중 참조 또는 형식을 확인하지 못했습니다.',400);return result.data;}
 export const material=(r:any)=>({...value(r),title:r.title,subject:r.subject,kind:r.kind,status:r.status,hash:r.content_hash});
 export const mistake=(r:any)=>({...value(r),questionId:r.problem_id,resolved:r.data.resolved??r.data.lastResult==='correct'});
-export async function state(ctx:Ctx,withPages=false,overview=false){
- const names=['documents','problems','problem_regions','problem_concepts','concepts','concept_questions','wrong_answers','study_sessions','solve_sessions','document_chapters','chapter_concepts','bank_question_concepts',...(!overview?['study_results','bank_question_origins']:[]),...(withPages?['document_pages']:[])];
+export async function state(ctx:Ctx,withPages=false,overview=false,reviewIds?:string[]){
+ const reviewing=reviewIds!==undefined;
+ const names=['documents','problems','problem_regions','problem_concepts','concepts','concept_questions','wrong_answers',...(!reviewing?['study_sessions','solve_sessions']:[]),'document_chapters','chapter_concepts','bank_question_concepts',...(!overview?[...(!reviewing?['study_results']:[]),'bank_question_origins']:[]),...(withPages?['document_pages']:[])];
  const readTable = (table: string) => {
   if (table === 'document_pages') return pageRows(ctx);
+  if (reviewing && table === 'problems') return projectedRows(ctx, table, questionColumns, questionFields);
   if (!overview) return rows(ctx, table);
   if (table === 'problems') return projectedRows(ctx, table, questionColumns, questionFields);
   if (table === 'study_sessions' || table === 'solve_sessions')
@@ -98,6 +100,11 @@ export async function state(ctx:Ctx,withPages=false,overview=false){
   return rows(ctx, table);
  };
  const lists=await Promise.all(names.map(readTable)),tables=Object.fromEntries(names.map((n,i)=>[n,lists[i]]));
+ if(reviewIds?.length){
+  const full=new Map((await rows(ctx,'problems',{id:[...new Set(reviewIds)]})).map((q:any)=>[q.id,q]));
+  tables.problems=tables.problems.map((q:any)=>full.get(q.id)??q);
+ }
+ tables.study_sessions??=[];tables.solve_sessions??=[];
  tables.bank_question_origins ??= [];
  tables.study_results ??= [];
  const projection=async(table:string,columns:string)=>{const result:any[]=[];for(let offset=0;;offset+=1000){const page=await ctx.db.from(table).select(columns).eq('user_id',ctx.user.id).range(offset,offset+999);if(page.error)throw new AppError('준비한 문항 연결을 읽지 못했습니다.',500);result.push(...page.data);if(page.data.length<1000)return result;}};

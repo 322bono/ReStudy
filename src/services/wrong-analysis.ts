@@ -10,6 +10,7 @@ export async function prepareWrongAnalysis(
   const start = () => call({ action: "wrong_review", problemId });
   let job = await start();
   let retries = 0;
+  let checks = 0;
   while (!shouldStop() && job.status !== "completed") {
     if (job.status === "running") {
       await new Promise((resolve) => setTimeout(resolve, 2500));
@@ -21,7 +22,12 @@ export async function prepareWrongAnalysis(
     }
     const code = job.provider_error ?? job.last_error;
     const wait = Date.parse(job.available_at ?? "") - Date.now();
-    if (retries < 1 && canRetry() && ["invalid_response", "timeout", "provider_error", "network_error", "all_providers_failed"].includes(code) && wait <= 15000) {
+    if (job.status === 'waiting' && code === 'quality_check_pending' && checks < 2) {
+      checks++;
+      job = await start();
+      continue;
+    }
+    if (retries < 1 && canRetry() && ["invalid_response", "answer_inconsistent", "timeout", "provider_error", "network_error", "all_providers_failed"].includes(code) && wait <= 15000) {
       await new Promise((resolve) => setTimeout(resolve, Math.max(1000, wait)));
       if (shouldStop()) return false;
       if (canRetry()) {

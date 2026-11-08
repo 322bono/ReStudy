@@ -30,7 +30,7 @@ async function learningMutation(ctx:Ctx,kind:'study'|'solve',id:string,body:any,
   if(error)throw new AppError('학습 기록을 저장하지 못했습니다. 다시 시도하세요.',500);
   if(data){
    if(reveal)return {answer:result.answer,explanation:result.explanation,session:publicStudy(data)};
-   if(kind==='solve')return body.drawingOnly&&body.minimal===true?{saved:true}:solvePublic(data);
+   if(kind==='solve')return body.minimal===true?(body.drawingOnly?{saved:true}:{id:data.id,answers:data.answers,status:data.status,version:data.version}):solvePublic(data);
    return publicStudy(data);
   }
  }
@@ -42,12 +42,25 @@ async function asset(ctx:Ctx,path:string){
   if(p[2]==='file')storagePath=(await row(ctx,'documents',p[1],'originalPath:data->>originalPath')).originalPath;
   else if(p[2]==='page'){const [page]=await rows(ctx,'document_pages',{document_id:p[1],number:Number(p[3])},'image_path');if(!page)throw new AppError('페이지를 찾을 수 없습니다.',404);storagePath=page.image_path;}
  }else if(p[0]==='questions'&&p[2]==='image'){
-  const q=await row(ctx,'problems',p[1],'id,document_id,data');
-  let data=q.data,paths:string[]=[];const sessionId=query.get('session');
-  if(sessionId){const session=value(await row(ctx,'solve_sessions',sessionId)),snapshot=session.questionSnapshots?.find((q:any)=>q.id===p[1]);if(!snapshot)throw new AppError('이 풀이의 원본 문항이 아닙니다.',403);data=snapshot;paths=snapshot.imagePaths||[];}
-  else paths=(await rows(ctx,'problem_regions',{problem_id:q.id},'part,image_path')).sort((a:any,b:any)=>a.part-b.part).map((r:any)=>r.image_path);
+  let data:any,documentId:string,paths:string[]=[];const sessionId=query.get('session');
+  if(sessionId){
+   const index=query.get('snapshot');let snapshot:any;
+   if(index!==null){
+    if(!/^(?:0|[1-9]\d{0,3})$/.test(index))throw new AppError('이 풀이의 원본 문항이 아닙니다.',403);
+    if(!/^(?:0|[1-9]\d{0,3})$/.test(p[3]))throw new AppError('준비된 원본 영역이 없습니다.',404);
+    const prefix=`data->questionSnapshots->${index}`;
+    const image=await row(ctx,'solve_sessions',sessionId,`snapshotId:${prefix}->>id,materialId:${prefix}->>materialId,region:${prefix}->regions->${p[3]},imagePath:${prefix}->imagePaths->>${p[3]}`);
+    snapshot={id:image.snapshotId,materialId:image.materialId,regions:{[p[3]]:image.region},imagePaths:{[p[3]]:image.imagePath}};
+   }else snapshot=(await row(ctx,'solve_sessions',sessionId,'snapshots:data->questionSnapshots')).snapshots?.find((q:any)=>q.id===p[1]);
+   if(!snapshot||snapshot.id!==p[1])throw new AppError('이 풀이의 원본 문항이 아닙니다.',403);
+   data=snapshot;documentId=snapshot.materialId;paths=snapshot.imagePaths||[];
+  }else{
+   const q=await row(ctx,'problems',p[1],'id,document_id,regions:data->regions');
+   data=q;documentId=q.document_id;
+   paths=(await rows(ctx,'problem_regions',{problem_id:q.id},'part,image_path')).sort((a:any,b:any)=>a.part-b.part).map((r:any)=>r.image_path);
+  }
   const region=data.regions?.[Number(p[3])];if(!region)throw new AppError('준비된 원본 영역이 없습니다.',404);
-  const [page]=await rows(ctx,'document_pages',{document_id:q.document_id,number:region.page},'kind:data->>kind');if(page?.kind==='answers')throw new AppError('정답·해설 페이지는 문제로 제공하지 않습니다.',409);
+  const [page]=await rows(ctx,'document_pages',{document_id:documentId,number:region.page},'kind:data->>kind');if(page?.kind==='answers')throw new AppError('정답·해설 페이지는 문제로 제공하지 않습니다.',409);
   storagePath=paths[Number(p[3])];
  }
  if(!storagePath)throw new AppError('준비된 원본 이미지가 없습니다.',404);return {url:await signed(ctx,storagePath),storagePath};
@@ -104,7 +117,7 @@ export async function handle(ctx:Ctx,input:any):Promise<any>{
  if(route==='bank-items'&&method==='PUT'){const result=await importContent(ctx,{concepts:[],items:[{...b,id,userEdited:true}],mappings:[]});if(!result.valid)throw new AppError(result.errors.join('\n'));return result;}
  if(route==='bank-items'&&method==='DELETE'){const q=await row(ctx,'concept_questions',id);await put(ctx,'concept_questions',id,{...q.data,active:false,archived:true},{concept_id:q.concept_id,type:q.type,difficulty:q.difficulty,review_status:'archived'});return {archived:true};}
  if(route==='questions'&&action==='mapping'&&method==='PATCH')return importContent(ctx,{concepts:[],items:[],mappings:[{questionId:id,...b}]});
- if(route==='questions'&&action==='review'&&method==='GET'){const s=learnState(await state(ctx,true)),q=s.questions.find((q:any)=>q.id===id);if(!q)throw new AppError('원본 문항을 찾을 수 없습니다.',404);return originalReview(q,s,await rows(ctx,'problem_similarities'));}
+ if(route==='questions'&&action==='review'&&method==='GET'){const s=learnState(await state(ctx,true,false,[id])),q=s.questions.find((q:any)=>q.id===id);if(!q)throw new AppError('원본 문항을 찾을 수 없습니다.',404);return originalReview(q,s,await rows(ctx,'problem_similarities'));}
  if(route==='mistakes'){
   if((id==='archive'&&method==='POST')||(id&&method==='DELETE')){
    const ids:unknown=method==='DELETE'?[id]:b.ids;
@@ -132,20 +145,20 @@ export async function handle(ctx:Ctx,input:any):Promise<any>{
   return saveStudy(ctx,createStudy(b,learnState(await state(ctx,true))));
  }
  if(route==='solve'){
-  if(!id){const s=learnState(await state(ctx,true)),qs=(b.questionIds||[]).map((id:string)=>s.questions.find((q:any)=>q.id===id));if(!qs.length||qs.some((q:any)=>!q||!q.imagePaths?.length))throw new AppError('저장된 원본 크롭이 있는 문항을 선택하세요.');const session=createSolve(qs);await put(ctx,'solve_sessions',session.id,session);return solvePublic(session);}
+  if(!id){if(!Array.isArray(b.questionIds)||!b.questionIds.length||b.questionIds.length>200||b.questionIds.some((id:any)=>typeof id!=='string'))throw new AppError('1~200개의 문제를 선택해 주세요.');const s=learnState(await state(ctx,true,false,b.questionIds)),qs=b.questionIds.map((id:string)=>s.questions.find((q:any)=>q.id===id));if(qs.some((q:any)=>!q||!q.imagePaths?.length))throw new AppError('저장된 원본 크롭이 있는 문항을 선택하세요.');const session=createSolve(qs);await put(ctx,'solve_sessions',session.id,session);return solvePublic(session);}
   if(action==='answer'||action==='drawing')return learningMutation(ctx,'solve',id,{...b,drawingOnly:action==='drawing'});
-  const ss=value(await row(ctx,'solve_sessions',id));
+  const ss=action==='answer-keys'||action==='answer-key'?await row(ctx,'solve_sessions',id,'id,questionSnapshots:data->questionSnapshots'):value(await row(ctx,'solve_sessions',id));
   if(action==='answer-keys'){
    // One owner-authorized read prepares the selected session's saved reviews.
    // It never reveals UI, grades an answer, or writes a learning record.
-   const s=learnState(await state(ctx,true)),relations=await rows(ctx,'problem_similarities');
+   const s=learnState(await state(ctx,true,false,[])),relations=await rows(ctx,'problem_similarities');
    const answerKeys=Object.fromEntries((ss.questionSnapshots??[]).map((q:any)=>{
     const review=originalReview(q,s,relations);
     return[q.id,{available:!!review.answer,answer:review.answer,explanation:review.explanation,review}];
    }));
    return{answerKeys};
   }
-  if(action==='answer-key'){const q=ss.questionSnapshots.find((q:any)=>q.id===p[3]);if(!q)throw new AppError('이 풀이의 문항이 아닙니다.');const s=learnState(await state(ctx,true)),relations=await rows(ctx,'problem_similarities'),review=originalReview(q,s,relations);return {available:!!review.answer,answer:review.answer,explanation:review.explanation,review};}
+  if(action==='answer-key'){const q=ss.questionSnapshots.find((q:any)=>q.id===p[3]);if(!q)throw new AppError('이 풀이의 문항이 아닙니다.');const s=learnState(await state(ctx,true,false,[])),relations=await rows(ctx,'problem_similarities'),review=originalReview(q,s,relations);return {available:!!review.answer,answer:review.answer,explanation:review.explanation,review};}
   return solvePublic(ss);
  }
  throw new AppError('지원하지 않는 요청입니다.',404);

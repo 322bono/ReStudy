@@ -24,7 +24,7 @@ export default function OriginalAnalysis({
       )}
       <section className="analysis-group" aria-label="해설">
         <h2>1. 해설</h2>
-        {review?.analysis && <Badge tone="indigo">저장된 AI 분석</Badge>}
+        {review?.analysis && <Badge tone="indigo">{review.analysis.model || '저장된 AI 분석'}</Badge>}
         {review?.answer && (
           <p className="analysis-answer">
             <strong>정답</strong> {review.answer}

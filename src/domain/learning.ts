@@ -1,3 +1,5 @@
+import { wrongReviewIssues } from './answer-quality.ts';
+
 export class LearningError extends Error {
   readonly kind = "learning";
 }
@@ -1036,14 +1038,16 @@ export function originalReview(
     })
     .sort((a, b) => b.score - a.score)
     .slice(0, 8);
-  const quick = question.wrongReview;
+  const requiresReanalysis = wrongReviewIssues(question.wrongReview).length > 0;
+  const quick = requiresReanalysis ? undefined : question.wrongReview;
   const analysis = clone(question.analysis ?? (quick ? { provider: quick.provider, model: quick.model } : null));
   return {
+    requiresReanalysis,
     concepts: [...list(quick?.concepts).map((concept, index) => ({ ...concept, id: `review-concept-${index}` })), ...concepts],
     bankScope: { originalId: question.id },
     analysis,
     answer: quick?.solution?.answer || question.answer || analysis?.answer || "",
-    explanation: quick?.solution?.explanation || question.explanation || analysis?.explanation || "",
+    explanation: requiresReanalysis ? "저장된 AI 해설에서 정답 불일치가 발견됐습니다. 원본을 다시 대조해 분석해야 합니다." : quick?.solution?.explanation || question.explanation || analysis?.explanation || "",
     solutionSteps: list(analysis?.solution_steps),
     hasSavedAnalysis: !!(analysis || question.answer || question.explanation),
     memorize: unique([

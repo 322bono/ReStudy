@@ -147,6 +147,13 @@ export default function WrongWorkspace({
   activeId.current = id;
   const [savedReview, setSavedReview] = useState<any>(),
     [loadingReview, setLoadingReview] = useState(true);
+  const repairRequested = useRef(new Set<string>());
+  useEffect(() => {
+    if (savedReview?.requiresReanalysis && !analysisPending && !repairRequested.current.has(id)) {
+      repairRequested.current.add(id);
+      onAnalyze();
+    }
+  }, [id, savedReview?.requiresReanalysis, analysisPending, onAnalyze]);
   async function loadReview() {
     const forId = id;
     const result = await api(`questions/${forId}/review`);

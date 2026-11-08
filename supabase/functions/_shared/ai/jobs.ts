@@ -1,6 +1,7 @@
 import { runTask, SuccessfulTaskPersistenceError, type RouterContext, type TaskInput, type TaskResult } from "./router.ts";
 import { validateOutput, type Json } from "./schemas.ts";
 import{AppError}from'../context.ts';
+import { answerKey } from '../../../../src/domain/answer-quality.ts';
 export type Job = { id: string; user_id: string; kind: string; status: string; attempts: number; lease_token?: string; data: Json; [key: string]: unknown };
 export type JobStore = { claim(id: string, dailyLimit: number, maxAttempts: number): Promise<{ job: Job; rotation_index: number } | null>; finish(id: string, token: string, status: string, data: Json, availableAt: string): Promise<any>; commit(id: string, token: string, result: Json): Promise<any> };
 function stable(value: any): string { if (Array.isArray(value)) return `[${value.map(stable).join(",")}]`; if (value && typeof value === "object") return `{${Object.keys(value).sort().filter((key) => value[key] !== undefined).map((key) => `${JSON.stringify(key)}:${stable(value[key])}`).join(",")}}`; return JSON.stringify(value); }
@@ -39,7 +40,7 @@ export function validateRequest(raw: unknown): JobRequest {
 function sources(job: Job, ids: string[]): Json[] { const result = ids.flatMap((id) => job.data.sourceMap?.[id] ?? []); return [...new Map(result.map((source: Json) => [`${source.materialId}:${source.page}`, source])).values()]; }
 export function toCommitResult(job: Job, result: Extract<TaskResult, { status: "succeeded" }>): Json {
   if(job.kind==='restudy_v1')return {standard:result.output,standardJobId:job.data.standardJobId};
-  if(job.kind==='wrong_review')return {wrongReview:{...result.output,provider:result.provider,model:result.model}};
+  if(job.kind==='wrong_review')return {wrongReview:{...result.output,provider:result.provider,model:result.model,...(job.data.answerQuality?{quality:job.data.answerQuality}:{}),...(job.data.previousReview?{supersededReview:job.data.previousReview}:{})}};
   const provenance = { provider: result.provider, model: result.model, job_id: job.id, generated_at: new Date().toISOString(), review_status: "needs_review" };
   const concepts = (result.output.concepts ?? []).map((concept: Json) => ({ ...concept, misconceptions: concept.misconceptions.map((entry: Json, index: number) => ({ id: `ai-${index + 1}`, ...entry })), sources: sources(job, concept.source_citations), ...provenance }));
   if (job.kind === "analyze_problem") return {
@@ -72,13 +73,32 @@ async function processClaimedJob(active:Job,rotationIndex:number,store:JobStore,
   let completed: Extract<TaskResult, { status: "succeeded" }> | undefined;
   try {
     const input = active.data.input as TaskInput;
+    const candidates: Extract<TaskResult, { status: 'succeeded' }>[] = active.kind === 'wrong_review' ? active.data.qualityCandidates ?? [] : [];
     let result: TaskResult;
     if (active.data.pending_result?.status === "succeeded") {
       const previous = active.data.pending_result;
       result = { ...previous, output: validateOutput(input.kind, previous.output, input.sourceIds, input.count) };
-    } else result = await run(input, { ...routing, rotationIndex });
-    if (result.status === "paused") return await store.finish(active.id, token, "paused", { ...active.data, last_error: result.reason,last_provider_error:result.lastError??null }, new Date(result.retryAt ?? Date.now()).toISOString()) ?? { id: active.id, status: "running" };
+    } else result = await run(input, { ...routing, rotationIndex, ...(active.kind === 'wrong_review' ? { excludedModels: candidates.map(c => c.model) } : {}) });
+    if (result.status === "paused") return await store.finish(active.id, token, "paused", { ...active.data, last_error: result.reason,last_provider_error:candidates.length&&result.reason==='no_available_provider'?'answer_check_unavailable':result.lastError??null }, new Date(result.retryAt ?? Date.now()).toISOString()) ?? { id: active.id, status: "running" };
     completed = result;
+    if (active.kind === 'wrong_review') {
+      // Each invocation performs at most one independent solve from the same
+      // original images. Never send a previous answer to the next model.
+      const output = validateOutput('wrong_review', result.output, input.sourceIds);
+      const current = { ...result, output };
+      if (candidates.some(c => c.model === current.model)) throw new Error('independent_model_required');
+      const prior = candidates.find(c => answerKey(c.output.solution.answer) === answerKey(output.solution.answer));
+      if (prior) {
+        active.data.answerQuality = { version: 1, method: 'independent_answer_agreement', models: [prior.model, current.model] };
+      } else {
+        const next = [...candidates, current];
+        return await store.finish(active.id, token, next.length < 3 ? 'waiting' : 'paused', {
+          ...active.data, qualityCandidates: next, pending_result: null,
+          last_error: next.length < 3 ? 'quality_check_pending' : 'quality_check_failed',
+          last_provider_error: next.length < 3 ? null : 'answer_disagreement',
+        }, new Date().toISOString()) ?? { id: active.id, status: 'running' };
+      }
+    }
     return await store.commit(active.id, token, toCommitResult(active, result)) ?? { id: active.id, status: "running" };
   } catch (error) {
     // A DB/worker error never causes another inference call in this invocation.

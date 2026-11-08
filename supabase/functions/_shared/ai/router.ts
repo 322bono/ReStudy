@@ -3,10 +3,12 @@ import { modelFor, generationContractVersion, isGenerationModel, generationModel
 import { generate, validateProviderInput, ProviderError, type ImageInput } from "./providers.ts";
 import { unreadableWrongReview, validateOutput,validationMetadata, type TaskKind, type Json } from "./schemas.ts";
 import { expandCompactPreparation, type CompactPreparation } from "../standard/compact.ts";
+import { wrongReviewIssues } from '../../../../src/domain/answer-quality.ts';
 export type Mode = "round_robin" | "nvidia_first" | "gemini_first" | "nvidia_only" | "gemini_only";
 export type ProviderState = { provider: Provider; enabled: boolean; model: string; access: "unknown" | "free_confirmed" | "paid"; status: string; cooldown_until?: string; credentialId?:string; label?:string; quotaGroup?:string; selectedModels?:string[]; modelStates?:Record<string,Json>; quotaCooldowns?:Record<string,string>; [key: string]: unknown };
 export type TaskInput = { kind: TaskKind; prompt: string; sourceIds: string[]; count?: number; images?: ImageInput[]; types?: string[]; difficulty?: string;allowedPages?:number[];compactPreparation?:CompactPreparation };
 export type RouterContext = {
+  excludedModels?: string[];
   providers: ProviderState[];
   mode: Mode;
   rotationIndex: number;
@@ -55,12 +57,13 @@ export async function runTask(input: TaskInput, context: RouterContext): Promise
     }
     // A slow or invalid model shares its cooldown with sibling keys.
     for (const [model, health] of Object.entries(state.modelStates ?? {})) {
-      if (['timeout', 'invalid_response'].includes(health.last_error)) {
+      if (['timeout', 'invalid_response', 'answer_inconsistent'].includes(health.last_error)) {
         rememberCooldown(group, model, Date.parse(health.cooldown_until ?? ''));
       }
     }
     if (!state.enabled || state.status === 'auth_error') continue;
     for (const modelId of new Set(state.selectedModels ?? [state.model])) {
+      if (context.excludedModels?.includes(modelId)) continue;
       const model = modelFor(provider, modelId);
       if (!model?.text || !model.structured || !isGenerationModel(provider, modelId) || input.images?.length && !model.image) continue;
       if (requiresFreeProject(provider, modelId) && !context.verifyFreeProject) {
@@ -117,6 +120,8 @@ export async function runTask(input: TaskInput, context: RouterContext): Promise
             return { status: "paused", reason: "all_providers_failed", lastError: "source_incomplete" };
           }
           let output: Json;
+          if(input.kind==='wrong_review'&&wrongReviewIssues(response.raw).length)
+            throw new ProviderError('answer_inconsistent',undefined,undefined,'group','answer_explanation_mismatch',response.metadata);
           try {
             output = input.compactPreparation
               ? expandCompactPreparation(input.compactPreparation, response.raw)
@@ -141,8 +146,8 @@ export async function runTask(input: TaskInput, context: RouterContext): Promise
             break;
           }
           if (["provider_error", "network_error"].includes(failure.code) && attempt === 0) { await sleep(1000); continue; }
-          const until = failure.retryAt ?? (['timeout','invalid_response'].includes(failure.code)?now()+300000:["provider_error", "network_error"].includes(failure.code) ? now() + 5000 : now()+600000);
-          if (['timeout', 'invalid_response'].includes(failure.code)) rememberCooldown(group, modelId, until);
+          const until = failure.retryAt ?? (['timeout','invalid_response','answer_inconsistent'].includes(failure.code)?now()+300000:["provider_error", "network_error"].includes(failure.code) ? now() + 5000 : now()+600000);
+          if (['timeout', 'invalid_response', 'answer_inconsistent'].includes(failure.code)) rememberCooldown(group, modelId, until);
           if (until) retryTimes.push(until);
           if(failure.code==='auth_error')blockedKeys.add(keyId);
           const quotaModel = failure.quotaScope === 'model' ? modelId : '';

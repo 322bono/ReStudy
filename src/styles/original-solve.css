@@ -4,6 +4,83 @@
   min-width: 0;
   margin: 0 auto;
 }
+.solve-pen-strip {
+  display: flex;
+  justify-content: flex-end;
+  flex: 0 0 auto;
+  padding: 2px 20px 6px;
+}
+.solve-pen-tools {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  max-width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: white;
+}
+.solve-pen-tools button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  color: #475569;
+  background: transparent;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.solve-pen-tools button[aria-pressed="true"] {
+  border-color: #a5b4fc;
+  background: #eef2ff;
+  color: #3730a3;
+}
+.solve-pen-tools button:focus-visible,
+.solve-pen-tools select:focus-visible {
+  outline: 2px solid #6366f1;
+  outline-offset: 1px;
+}
+.pen-palette {
+  display: inline-flex;
+}
+.pen-color span {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+}
+.solve-pen-tools select {
+  width: 74px;
+  height: 36px;
+  margin: 0 2px;
+  padding: 0 5px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: white;
+  color: #334155;
+  font-size: 13px;
+}
+.drawing-paper.eraser-active {
+  cursor: crosshair;
+}
+@media (pointer: coarse) {
+  .solve-pen-tools button {
+    width: 42px;
+    height: 42px;
+  }
+  .solve-pen-tools select {
+    height: 42px;
+  }
+}
+@media (max-width: 600px) {
+  .solve-pen-strip {
+    justify-content: center;
+    padding: 2px 6px 6px;
+  }
+}
 .solve-content:not(.has-analysis) {
   max-width: 1000px;
 }

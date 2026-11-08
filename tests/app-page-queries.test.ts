@@ -53,6 +53,23 @@ test('opening one crop reads only its source page and scoped stored region paths
   expect(f.sign).toHaveBeenCalledWith('owner/doc/q.png', 180);
 });
 
+test('a session crop reads only its indexed snapshot without all drawings or current analysis', async () => {
+  const f = fixture();
+  f.tables.solve_sessions[0].data.questionSnapshots[0] = { id: 'q', materialId: 'doc', regions: [{ page: 73 }], imagePaths: ['owner/doc/frozen.png'] };
+  const result = await handle(f.ctx, { path: 'asset', method: 'POST', body: { path: 'questions/q/image/0?session=solve&snapshot=0' } });
+  expect(result.storagePath).toBe('owner/doc/frozen.png');
+  expect(f.reads.map(read => read.table)).toEqual(['solve_sessions', 'document_pages']);
+  expect(f.reads[0].columns).toContain('snapshotId:data->questionSnapshots->0->>id');
+  expect(f.reads[0].columns).not.toContain('snapshot:data->questionSnapshots->0');
+  expect(f.reads[0].columns).not.toContain('wrongReview');
+});
+
+test('a mismatched snapshot index never signs another question image', async () => {
+  const f = fixture();
+  await expect(handle(f.ctx, { path: 'asset', method: 'POST', body: { path: 'questions/other/image/0?session=solve&snapshot=0' } })).rejects.toThrow('이 풀이');
+  expect(f.sign).not.toHaveBeenCalled();
+});
+
 test('learning loads page metadata without copying the stored OCR coordinates', async () => {
   const f=fixture();
   const result=await state(f.ctx,true);
@@ -82,6 +99,15 @@ test('grading an original reads only its mistake record and selected session', a
   await handle(f.ctx, { path: 'solve/solve/answer', method: 'POST', body: { questionId: 'q', result: 'wrong' } });
   expect(f.reads.map(read => read.table)).toEqual(['solve_sessions', 'wrong_answers']);
   expect(f.reads[1].filters).toEqual({ user_id: 'owner', problem_id: 'q' });
+});
+
+test('minimal grading returns saved progress without resending source snapshots and all ink', async () => {
+  const f = fixture();
+  const result = await handle(f.ctx, { path: 'solve/solve/answer', method: 'POST', body: { questionId: 'q', result: 'wrong', minimal: true } });
+  expect(result).toMatchObject({id:'solve',status:'complete',answers:{q:{result:'wrong'}},version:1});
+  expect(result).not.toHaveProperty('questions');
+  expect(result).not.toHaveProperty('drawings');
+  expect(f.ctx.admin.rpc).toHaveBeenCalledWith('save_learning_session',expect.objectContaining({p_data:expect.objectContaining({questionSnapshots:[{id:'q'}]})}));
 });
 
 test('revealing a study snapshot reads only that study session', async () => {
@@ -123,6 +149,19 @@ test('the overview keeps the saved crop links and bank counts but omits OCR and 
   expect(result.sessions[0]).not.toHaveProperty('drawings');
   expect(f.reads.map(read => read.table)).not.toContain('content_refs');
   expect(f.reads.find(read => read.table === 'concept_questions')?.columns).not.toContain('answer');
+});
+
+test('review reads selected full questions and library metadata without any session ink or unrelated analysis', async () => {
+  const f = fixture();
+  f.tables.problems[0].data.wrongReview = { solution: { answer: '②' } };
+  f.tables.problems.push({ id: 'other', user_id: 'owner', document_id: 'doc', data: { text: 'unrelated OCR', wrongReview: { solution: { answer: '③' } } } });
+  const result = await state(f.ctx, true, false, ['q']);
+  expect(result.questions.find(q => q.id === 'q').wrongReview.solution.answer).toBe('②');
+  expect(result.questions.find(q => q.id === 'other')).not.toHaveProperty('wrongReview');
+  expect(result.questions.find(q => q.id === 'other')).not.toHaveProperty('text');
+  expect(f.reads.map(read => read.table)).not.toContain('solve_sessions');
+  expect(f.reads.map(read => read.table)).not.toContain('study_sessions');
+  expect(f.reads.map(read => read.table)).not.toContain('study_results');
 });
 
 test('grading uses saved region page kinds without fetching any bank or session snapshots', async () => {

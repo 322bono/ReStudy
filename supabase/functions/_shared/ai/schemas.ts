@@ -1,4 +1,5 @@
 import {parseRestudy,RestudySchema,RestudyJSONSchema}from'../../../../src/domain/restudy.ts';
+import { wrongReviewIssues } from '../../../../src/domain/answer-quality.ts';
 export type TaskKind = "analyze_problem" | "generate_questions" | "generate_material" | "restudy_v1" | "wrong_review";
 export type Json = Record<string, any>;
 const schemaFields=new Set<string>();
@@ -51,6 +52,7 @@ export function validateOutput(kind: TaskKind, raw: unknown, sourceIds: string[]
   const value = object(raw);
   if (kind === "wrong_review") {
     if (unreadableWrongReview(value)) invalid();
+    if (wrongReviewIssues(value).length) invalid();
     const solution = object(value.solution);
     const concepts = list(value.concepts, 5).map((entry) => {
       const concept = object(entry);

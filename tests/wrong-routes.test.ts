@@ -4,11 +4,12 @@ const fixture = vi.hoisted(() => ({ state: {} as any, writes: [] as any[] }));
 vi.mock("../supabase/functions/_shared/app/repository.ts", () => ({
   state: async () => fixture.state,
   rows: async () => [],
-  row: async (_ctx: any, table: string, id: string) => {
+  row: async (_ctx: any, table: string, id: string, columns?: string) => {
     if (table === "solve_sessions")
       return {
         id,
         data: fixture.state.sessions.find((session: any) => session.id === id),
+        ...(columns?.includes('questionSnapshots:') ? {questionSnapshots:fixture.state.sessions.find((session: any) => session.id === id)?.questionSnapshots}:{}),
       };
     return fixture.state.tables.wrong_answers.find((row: any) => row.id === id);
   },

@@ -5,6 +5,7 @@ import { cacheKey, edgeBackgroundTask, processJob, validId } from "./jobs.ts";
 import { providerContext, storeFor } from "./service.ts";
 import { sanitizeSettings } from "./settings.ts";
 import type { TaskInput } from "./router.ts";
+import { wrongReviewIssues } from '../../../../src/domain/answer-quality.ts';
 
 export async function startWrongReview(ctx: Ctx, problemId: unknown, master: string) {
   if (!validId(problemId)) throw new AiError("invalid_request");
@@ -12,10 +13,11 @@ export async function startWrongReview(ctx: Ctx, problemId: unknown, master: str
   const document = await row(ctx, "documents", problem.document_id);
   if (document.data.archived || problem.data.mergedInto || problem.data.autoRetired)
     throw new AiError("source_not_found", 404);
-  if (problem.data.wrongReview || problem.data.analysis || problem.data.answer || problem.data.explanation)
+  const needsRepair = wrongReviewIssues(problem.data.wrongReview).length > 0;
+  if (!needsRepair && (problem.data.wrongReview || problem.data.analysis || problem.data.answer || problem.data.explanation))
     return { status: "completed", cached: true };
 
-  const key = await cacheKey({ kind: "wrong_review.v1", problemId, version: problem.updated_at });
+  const key = await cacheKey({ kind: "wrong_review.v2-crosscheck", problemId, version: problem.updated_at });
   const findJob = () => ctx.admin.from("ai_jobs").select("*").eq("user_id", ctx.user.id).eq("cache_key", key);
   let job = checked(await findJob().maybeSingle());
   const settings = sanitizeSettings((await readProfile(ctx)).ai_settings);
@@ -38,12 +40,12 @@ export async function startWrongReview(ctx: Ctx, problemId: unknown, master: str
     }
     const input: TaskInput = {
       kind: "wrong_review", sourceIds: [problemId], images,
-      prompt: "첨부된 원본 영역을 순서대로 함께 보고 문제 하나를 푸세요. 보기, 선택지, 그림과 조건을 모두 읽으세요. solution은 실제 정답과 풀이 해설, concepts는 관련 개념 이름과 설명, memorize는 암기할 사항, questions는 자체 완결된 추가 확인 문제 1~3개와 각각의 정답·해설입니다. 학생이 틀린 이유를 추측하지 마세요. 필수 영역이 빠져 풀 수 없다면 null을 반환하세요.",
+      prompt: "첨부된 원본 영역을 순서대로 함께 보고 문제 하나를 푸세요. 보기, 선택지, 그림과 조건을 모두 읽으세요. 객관식 solution.answer에는 원본에서 고른 선지 번호만 ①~⑤로 적고, 주관식이면 최종 답만 적으세요. solution.explanation에는 확정한 풀이와 각 보기의 판단 근거만 쓰세요. 정답 번호와 보기 조합이 실제 선택지에 일치하는지 다시 확인하세요. concepts는 관련 개념 이름과 설명, memorize는 암기할 사항, questions는 자체 완결된 추가 확인 문제 1~3개와 각각의 정답·해설입니다. 학생이 틀린 이유를 추측하지 마세요. 원본 조건을 바꾸거나 선택지에 억지로 맞추지 마세요. 필수 영역이 빠져 풀 수 없다면 null을 반환하세요.",
     };
     const inserted = await ctx.admin.from("ai_jobs").insert({
       user_id: ctx.user.id, document_id: document.id, problem_id: problemId,
       kind: input.kind, status: "waiting", cache_key: key,
-      data: { input, settings, problemVersion: problem.updated_at },
+      data: { input, settings, problemVersion: problem.updated_at, ...(needsRepair ? { previousReview: problem.data.wrongReview } : {}) },
     }).select("*").single();
     job = inserted.error?.code === "23505" ? checked(await findJob().single()) : checked(inserted);
   }

@@ -14,6 +14,18 @@ function context(rotationIndex = 0, providers = [state()], transport?: typeof fe
 }
 
 describe('durable no-charge routing', () => {
+  it('rejects a parseable but contradictory review and logs a semantic error without content', async () => {
+    const value = (answer:string) => ({solution:{answer,explanation:'정답은 ①번입니다.'},concepts:[{name:'개념',summary:'정의'}],memorize:['조건'],questions:[{prompt:'질문',answer:'답',explanation:'근거'}]});
+    const ctx=context(0,[state()],(async url=>response(value(String(url).includes(primary)?'②':'①'))) as typeof fetch);
+    expect(await runTask({...input,kind:'wrong_review'},ctx)).toMatchObject({status:'succeeded',model:fallback});
+    expect(ctx.events).toContainEqual(expect.objectContaining({success:false,error:'answer_inconsistent',diagnostic:'answer_explanation_mismatch'}));
+    expect(JSON.stringify(ctx.events)).not.toContain('정답은');
+  });
+  it('never uses the original model as its own independent checker', async () => {
+    const transport=vi.fn(async()=>response());
+    expect(await runTask(input,{...context(0,[state()],transport as typeof fetch),excludedModels:[primary]})).toMatchObject({status:'succeeded',model:fallback});
+    expect(String(transport.mock.calls[0][0])).toContain(fallback);
+  });
   it('reports unreadable source instead of saving a null answer or cooling a healthy model', async () => {
     const transport = vi.fn(async () => response({ solution: { answer: "null" } }));
     const ctx = context(0, [state()], transport as typeof fetch);
