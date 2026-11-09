@@ -1,0 +1,12 @@
+{
+  "name": "RE:STUDY",
+  "short_name": "RE:STUDY",
+  "icons": [
+    {
+      "src": "icons/restudy-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

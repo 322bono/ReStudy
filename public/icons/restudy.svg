@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <title>RE:STUDY</title>
+  <rect width="512" height="512" fill="#211d48"/>
+  <path fill="#bdadff" d="M211 266h52l67 105c4 6-1 13-8 13h-36c-6 0-11-3-14-8z"/>
+  <path fill="#fbfaff" fill-rule="evenodd" d="M132 125h93c57 0 93 32 93 84s-36 78-93 78h-48v84c0 7-6 13-13 13h-32c-7 0-13-6-13-13V138c0-7 6-13 13-13zm45 51v60h47c24 0 38-10 38-29 0-20-14-31-38-31z"/>
+  <g fill="#bdadff">
+    <circle cx="373" cy="181" r="18"/>
+    <circle cx="373" cy="241" r="18"/>
+  </g>
+</svg>
