@@ -2,6 +2,12 @@ import {parseRestudy,RestudySchema,RestudyJSONSchema}from'../../../../src/domain
 import { wrongReviewIssues } from '../../../../src/domain/answer-quality.ts';
 export type TaskKind = "analyze_problem" | "generate_questions" | "generate_material" | "restudy_v1" | "wrong_review";
 export type Json = Record<string, any>;
+export const wrongReviewPrompt = [
+  "첨부된 원본을 함께 보고 한 문항을 푸세요. 객관식은 원본 선지 번호, 주관식은 최종 답을 쓰세요.",
+  "정답과 일치하는 최종 풀이만 쓰세요. 원본 정보가 부족하면 null을 반환하세요.",
+  "관련 개념, 암기 사항, 단독으로 풀 수 있는 확인 문제 1개를 아래 형식의 한국어 JSON으로 반환하세요.",
+  '{"solution":{"answer":"정답","explanation":"풀이"},"concepts":[{"name":"개념","summary":"설명"}],"memorize":["암기 사항"],"questions":[{"prompt":"확인 문제","answer":"정답","explanation":"풀이"}]}',
+].join("\n");
 const schemaFields=new Set<string>();
 export function unreadableWrongReview(raw: unknown): boolean {
   if (raw === null) return true;

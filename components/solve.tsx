@@ -8,6 +8,7 @@ import {
   ChevronRight,
   PenLine,
   Undo2,
+  Redo2,
   X,
   ZoomIn,
   ZoomOut,
@@ -31,6 +32,21 @@ import { createDrawingSaver } from "../src/services/solve-drawings";
 import { eraseInk } from "../src/domain/ink";
 import "../src/styles/original-analysis.css";
 import "../src/styles/original-solve.css";
+
+const penWidths = [
+  { label: "가는 선", width: 0.0013, sample: 1 },
+  { label: "보통 선", width: 0.0025, sample: 2.5 },
+  { label: "굵은 선", width: 0.0045, sample: 5 },
+];
+
+const penColors = [
+  ["검은색", "#111827"],
+  ["빨간색", "#dc2626"],
+  ["파란색", "#2563eb"],
+  ["회색", "#737373"],
+  ["주황색", "#ea810e"],
+  ["초록색", "#65a30d"],
+];
 
 function Drawing({
   question,
@@ -65,12 +81,14 @@ function Drawing({
       stroke: Stroke;
       erased?: Stroke[];
     } | null>(null),
-    [draft, setDraft] = useState<Stroke | null>(null);
+    [draft, setDraft] = useState<Stroke | null>(null),
+    [erasedPreview, setErasedPreview] = useState<Stroke[]>();
   const active = pen && !disabled;
   useEffect(() => {
     if (!active) {
       current.current = null;
       setDraft(null);
+      setErasedPreview(undefined);
       return;
     }
     const surface = paper.current;
@@ -93,6 +111,7 @@ function Drawing({
     if (current.current?.pointerId !== e.pointerId) return;
     current.current = null;
     setDraft(null);
+    setErasedPreview(undefined);
   };
   const erase = (e: React.PointerEvent<HTMLDivElement>) => {
     const gesture = current.current;
@@ -110,7 +129,7 @@ function Drawing({
     );
     gesture.stroke.points = [point];
     gesture.erased = next;
-    if (next !== previous) onChange(next);
+    if (next !== previous) setErasedPreview(next);
   };
   return (
     <div
@@ -150,7 +169,9 @@ function Drawing({
         if (!active || current.current?.pointerId !== e.pointerId) return;
         if (tool === "eraser") {
           erase(e);
+          const next = current.current.erased;
           cancel(e);
+          if (next && next !== strokes) onChange(next);
           return;
         }
         const { stroke } = current.current;
@@ -171,7 +192,7 @@ function Drawing({
         viewBox="0 0 1000 1000"
         preserveAspectRatio="none"
       >
-        {[...strokes, ...(draft ? [draft] : [])]
+        {[...(erasedPreview ?? strokes), ...(draft ? [draft] : [])]
           .filter((s) => s.region === region)
           .map((s, i) => (
             <polyline
@@ -227,6 +248,7 @@ export function Solve({
     [helpText, setHelpText] = useState(""),
     [answerText, setAnswerText] = useState("");
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const drawingHistory = useRef(new Map<string, { past: Stroke[][]; future: Stroke[][] }>());
   const progressDirty = useRef(false);
   const refreshRef = useRef(onRefresh);
   refreshRef.current = onRefresh;
@@ -273,6 +295,7 @@ export function Solve({
   }, [review]);
   useEffect(() => {
     let alive = true;
+    drawingHistory.current.clear();
     setLoaded(false);
     setFailure("");
     // Warm only this session's immutable snapshots. Nothing is revealed until
@@ -363,7 +386,7 @@ export function Solve({
     );
   const material = state.materials.find((m) => m.id === q.materialId),
     answered = session.answers[q.id];
-  const changeDrawing = (next: Stroke[]) => {
+  const saveDrawing = (next: Stroke[]) => {
     if (answered || busy) return;
     setStrokes(next);
     session.drawings[q.id] = next;
@@ -373,6 +396,39 @@ export function Solve({
       void drawingSaver.flush().catch((e) => onError(e.message));
     }, 500);
   };
+  const getDrawingHistory = () => {
+    let history = drawingHistory.current.get(q.id);
+    if (!history) {
+      history = { past: [], future: [] };
+      drawingHistory.current.set(q.id, history);
+    }
+    return history;
+  };
+  const changeDrawing = (next: Stroke[]) => {
+    const history = getDrawingHistory();
+    history.past.push(session.drawings[q.id] ?? []);
+    if (history.past.length > 32) history.past.shift();
+    history.future = [];
+    saveDrawing(next);
+  };
+  const undoDrawing = () => {
+    const history = getDrawingHistory();
+    const current = session.drawings[q.id] ?? [];
+    const previous = history.past.pop() ?? (current.length ? current.slice(0, -1) : undefined);
+    if (!previous) return;
+    history.future.push(current);
+    saveDrawing(previous);
+  };
+  const redoDrawing = () => {
+    const history = getDrawingHistory();
+    const next = history.future.pop();
+    if (!next) return;
+    history.past.push(session.drawings[q.id] ?? []);
+    saveDrawing(next);
+  };
+  const currentHistory = drawingHistory.current.get(q.id);
+  const canUndoDrawing = !!(currentHistory?.past.length || strokes.length);
+  const canRedoDrawing = !!currentHistory?.future.length;
   const move = (next: number) => {
     if (saveTimer.current) clearTimeout(saveTimer.current);
     setIndex(next);
@@ -580,21 +636,29 @@ export function Solve({
             <PenLine size={15} />
             필기
           </Button>
-          <IconButton
-            label="마지막 획 지우기"
-            disabled={!strokes.length || !!answered || busy}
-            onClick={() => changeDrawing(strokes.slice(0, -1))}
-          >
-            <Undo2 size={16} />
-          </IconButton>
+          {!pen && (
+            <IconButton
+              label="필기 실행 취소"
+              disabled={!canUndoDrawing || !!answered || busy}
+              onClick={undoDrawing}
+            >
+              <Undo2 size={16} />
+            </IconButton>
+          )}
         </div>
       </div>
       {pen && !answered && (
-        <div className="solve-pen-strip">
+        <div className="solve-pen-strip" role="toolbar" aria-label="필기 도구">
+          <div className="solve-pen-tools pen-history" role="group" aria-label="필기 기록">
+            <button type="button" title="실행 취소" aria-label="실행 취소" disabled={busy || !canUndoDrawing} onClick={undoDrawing}>
+              <Undo2 size={19} />
+            </button>
+            <button type="button" title="다시 실행" aria-label="다시 실행" disabled={busy || !canRedoDrawing} onClick={redoDrawing}>
+              <Redo2 size={19} />
+            </button>
+          </div>
           <div
-            className="solve-pen-tools"
-            role="toolbar"
-            aria-label="필기 도구"
+            className="solve-pen-tools pen-controls"
           >
             <button
               type="button"
@@ -604,14 +668,27 @@ export function Solve({
               disabled={busy}
               onClick={() => setTool("pen")}
             >
-              <PenLine size={18} />
+              <PenLine size={20} />
             </button>
+            <button
+              type="button"
+              title="획 지우개"
+              aria-label="획 지우개"
+              aria-pressed={tool === "eraser"}
+              disabled={busy}
+              onClick={() => setTool("eraser")}
+            >
+              <Eraser size={20} />
+            </button>
+            <div className="pen-widths" role="group" aria-label="펜 굵기">
+              {penWidths.map(({ label, width, sample }) => (
+                <button key={width} type="button" className="pen-width" title={label} aria-label={label} aria-pressed={penWidth === width && tool === "pen"} disabled={busy} onClick={() => { setPenWidth(width); setTool("pen"); }}>
+                  <span style={{ height: sample }} />
+                </button>
+              ))}
+            </div>
             <div className="pen-palette" role="group" aria-label="펜 색상">
-              {[
-                ["빨간색", "#dc2626"],
-                ["검은색", "#111827"],
-                ["파란색", "#2563eb"],
-              ].map(([label, color]) => (
+              {penColors.map(([label, color]) => (
                 <button
                   key={color}
                   type="button"
@@ -629,27 +706,6 @@ export function Solve({
                 </button>
               ))}
             </div>
-            <select
-              title="펜 굵기"
-              aria-label="펜 굵기"
-              value={penWidth}
-              disabled={busy}
-              onChange={(e) => setPenWidth(Number(e.target.value))}
-            >
-              <option value={0.0013}>가는선</option>
-              <option value={0.0025}>보통</option>
-              <option value={0.0045}>굵은선</option>
-            </select>
-            <button
-              type="button"
-              title="획 지우개 · 닿은 획 지우기"
-              aria-label="획 지우개"
-              aria-pressed={tool === "eraser"}
-              disabled={busy}
-              onClick={() => setTool("eraser")}
-            >
-              <Eraser size={18} />
-            </button>
           </div>
         </div>
       )}

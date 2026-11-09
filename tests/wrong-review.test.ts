@@ -20,11 +20,14 @@ it("requests only the four review sections and sends all saved image regions", a
     expect(parts).toHaveLength(3);
     expect(parts[1].inlineData.data).toBe("AAAA");
     expect(parts[2].inlineData.data).toBe("AAAB");
+    expect(parts[0].text).not.toContain("기존 작업의 긴 프롬프트");
+    const example = JSON.parse(parts[0].text.split("\n").at(-1));
+    expect(Object.keys(example)).toEqual(["solution", "concepts", "memorize", "questions"]);
     expect(parts[0].text).not.toMatch(/concept_ids|concept_keys|source_citations|restudy\.v1/);
     return Response.json({ candidates: [{ finishReason: "STOP", content: { parts: [{ text: JSON.stringify(result) }] } }] });
   });
   const reply = await generate("gemini", "gemma-4-26b-a4b-it", "test-key", {
-    kind: "wrong_review", prompt: "문제를 푸세요.",
+    kind: "wrong_review", prompt: "기존 작업의 긴 프롬프트",
     images: [{ mimeType: "image/png", data: "AAAA" }, { mimeType: "image/png", data: "AAAB" }],
   }, transport as typeof fetch, 0);
   expect(validateOutput("wrong_review", reply.raw, [])).toEqual(result);

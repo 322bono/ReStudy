@@ -5,6 +5,7 @@ import { cacheKey, edgeBackgroundTask, processJob, validId } from "./jobs.ts";
 import { providerContext, storeFor } from "./service.ts";
 import { sanitizeSettings } from "./settings.ts";
 import type { TaskInput } from "./router.ts";
+import { wrongReviewPrompt } from "./schemas.ts";
 import { wrongReviewIssues } from '../../../../src/domain/answer-quality.ts';
 
 export async function startWrongReview(ctx: Ctx, problemId: unknown, master: string) {
@@ -40,7 +41,7 @@ export async function startWrongReview(ctx: Ctx, problemId: unknown, master: str
     }
     const input: TaskInput = {
       kind: "wrong_review", sourceIds: [problemId], images,
-      prompt: "첨부된 원본 영역을 순서대로 함께 보고 문제 하나를 푸세요. 보기, 선택지, 그림과 조건을 모두 읽으세요. 객관식 solution.answer에는 원본에서 고른 선지 번호만 ①~⑤로 적고, 주관식이면 최종 답만 적으세요. solution.explanation에는 확정한 풀이와 각 보기의 판단 근거만 쓰세요. 정답 번호와 보기 조합이 실제 선택지에 일치하는지 다시 확인하세요. concepts는 관련 개념 이름과 설명, memorize는 암기할 사항, questions는 자체 완결된 추가 확인 문제 1~3개와 각각의 정답·해설입니다. 학생이 틀린 이유를 추측하지 마세요. 원본 조건을 바꾸거나 선택지에 억지로 맞추지 마세요. 필수 영역이 빠져 풀 수 없다면 null을 반환하세요.",
+      prompt: wrongReviewPrompt,
     };
     const inserted = await ctx.admin.from("ai_jobs").insert({
       user_id: ctx.user.id, document_id: document.id, problem_id: problemId,

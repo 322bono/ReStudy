@@ -6,79 +6,102 @@
 }
 .solve-pen-strip {
   display: flex;
-  justify-content: flex-end;
+  justify-content: center;
+  gap: 5px;
   flex: 0 0 auto;
-  padding: 2px 20px 6px;
+  padding: 4px 12px 6px;
 }
 .solve-pen-tools {
   display: inline-flex;
   align-items: center;
   gap: 2px;
   padding: 3px;
-  max-width: 100%;
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  background: white;
+  min-width: 0;
+  border: 1px solid #d8dbe2;
+  border-radius: 16px;
+  background: #f8f9fc;
 }
+.pen-history { flex: 0 0 auto; }
 .solve-pen-tools button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 38px;
-  height: 38px;
+  flex: 0 0 36px;
+  width: 36px;
+  height: 36px;
   padding: 0;
   border: 1px solid transparent;
   border-radius: 9px;
-  color: #475569;
+  color: #253041;
   background: transparent;
   cursor: pointer;
   touch-action: manipulation;
 }
-.solve-pen-tools button[aria-pressed="true"] {
-  border-color: #a5b4fc;
-  background: #eef2ff;
-  color: #3730a3;
+.solve-pen-tools > button[aria-pressed="true"] {
+  background: #c7e8ef;
+  color: #173b49;
 }
-.solve-pen-tools button:focus-visible,
-.solve-pen-tools select:focus-visible {
-  outline: 2px solid #6366f1;
-  outline-offset: 1px;
+.solve-pen-tools button:disabled {
+  opacity: 0.38;
+  cursor: default;
+}
+.solve-pen-tools button:focus-visible {
+  outline: 2px solid #446da6;
+  outline-offset: -2px;
+}
+.pen-palette,
+.pen-widths {
+  display: inline-flex;
+  align-items: center;
+}
+.pen-widths {
+  flex-shrink: 0;
+  padding: 0 3px;
+  margin-left: 2px;
+  border-left: 1px solid #d8dbe2;
+}
+.pen-width span {
+  width: 16px;
+  border-radius: 6px;
+  background: currentColor;
+}
+.pen-width[aria-pressed="true"] {
+  background: #e0e4eb;
 }
 .pen-palette {
-  display: inline-flex;
+  min-width: 0;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-width: thin;
 }
 .pen-color span {
   width: 18px;
   height: 18px;
   border-radius: 50%;
 }
-.solve-pen-tools select {
-  width: 74px;
-  height: 36px;
-  margin: 0 2px;
-  padding: 0 5px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: white;
-  color: #334155;
-  font-size: 13px;
+.pen-color[aria-pressed="true"] span {
+  outline: 2px solid #8192a8;
+  outline-offset: 3px;
 }
 .drawing-paper.eraser-active {
   cursor: crosshair;
 }
 @media (pointer: coarse) {
   .solve-pen-tools button {
-    width: 42px;
-    height: 42px;
-  }
-  .solve-pen-tools select {
-    height: 42px;
+    min-height: 42px;
   }
 }
 @media (max-width: 600px) {
   .solve-pen-strip {
-    justify-content: center;
-    padding: 2px 6px 6px;
+    padding-inline: 6px;
+  }
+  .solve-pen-tools button {
+    flex-basis: 30px;
+    width: 30px;
+  }
+  .pen-color span {
+    width: 16px;
+    height: 16px;
   }
 }
 .solve-content:not(.has-analysis) {
