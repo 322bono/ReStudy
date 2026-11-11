@@ -76,7 +76,11 @@ export function StudySetup({
     let alive = true;
     setInventory(null);
     api('bank/list','POST')
-      .then(r=>{ if (alive) setInventory(r.items); })
+      .then((result) => {
+        if (!alive) return;
+        const attempted = new Set(result.results?.map((item: { bankItemId: string }) => item.bankItemId));
+        setInventory(result.items.map((item: { id: string }) => ({ ...item, attempted: attempted.has(item.id) })));
+      })
       .catch(e=>{ if (alive) onError(e.message); });
     api("study/weak")
       .then((r) => { if (alive) setWeak(r.count); })
@@ -220,7 +224,8 @@ export function StudySetup({
           <div className="notice">
             <BookOpen size={18} />
             <p>
-              선택 범위 · 학습 가능 <strong>{available}개</strong>
+              {mode === "memory" ? "선택 범위 · 학습 가능" : "선택 범위 · 아직 풀지 않은 문제"}{" "}
+              <strong>{available}개</strong>
               <br />
               <small>
                 {inventory===null?'저장된 콘텐츠를 확인하고 있습니다.':'현재 선택한 자료·방식·유형·난이도 기준입니다.'}
@@ -298,7 +303,9 @@ export function StudySetup({
           {inventory!==null&&available === 0 && (
             <div className="notice">
               <p>
-                현재 조건에 맞는 문항이 없습니다. 저장된 개념 정리는 왼쪽에서 읽을 수 있고, 자료의 콘텐츠 준비에서 문제를 추가할 수 있습니다.
+                {counts.completed > 0
+                  ? "선택한 범위의 문제를 모두 풀었습니다. 다른 범위를 선택하거나 문제 은행에서 다시 풀 수 있어요."
+                  : "현재 조건에 맞는 문항이 없습니다. 자료의 콘텐츠 준비에서 문제를 추가할 수 있어요."}
               </p>
             </div>
           )}

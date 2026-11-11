@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import {
   Plus,
   ArrowRight,
@@ -28,13 +28,15 @@ export function AddMistakes({
   state,
   preferredMaterial,
   subject,
+  selectedQuestionIds,
   onClose,
   onDone,
   onRegistered,
 }: {
-  state: AppState;
+  state: Pick<AppState, "materials" | "questions">;
   preferredMaterial: string;
   subject: string;
+  selectedQuestionIds?: string[];
   onClose: () => void;
   onDone: () => Promise<void>;
   onRegistered: (ids: string[], autoAnalyzeIds: string[]) => void;
@@ -49,30 +51,41 @@ export function AddMistakes({
   const [chosen, setChosen] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
+  const [choices, setChoices] = useState<Record<string, { analyze?: boolean; answer?: string }>>({});
+  const registering = useRef(false);
   const source = state.questions.filter((q) => q.materialId === materialId && !q.mergedInto);
   const groups = [...new Set(source.map((q) => q.unit).filter(Boolean))];
   const filtered = source.filter((q) => !scope || q.unit === scope);
   const input = resolveMistakeNumbers(numbers, filtered);
-  const questionIds = [...new Set([...input.matches, ...chosen])];
+  const questionIds = selectedQuestionIds ?? [...new Set([...input.matches, ...chosen])];
+  const questionById = new Map(source.map((question) => [question.id, question]));
   const confirmed = input.ambiguous.every((group) => group.some((q) => chosen.includes(q.id)));
 
   async function add() {
+    if (registering.current || !questionIds.length || questionIds.length > 200) return;
+    registering.current = true;
     setBusy(true);
     setMessage("");
     try {
-      const result = await api("mistakes", "POST", { questionIds, cause });
+      const reviewOptions = questionIds.map((questionId) => ({
+        questionId,
+        analyze: choices[questionId]?.analyze === true,
+        answer: choices[questionId]?.answer?.trim() || undefined,
+      }));
+      const result = await api("mistakes", "POST", { questionIds, cause, reviewOptions });
       await onDone();
       onRegistered(result.questionIds, result.autoAnalyzeQuestionIds || []);
     } catch (cause) {
       setMessage((cause as Error).message);
     } finally {
+      registering.current = false;
       setBusy(false);
     }
   }
 
   return (
-    <Dialog title="오답 한꺼번에 등록" onClose={onClose}>
-      <div className="form-stack">
+    <Dialog title={selectedQuestionIds?.length === 1 ? "오답 등록" : "오답 한꺼번에 등록"} onClose={() => { if (!registering.current) onClose(); }}>
+      {!selectedQuestionIds && <div className="form-stack">
         <label>
           문제집
           <select value={materialId} disabled={busy} onChange={(event) => {
@@ -121,7 +134,7 @@ export function AddMistakes({
           />
           <small>번호와 범위를 섞어 입력할 수 있어요.</small>
         </label>
-      </div>
+      </div>}
       {input.error && <p className="error">{input.error}</p>}
       {input.missing.length > 0 && <p className="error">찾지 못한 번호 {input.missing.join(", ")}번 · 단원이나 번호를 확인해 주세요.</p>}
       {questionIds.length > 200 && <p className="error">한 번에 200문제까지 등록할 수 있습니다.</p>}
@@ -146,6 +159,65 @@ export function AddMistakes({
           ))}
         </fieldset>
       ))}
+      {questionIds.length > 0 && questionIds.length <= 200 && (
+        <div className="mistake-review-options">
+          {questionIds.length > 1 && (
+            <label className="checkbox-label">
+              <input
+                type="checkbox"
+                checked={questionIds.every((id) => choices[id]?.analyze)}
+                disabled={busy}
+                onChange={(event) => {
+                  const analyze = event.target.checked;
+                  setChoices((current) => ({
+                    ...current,
+                    ...Object.fromEntries(questionIds.map((id) => [id, { ...current[id], analyze }])),
+                  }));
+                }}
+              />
+              선택한 문제 모두 AI 분석
+            </label>
+          )}
+          <div className="mistake-review-questions">
+            {questionIds.map((id) => {
+              const question = questionById.get(id);
+              if (!question) return null;
+              const label = `${question.number}번 · PDF ${question.page}쪽`;
+              return (
+                <fieldset key={id}>
+                  <legend>{label}</legend>
+                  <label className="checkbox-label">
+                    <input
+                      type="checkbox"
+                      checked={choices[id]?.analyze === true}
+                      disabled={busy}
+                      onChange={(event) => {
+                        const analyze = event.target.checked;
+                        setChoices((current) => ({ ...current, [id]: { ...current[id], analyze } }));
+                      }}
+                    />
+                    원본 이미지를 AI로 보내 분석
+                  </label>
+                  <label>
+                    정답 (선택)
+                    <input
+                      aria-label={`${label} 정답 (선택)`}
+                      placeholder="예: ③ 또는 2x + 1"
+                      value={choices[id]?.answer ?? ""}
+                      maxLength={1000}
+                      disabled={busy}
+                      onChange={(event) => {
+                        const answer = event.target.value;
+                        setChoices((current) => ({ ...current, [id]: { ...current[id], answer } }));
+                      }}
+                    />
+                  </label>
+                </fieldset>
+              );
+            })}
+          </div>
+        </div>
+      )}
       {message && <p className="error" role="alert">{message}</p>}
       <div className="dialog-footer">
         <Button variant="secondary" disabled={busy} onClick={onClose}>닫기</Button>

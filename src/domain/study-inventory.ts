@@ -6,5 +6,12 @@ export function studyInventory(items:any[],scope:Scope){
   (!scope.type||scope.type==='전체'||scope.mode==='memory'||item.type===scope.type)&&
   (!scope.difficulty||scope.difficulty==='전체'||item.difficulty===scope.difficulty)&&
   (item.sources??[]).some((source:any)=>scope.materials.some(m=>m.id===source.materialId&&m.pages.includes(source.page))));
- return{available:scoped.filter(i=>i.active).length,pending:scoped.filter(i=>!i.active&&(i.reviewStatus??i.review_status)==='needs_review').length,stored:scoped.length};
+ const active = scoped.filter(item => item.active);
+ const completed = scope.mode === 'memory' ? 0 : active.filter(item => item.attempted).length;
+ return {
+  available: active.length - completed,
+  completed,
+  pending: scoped.filter(item => !item.active && (item.reviewStatus ?? item.review_status) === 'needs_review').length,
+  stored: scoped.length,
+ };
 }

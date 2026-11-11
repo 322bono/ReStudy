@@ -940,6 +940,44 @@ button svg {
   flex-direction: column;
   gap: 18px;
 }
+.mistake-review-options {
+  margin-top: 18px;
+}
+.mistake-review-options .checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.mistake-review-options .checkbox-label input {
+  margin: 0;
+  flex: 0 0 auto;
+}
+.mistake-review-questions {
+  display: grid;
+  gap: 12px;
+  max-height: 36dvh;
+  overflow-y: auto;
+  margin-top: 10px;
+  padding-inline-end: 5px;
+}
+.mistake-review-questions fieldset {
+  min-width: 0;
+  display: grid;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.mistake-review-questions legend {
+  padding-inline: 4px;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 600;
+}
+.mistake-review-questions input:not([type="checkbox"]) {
+  width: 100%;
+  font-size: 16px;
+}
 label {
   font-size: 12px;
   font-weight: 500;

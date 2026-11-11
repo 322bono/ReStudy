@@ -4,8 +4,26 @@ import {importContent,validate} from './content.ts';
 import {exportData,restoreData} from './backup.ts';
 import{saveOutline,documentIndex}from'./pdf-index.ts';
 import {answerSolve,answerStudy,createBankStudy,createReview,createSolve,createStudy,publicStudy,repeatWeak,revealStudy,relatedOriginalIds,originalReview} from '../../../../src/domain/learning.ts';
+import { wrongReviewIssues } from '../../../../src/domain/answer-quality.ts';
+
+function registrationOptions(input: unknown, selected: Set<string>) {
+ const options = new Map<string, { answer?: string; analyze?: boolean }>();
+ if (input === undefined) return options;
+ if (!Array.isArray(input) || input.length > 200)
+  throw new AppError('문항별 오답 등록 옵션을 확인해 주세요.');
+ for (const option of input) {
+  if (!option || !selected.has(option.questionId) || options.has(option.questionId) ||
+      (option.analyze !== undefined && typeof option.analyze !== 'boolean') ||
+      (option.answer !== undefined && (typeof option.answer !== 'string' || option.answer.length > 1000))) {
+   throw new AppError('문항별 AI 분석 여부와 정답(1000자 이하)을 확인해 주세요.');
+  }
+  options.set(option.questionId, { analyze: option.analyze, answer: option.answer?.trim() });
+ }
+ return options;
+}
 
 const now=()=>new Date().toISOString(),uuid=()=>crypto.randomUUID();
+const publicMistake=({registeredAnswer,...record}:any)=>record;
 function numbers(text:string,max=1000){if(!text?.trim())return [];const out:number[]=[];for(const part of text.trim().split(/[\s,]+/)){const m=part.match(/^(\d{1,5})(?:[-~](\d{1,5}))?$/);if(!m)throw new AppError('번호 또는 범위를 확인하세요.');const a=+m[1],b=+(m[2]||m[1]);if(a<1||b<a||b-a>=max)throw new AppError('번호 범위를 확인하세요.');for(let n=a;n<=b;n++)out.push(n);if(out.length>max)throw new AppError('선택한 번호가 너무 많습니다.')}return [...new Set(out)];}
 const content=(s:any)=>({schemaVersion:1,concepts:s.concepts,items:s.bank,mappings:s.questions.map((q:any)=>({questionId:q.id,materialId:q.materialId,number:q.number,page:q.page,conceptIds:q.conceptIds,answer:q.answer||'',explanation:q.explanation||''})),materials:s.materials.map((m:any)=>({id:m.id,title:m.title,hash:m.hash}))});
 const solvePublic=(s:any)=>{const {questionSnapshots,...safe}=s;return {...safe,questions:(questionSnapshots||s.questions||[]).map((q:any)=>{const {analysis,memorize,...original}=publicQuestion(q);return original;})}};
@@ -71,7 +89,7 @@ export async function handle(ctx:Ctx,input:any):Promise<any>{
  if(route==='data'&&method==='POST'){if(id==='export')return exportData(ctx,b);if(id==='restore')return restoreData(ctx,b);}
  if(route==='state'||route==='overview'){
   const overview=route==='overview';
-  const s=await state(ctx,false,overview);return {materials:s.materials,chapters:s.chapters,questions:s.questions.map(publicQuestion),concepts:s.concepts,mistakes:s.mistakes,sessions:overview?s.sessions:s.sessions.map(solvePublic),studies:overview?s.studies:s.studies.map(publicStudy),bankStats:s.concepts.map((c:any)=>({conceptId:c.id,count:s.bank.filter((i:any)=>i.active&&i.conceptIds.includes(c.id)).length,modes:[...new Set(s.bank.filter((i:any)=>i.active&&i.conceptIds.includes(c.id)).flatMap((i:any)=>i.modes||[]))]}))};
+  const s=await state(ctx,false,overview);return {materials:s.materials,chapters:s.chapters,questions:s.questions.map(publicQuestion),concepts:s.concepts,mistakes:s.mistakes.map(publicMistake),sessions:overview?s.sessions:s.sessions.map(solvePublic),studies:overview?s.studies:s.studies.map(publicStudy),bankStats:s.concepts.map((c:any)=>({conceptId:c.id,count:s.bank.filter((i:any)=>i.active&&i.conceptIds.includes(c.id)).length,modes:[...new Set(s.bank.filter((i:any)=>i.active&&i.conceptIds.includes(c.id)).flatMap((i:any)=>i.modes||[]))]}))};
  }
  if(route==='bank'){
   const s=learnState(await state(ctx,true));
@@ -117,7 +135,16 @@ export async function handle(ctx:Ctx,input:any):Promise<any>{
  if(route==='bank-items'&&method==='PUT'){const result=await importContent(ctx,{concepts:[],items:[{...b,id,userEdited:true}],mappings:[]});if(!result.valid)throw new AppError(result.errors.join('\n'));return result;}
  if(route==='bank-items'&&method==='DELETE'){const q=await row(ctx,'concept_questions',id);await put(ctx,'concept_questions',id,{...q.data,active:false,archived:true},{concept_id:q.concept_id,type:q.type,difficulty:q.difficulty,review_status:'archived'});return {archived:true};}
  if(route==='questions'&&action==='mapping'&&method==='PATCH')return importContent(ctx,{concepts:[],items:[],mappings:[{questionId:id,...b}]});
- if(route==='questions'&&action==='review'&&method==='GET'){const s=learnState(await state(ctx,true,false,[id])),q=s.questions.find((q:any)=>q.id===id);if(!q)throw new AppError('원본 문항을 찾을 수 없습니다.',404);return originalReview(q,s,await rows(ctx,'problem_similarities'));}
+ if(route==='questions'&&action==='review'&&method==='GET'){
+  const s=learnState(await state(ctx,true,false,[id]));
+  const q=s.questions.find((q:any)=>q.id===id);
+  if(!q)throw new AppError('원본 문항을 찾을 수 없습니다.',404);
+  const record=s.mistakes.find((m:any)=>m.questionId===id);
+  return {
+   ...originalReview({...q,registeredAnswer:record?.registeredAnswer},s,await rows(ctx,'problem_similarities')),
+   allowAutomaticAnalysis: record?.autoAnalyze !== false,
+  };
+ }
  if(route==='mistakes'){
   if((id==='archive'&&method==='POST')||(id&&method==='DELETE')){
    const ids:unknown=method==='DELETE'?[id]:b.ids;
@@ -129,14 +156,43 @@ export async function handle(ctx:Ctx,input:any):Promise<any>{
   }
   const s=await state(ctx);
   if(id){const m=await row(ctx,'wrong_answers',id);return {mistake:{...value(m),questionId:m.problem_id,resolved:m.data.resolved??m.data.lastResult==='correct'},attempts:s.sessions.filter((ss:any)=>ss.answers?.[m.problem_id]).map((ss:any)=>({sessionId:ss.id,...ss.answers[m.problem_id],strokes:ss.drawings?.[m.problem_id]||[]}))};}
-  if(method!=='POST')return s.mistakes;
+  if(method!=='POST')return s.mistakes.map(publicMistake);
   const selected:any[]=[],ambiguous:number[]=[],missing:number[]=[];
   if(b.questionIds!==undefined&&(!Array.isArray(b.questionIds)||b.questionIds.length>200||b.questionIds.some((id:unknown)=>typeof id!=='string')))throw new AppError('한 번에 원본 문항을 200개까지 등록할 수 있습니다.');
   for(const qid of b.questionIds||[]){const q=s.questions.find((q:any)=>q.id===qid);if(!q)throw new AppError('선택한 원본 문항을 찾을 수 없습니다.');selected.push(q)}
   for(const num of numbers(String(b.numbers||''),200)){const found=s.questions.filter((q:any)=>q.materialId===b.materialId&&q.number===num);if(found.length>1)ambiguous.push(num);else if(!found.length)missing.push(num);else selected.push(found[0]);}
-  let added=0;const unique=[...new Map(selected.map(q=>[q.id,q])).values()];
-  for(const q of unique){const exists=s.tables.wrong_answers.find((m:any)=>m.problem_id===q.id);if(exists&&!exists.data.archived&&!(exists.data.resolved??exists.data.lastResult==='correct'))continue;const mid=exists?.id||uuid(),data={...(exists?.data||{}),id:mid,questionId:q.id,cause:String(b.cause||'').slice(0,500),createdAt:exists?.created_at||now(),dueAt:now(),reviewCount:exists?.data.reviewCount||0,correctCount:exists?.data.correctCount||0,streak:0,conceptState:q.conceptIds.length?'reviewing':'unregistered',archived:false,resolved:false,resolvedAt:null};await put(ctx,'wrong_answers',mid,data,{problem_id:q.id});added++;}
-  return {added,ambiguous,missing,unregistered:unique.filter(q=>!q.hasContent).length,questionIds:unique.map(q=>q.id),autoAnalyzeQuestionIds:unique.filter(q=>!q.wrongReview&&!q.analysis&&!q.answer&&!q.explanation).map(q=>q.id)};
+  const unique=[...new Map(selected.map(q=>[q.id,q])).values()];
+  const questionIds=unique.map(q=>q.id);
+  const options=registrationOptions(b.reviewOptions,new Set(questionIds));
+  const autoAnalyzeQuestionIds:string[]=[];
+  let added=0;
+  for(const q of unique){
+   const exists=s.tables.wrong_answers.find((m:any)=>m.problem_id===q.id);
+   const option=options.get(q.id);
+   const changes={
+    ...(option?.answer ? {registeredAnswer:option.answer} : {}),
+    ...(option?.analyze !== undefined ? {autoAnalyze:option.analyze} : {}),
+   };
+   const active=exists&&!exists.data.archived&&!(exists.data.resolved??exists.data.lastResult==='correct');
+   if(active){
+    if(Object.keys(changes).length)await put(ctx,'wrong_answers',exists.id,{...exists.data,...changes},{problem_id:q.id});
+   }else{
+    const mid=exists?.id||uuid();
+    const data={
+     ...exists?.data,...changes,id:mid,questionId:q.id,
+     autoAnalyze:option?.analyze??exists?.data.autoAnalyze??false,
+     cause:String(b.cause||'').slice(0,500),createdAt:exists?.created_at||now(),
+     dueAt:now(),reviewCount:exists?.data.reviewCount||0,correctCount:exists?.data.correctCount||0,
+     streak:0,conceptState:q.conceptIds.length?'reviewing':'unregistered',
+     archived:false,resolved:false,resolvedAt:null,
+    };
+    await put(ctx,'wrong_answers',mid,data,{problem_id:q.id});
+    added++;
+   }
+   const missingAnalysis=!q.wrongReview&&!q.analysis&&!q.answer&&!q.explanation;
+   if(option?.analyze&&(missingAnalysis||wrongReviewIssues(q.wrongReview).length))autoAnalyzeQuestionIds.push(q.id);
+  }
+  return {added,ambiguous,missing,unregistered:unique.filter(q=>!q.hasContent).length,questionIds,autoAnalyzeQuestionIds};
  }
  if(route==='lessons'){const s=learnState(await state(ctx,true));return saveStudy(ctx,createReview([b.questionId],s));}
  if(route==='study'){
@@ -145,7 +201,20 @@ export async function handle(ctx:Ctx,input:any):Promise<any>{
   return saveStudy(ctx,createStudy(b,learnState(await state(ctx,true))));
  }
  if(route==='solve'){
-  if(!id){if(!Array.isArray(b.questionIds)||!b.questionIds.length||b.questionIds.length>200||b.questionIds.some((id:any)=>typeof id!=='string'))throw new AppError('1~200개의 문제를 선택해 주세요.');const s=learnState(await state(ctx,true,false,b.questionIds)),qs=b.questionIds.map((id:string)=>s.questions.find((q:any)=>q.id===id));if(qs.some((q:any)=>!q||!q.imagePaths?.length))throw new AppError('저장된 원본 크롭이 있는 문항을 선택하세요.');const session=createSolve(qs);await put(ctx,'solve_sessions',session.id,session);return solvePublic(session);}
+  if(!id){
+   if(!Array.isArray(b.questionIds)||!b.questionIds.length||b.questionIds.length>200||b.questionIds.some((id:any)=>typeof id!=='string'))
+    throw new AppError('1~200개의 문제를 선택해 주세요.');
+   const s=learnState(await state(ctx,true,false,b.questionIds));
+   const questions=b.questionIds.map((id:string)=>{
+    const q=s.questions.find((item:any)=>item.id===id);
+    if(!q?.imagePaths?.length)throw new AppError('저장된 원본 크롭이 있는 문항을 선택하세요.');
+    const record=s.mistakes.find((m:any)=>m.questionId===id);
+    return record?.registeredAnswer ? {...q,registeredAnswer:record.registeredAnswer} : q;
+   });
+   const session=createSolve(questions);
+   await put(ctx,'solve_sessions',session.id,session);
+   return solvePublic(session);
+  }
   if(action==='answer'||action==='drawing')return learningMutation(ctx,'solve',id,{...b,drawingOnly:action==='drawing'});
   const ss=action==='answer-keys'||action==='answer-key'?await row(ctx,'solve_sessions',id,'id,questionSnapshots:data->questionSnapshots'):value(await row(ctx,'solve_sessions',id));
   if(action==='answer-keys'){

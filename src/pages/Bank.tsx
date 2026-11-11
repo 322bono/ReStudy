@@ -183,7 +183,7 @@ export default function Bank({
             <select value={order} onChange={(e) => setOrder(e.target.value)}>
               <option value="sequential">순서대로</option>
               <option value="random">무작위</option>
-              <option value="unattempted">아직 풀지 않은 문제 우선</option>
+              <option value="unattempted">아직 풀지 않은 문제만</option>
               <option value="wrong">최근 오답 우선</option>
               <option value="weak">취약 개념 우선</option>
               <option value="mixed">여러 난이도 혼합</option>
@@ -342,6 +342,7 @@ export default function Bank({
                           bankItemIds: [i.id],
                           count: 1,
                           mode,
+                          order: "sequential",
                         });
                         onStart(s.id);
                       } catch (e) {

@@ -27,8 +27,12 @@ export default function OriginalAnalysis({
         {review?.analysis && <Badge tone="indigo">{review.analysis.model || '저장된 AI 분석'}</Badge>}
         {review?.answer && (
           <p className="analysis-answer">
-            <strong>정답</strong> {review.answer}
+            <strong>{review.answerSource === "registered" ? "직접 등록한 정답" : "정답"}</strong>{" "}
+            {review.answer}
           </p>
+        )}
+        {review?.explanationAnswer && (
+          <p>저장된 해설의 답은 <strong>{review.explanationAnswer}</strong>입니다.</p>
         )}
         <p>
           {review?.explanation ||

@@ -1,4 +1,4 @@
-import { wrongReviewIssues } from './answer-quality.ts';
+import { answerKey, wrongReviewIssues } from './answer-quality.ts';
 
 export class LearningError extends Error {
   readonly kind = "learning";
@@ -379,26 +379,24 @@ export function createBankStudy(options: any, state: LearningState): any {
     for (let n = 0; groups.some((g) => n < g.length); n++)
       for (const group of groups) if (group[n]) mixed.push(group[n]);
     pool = mixed;
-  } else if (["sequential", "unattempted", "wrong"].includes(order))
+  } else if (["sequential", "unattempted", "wrong"].includes(order)) {
+    if (order === "unattempted") {
+      pool = pool.filter((item) => !history.has(item.id));
+      if (!pool.length)
+        throw new LearningError("선택한 범위의 문제를 모두 풀었습니다. 다시 풀려면 다른 출제 순서를 선택하세요.");
+    }
     pool = [...pool].sort((a, b) =>
-      order === "unattempted"
-        ? Number(history.has(a.id)) - Number(history.has(b.id)) ||
-          String(a.externalId || a.id).localeCompare(
+      order === "wrong"
+        ? Number(history.get(b.id)?.result === "wrong") -
+            Number(history.get(a.id)?.result === "wrong") ||
+          String(a.id).localeCompare(String(b.id))
+        : String(a.externalId || a.id).localeCompare(
             String(b.externalId || b.id),
             "ko",
             { numeric: true },
-          )
-        : order === "wrong"
-          ? Number(history.get(b.id)?.result === "wrong") -
-              Number(history.get(a.id)?.result === "wrong") ||
-            String(a.id).localeCompare(String(b.id))
-          : String(a.externalId || a.id).localeCompare(
-              String(b.externalId || b.id),
-              "ko",
-              { numeric: true },
-            ),
+          ),
     );
-  else throw new LearningError("출제 순서를 확인하세요.");
+  } else throw new LearningError("출제 순서를 확인하세요.");
   const chosen = pool.slice(0, count),
     session = studySession(
       mode,
@@ -588,8 +586,14 @@ export function createStudy(body: any, state: LearningState): any {
     throw new LearningError(
       "선택한 자료·페이지·유형에 연결된 사전 문항이 없습니다. 콘텐츠 관리에서 등록해 주세요.",
     );
-  const cids = unique(pool.map((item) => item.conceptId)),
-    chosen = select(pool, cids, body.count, state);
+  const attempted = new Set(state.results.map((result) => result.bankItemId));
+  const available = body.mode === "memory"
+    ? pool
+    : pool.filter((item) => !attempted.has(item.id));
+  if (!available.length)
+    throw new LearningError("선택한 범위의 문제를 모두 풀었습니다. 다른 범위를 선택하거나 문제 은행에서 다시 풀 수 있어요.");
+  const cids = unique(available.map((item) => item.conceptId)),
+    chosen = select(available, cids, body.count, state);
   const labels: Record<string, string> = {
     quiz: "문제 풀기",
     memory: "암기하기",
@@ -603,7 +607,9 @@ export function createStudy(body: any, state: LearningState): any {
     cids,
   );
   if (chosen.length < body.count)
-    session.notice = `등록된 문항 ${chosen.length}개로 시작합니다.`;
+    session.notice = body.mode === "memory"
+      ? `등록된 문항 ${chosen.length}개로 시작합니다.`
+      : `아직 풀지 않은 문제 ${chosen.length}개로 시작합니다.`;
   return session;
 }
 export function repeatWeak(state: LearningState): any {
@@ -1041,12 +1047,18 @@ export function originalReview(
   const requiresReanalysis = wrongReviewIssues(question.wrongReview).length > 0;
   const quick = requiresReanalysis ? undefined : question.wrongReview;
   const analysis = clone(question.analysis ?? (quick ? { provider: quick.provider, model: quick.model } : null));
+  const savedAnswer = [quick?.solution?.answer, question.answer, analysis?.answer]
+    .find((answer): answer is string => typeof answer === "string" && !!answer.trim()) || "";
+  const registeredAnswer = typeof question.registeredAnswer === "string" ? question.registeredAnswer.trim() : "";
+  const answersDiffer = registeredAnswer && savedAnswer && answerKey(registeredAnswer) !== answerKey(savedAnswer);
   return {
     requiresReanalysis,
     concepts: [...list(quick?.concepts).map((concept, index) => ({ ...concept, id: `review-concept-${index}` })), ...concepts],
     bankScope: { originalId: question.id },
     analysis,
-    answer: quick?.solution?.answer || question.answer || analysis?.answer || "",
+    answer: registeredAnswer || savedAnswer,
+    ...(registeredAnswer ? { answerSource: "registered" } : {}),
+    ...(answersDiffer ? { explanationAnswer: savedAnswer } : {}),
     explanation: requiresReanalysis ? "저장된 AI 해설에서 정답 불일치가 발견됐습니다. 원본을 다시 대조해 분석해야 합니다." : quick?.solution?.explanation || question.explanation || analysis?.explanation || "",
     solutionSteps: list(analysis?.solution_steps),
     hasSavedAnalysis: !!(analysis || question.answer || question.explanation),

@@ -24,7 +24,7 @@ vi.mock("../supabase/functions/_shared/app/repository.ts", () => ({
     return { id, data };
   },
   value: (row: any) => ({ ...row.data, id: row.id }),
-  publicQuestion: ({ answer, explanation, ...safe }: any) => safe,
+  publicQuestion: ({ answer, explanation, registeredAnswer, ...safe }: any) => safe,
   material: (row: any) => row,
   signed: async () => "unused",
 }));
@@ -81,7 +81,7 @@ test("registration returns the saved original for immediate analysis and creates
   const result = await handle({ user: { id: "owner" } } as any, {
     path: "mistakes",
     method: "POST",
-    body: { questionIds: ["q"] },
+    body: { questionIds: ["q"], reviewOptions: [{ questionId: "q", analyze: true }] },
   });
   expect(result).toMatchObject({
     added: 1,
@@ -97,6 +97,70 @@ test("registration returns the saved original for immediate analysis and creates
     data: { resolved: false, reviewCount: 0, correctCount: 0 },
   });
   expect(result.reviewSessionId).toBeUndefined();
+});
+
+test("batch registration queues only opted-in originals and saves each answer separately", async () => {
+  fixture.state.questions.push({ ...fixture.state.questions[0], id: "second", number: 48 });
+  const result = await handle({ user: { id: "owner" } } as any, {
+    path: "mistakes",
+    method: "POST",
+    body: {
+      questionIds: ["q", "second"],
+      reviewOptions: [
+        { questionId: "q", answer: " ③ " },
+        { questionId: "second", analyze: true, answer: "x = 2" },
+      ],
+    },
+  });
+  expect(result.autoAnalyzeQuestionIds).toEqual(["second"]);
+  expect(fixture.writes.map((entry) => entry.data)).toMatchObject([
+    { questionId: "q", registeredAnswer: "③", autoAnalyze: false },
+    { questionId: "second", registeredAnswer: "x = 2", autoAnalyze: true },
+  ]);
+});
+
+test("registration without options saves a mistake without queueing analysis", async () => {
+  const result = await handle({ user: { id: "owner" } } as any, {
+    path: "mistakes",
+    method: "POST",
+    body: { questionIds: ["q"] },
+  });
+  expect(result.autoAnalyzeQuestionIds).toEqual([]);
+  expect(fixture.writes[0].data).toMatchObject({ autoAnalyze: false });
+  expect(fixture.writes[0].data).not.toHaveProperty("registeredAnswer");
+});
+
+test("the entered answer is captured by a new solve session and revealed on answer check", async () => {
+  const ctx = { user: { id: "owner" } } as any;
+  fixture.state.mistakes = [{ questionId: "q", registeredAnswer: "③", autoAnalyze: false }];
+  fixture.state.questions[0].answer = "②";
+  const created = await handle(ctx, { path: "solve", method: "POST", body: { questionIds: ["q"] } });
+  expect(created.questions[0]).not.toHaveProperty("registeredAnswer");
+  fixture.state.sessions = [fixture.writes[0].data];
+  fixture.state.mistakes[0].registeredAnswer = "④";
+  const keys = await handle(ctx, { path: `solve/${created.id}/answer-keys` });
+  expect(keys.answerKeys.q).toMatchObject({
+    answer: "③",
+    review: { answerSource: "registered", explanationAnswer: "②" },
+  });
+});
+
+test("updating the answer of an active mistake preserves its history and an empty answer keeps the saved value", async () => {
+  fixture.state.tables.wrong_answers = [{
+    id: "existing", problem_id: "q", data: {
+      reviewCount: 5, correctCount: 2, registeredAnswer: "①", autoAnalyze: true,
+    },
+  }];
+  const result = await handle({ user: { id: "owner" } } as any, {
+    path: "mistakes",
+    method: "POST",
+    body: { questionIds: ["q"], reviewOptions: [{ questionId: "q", analyze: false, answer: "  " }] },
+  });
+  expect(result.added).toBe(0);
+  expect(result.autoAnalyzeQuestionIds).toEqual([]);
+  expect(fixture.writes[0]).toMatchObject({
+    id: "existing", data: { reviewCount: 5, correctCount: 2, registeredAnswer: "①", autoAnalyze: false },
+  });
 });
 
 test("re-registering a solved original retains its ID and history and reuses saved analysis", async () => {

@@ -18,6 +18,7 @@ import type { Concept, Material, Page, Question, Region } from "@/lib/types";
 import { api } from "@/lib/client";
 import { pageNavigation } from "../lib/page-navigation";
 import { NumberInput } from "./number-input";
+import { AddMistakes } from "./mistakes";
 import { Badge, Button, Empty, IconButton } from "./ui";
 import { MaterialStatus } from "./materials";
 import { OriginalPage } from "./original-page";
@@ -68,7 +69,7 @@ export function Viewer({
     [splitRatio, setSplitRatio] = useState(50);
   const [batchMode, setBatchMode] = useState(false);
   const [wrongIds, setWrongIds] = useState<string[]>([]);
-  const registering = useRef(false);
+  const [registerIds, setRegisterIds] = useState<string[]>();
   const questions = useMemo(() => originalQuestions.filter((question) => question.materialId === id && !question.mergedInto), [originalQuestions, id]);
   const navigation = pageNavigation(data?.pages || [], requestedPage);
   const page = navigation.page ?? requestedPage;
@@ -181,7 +182,6 @@ export function Viewer({
       choose(question);
       return;
     }
-    if (registering.current) return;
     if (!wrongSelection.has(question.id) && wrongIds.length >= 200) {
       onError("한 번에 200문제까지 등록할 수 있습니다.");
       return;
@@ -191,24 +191,6 @@ export function Viewer({
         ? current.filter((id) => id !== question.id)
         : [...current, question.id],
     );
-  };
-  const register = async (ids: string[]) => {
-    if (!ids.length || registering.current) return;
-    registering.current = true;
-    setBusy("오답 추가");
-    try {
-      const result = await api("mistakes", "POST", { questionIds: ids });
-      await onChange();
-      onRegistered(
-        result.questionIds || ids,
-        result.autoAnalyzeQuestionIds || [],
-      );
-    } catch (error) {
-      onError((error as Error).message);
-    } finally {
-      registering.current = false;
-      setBusy("");
-    }
   };
   const begin = (question?: Question) => {
     if (!manage) return;
@@ -311,8 +293,7 @@ export function Viewer({
                 <Button
                   size="sm"
                   disabled={!wrongIds.length || !!busy}
-                  busy={busy === "오답 추가"}
-                  onClick={() => register(wrongIds)}
+                  onClick={() => setRegisterIds(wrongIds)}
                 >
                   {wrongIds.length
                     ? `${wrongIds.length}문제 오답 등록`
@@ -868,7 +849,7 @@ export function Viewer({
               <Button
                 variant="primary"
                 busy={!!busy}
-                onClick={() => register([q.id])}
+                onClick={() => setRegisterIds([q.id])}
               >
                 <Plus size={15} />
                 오답 추가
@@ -877,6 +858,20 @@ export function Viewer({
           ) : null}
         </aside>
       </div>
+      {registerIds && (
+        <AddMistakes
+          state={{ materials: [data.material], questions }}
+          preferredMaterial={id}
+          subject={data.material.subject}
+          selectedQuestionIds={registerIds}
+          onClose={() => setRegisterIds(undefined)}
+          onDone={onChange}
+          onRegistered={(ids, autoAnalyzeIds) => {
+            setRegisterIds(undefined);
+            onRegistered(ids, autoAnalyzeIds);
+          }}
+        />
+      )}
     </div>
   );
 }

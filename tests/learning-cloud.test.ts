@@ -306,7 +306,7 @@ describe("prepared concept review", () => {
 });
 
 describe("material selection and honest grading", () => {
-  it("prioritizes unattempted items, then least recently correct items", () => {
+  it("starts with only unattempted questions and stops when the scope is exhausted", () => {
     const state = fixture();
     state.results = [
       {
@@ -317,17 +317,18 @@ describe("material selection and honest grading", () => {
       },
     ];
     expect(
-      createStudy(studyBody({ count: 1 }), state).items[0].bankItemId,
-    ).toBe("c0-b1");
+      createStudy(studyBody({ count: 5 }), state).items.map((item: any) => item.bankItemId),
+    ).toEqual(["c0-b1"]);
+    expect(createBankStudy({ count: 5, order: "unattempted" }, state).items.map((item: any) => item.bankItemId)).toEqual(["c0-b1"]);
     state.results.push({
       bankItemId: "c0-b1",
       conceptId: "c0",
-      result: "correct",
+      result: "wrong",
       createdAt: "2026-10-29T00:00:00Z",
     });
-    expect(
-      createStudy(studyBody({ count: 1 }), state).items[0].bankItemId,
-    ).toBe("c0-b1");
+    expect(() => createStudy(studyBody({ count: 1 }), state)).toThrow("모두 풀었습니다");
+    expect(() => createBankStudy({ count: 5, order: "unattempted" }, state)).toThrow("모두 풀었습니다");
+    expect(createBankStudy({ count: 1, order: "sequential" }, state).items).toHaveLength(1);
   });
   it("prioritizes weak concepts and includes saved items with a selected source even when other origins exist", () => {
     const state = fixture(2);
@@ -344,7 +345,7 @@ describe("material selection and honest grading", () => {
     );
     for (const item of state.bank)
       item.sources.push({ materialId: "other-doc", page: 1 });
-    expect(createStudy(studyBody(), state).items).toHaveLength(4);
+    expect(createStudy(studyBody(), state).items).toHaveLength(3);
     for (const item of state.bank)
       item.sources = [{ materialId: "other-doc", page: 1 }];
     expect(() => createStudy(studyBody(), state)).toThrow("사전 문항");
