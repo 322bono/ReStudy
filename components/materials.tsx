@@ -208,19 +208,18 @@ export function Materials({
     <>
       <div className="page-heading">
         <div>
-          <div className="eyebrow">나의 학습 자료</div>
           <h1>내 자료</h1>
-          <p>공부할 자료를 한곳에 모아 두세요.</p>
         </div>
         <Button onClick={onUpload}>
           <Plus size={17} />
-          파일 추가
+          자료 추가
         </Button>
       </div>
       <div className="toolbar">
         <div className="tabs">
           <button
             className={subject === "전체" ? "active" : ""}
+            aria-pressed={subject === "전체"}
             onClick={() => setSubject("전체")}
           >
             전체 <small>{state.materials.length}</small>
@@ -230,6 +229,7 @@ export function Materials({
               key={s}
               onClick={() => setSubject(s)}
               className={subject === s ? "active" : ""}
+              aria-pressed={subject === s}
             >
               {s}
             </button>

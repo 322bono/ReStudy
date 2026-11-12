@@ -318,14 +318,12 @@ export function Mistakes({
     <>
       <div className="page-heading">
         <div>
-          <div className="eyebrow">다시, 내 것으로</div>
           <h1>
             오답 노트{" "}
             <span className="title-count">
               {state.mistakes.filter((m) => !m.resolved).length}
             </span>
           </h1>
-          <p>맞힌 문제의 분석과 기록은 시험 전 복습에 보관됩니다.</p>
         </div>
         <Button onClick={onAdd}>
           <Plus size={17} />
@@ -338,6 +336,7 @@ export function Mistakes({
             <button
               key={s}
               className={status === s ? "active" : ""}
+              aria-pressed={status === s}
               onClick={() => change({ status: s })}
             >
               {s}

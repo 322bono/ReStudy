@@ -127,25 +127,25 @@ export function StudySetup({
   const concepts=state.concepts.filter(c=>c.subject===subject&&c.sources?.some(s=>selected.includes(s.materialId)));
   return (
     <>
-      <div className="page-heading">
-        <div>
-          <div className="eyebrow">자료 기반 학습</div>
-          <h1>학습하기</h1>
-          <p>저장된 개념을 읽거나 문제·암기 카드로 복습하세요.</p>
-        </div>
-        {weak > 0 && (
-          <Button variant="secondary" onClick={() => start(true)} busy={busy}>
-            <RotateCcw size={15} />
-            다시 볼 개념 {weak}개
+      <div className="page-heading study-heading">
+        <h1>학습하기</h1>
+        <div className="study-heading-actions">
+          {weak > 0 && (
+            <Button variant="secondary" onClick={() => start(true)} busy={busy}>
+              <RotateCcw size={15} />
+              다시 볼 개념 {weak}개
+            </Button>
+          )}
+          <Button variant="secondary" onClick={() => onBank({ materialIds: initialIds })}>
+            <Layers size={16} aria-hidden="true" />
+            문제 은행
           </Button>
-        )}
+        </div>
       </div>
       <div className="study-layout">
         <section>
           <div className="section-heading">
-            <h2>
-              <span className="section-number">1</span>학습 범위
-            </h2>
+            <h2>학습 범위</h2>
             <select
               aria-label="학습 과목"
               value={subject}
@@ -236,9 +236,7 @@ export function StudySetup({
         </section>
         <section>
           <div className="section-heading">
-            <h2>
-              <span className="section-number">2</span>학습 방식
-            </h2>
+            <h2>학습 방식</h2>
           </div>
           <div className="mode-list">
             {modes.map((m) => (

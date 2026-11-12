@@ -16,6 +16,7 @@ import {
   FileText,
   ChevronRight,
   Settings2,
+  Layers,
   X,
   RotateCcw,
   CalendarDays,
@@ -46,9 +47,9 @@ const navigation = [
 ];
 function Brand() {
   return (
-    <span className="brand">
-      <span>RE</span>
-      <span className="brand-dot" />
+    <span className="workspace-brand">
+      <img src={`${import.meta.env.BASE_URL}icons/restudy-touch-180.png`} width="36" height="36" alt="" />
+      <span>RE:STUDY</span>
     </span>
   );
 }
@@ -308,7 +309,6 @@ export default function RestudyApp({
         >
           <Brand />
         </button>
-        <div className="space-label">내 학습 공간</div>
         <nav aria-label="주 메뉴">
           {navigation.map((n) => (
             <button
@@ -317,7 +317,7 @@ export default function RestudyApp({
               aria-current={activeNav === n.id ? "page" : undefined}
               onClick={() => navigate({ name: n.id })}
             >
-              <n.icon size={19} strokeWidth={1.7} />
+              <n.icon size={20} strokeWidth={1.8} />
               {n.title}
               {n.id === "mistakes" && due.length > 0 && (
                 <span className="nav-count">{due.length}</span>
@@ -326,19 +326,16 @@ export default function RestudyApp({
           ))}
         </nav>
         <div className="sidebar-bottom">
-          <span className="sidebar-caption">차곡차곡, 내 것으로.</span>
           <button
             className={`management-entry ${activeNav === "manage" ? "active" : ""}`}
+            aria-current={activeNav === "manage" ? "page" : undefined}
             onClick={() => navigate({ name: "manage" })}
           >
-            <Settings2 size={17} />
+            <Layers size={18} />
             <span>콘텐츠 관리</span>
           </button>
-          <small className="local-caption">
-            로그인한 계정에만 자료가 보여요
-          </small>
           <button className="management-entry" onClick={onSettings}>
-            <Settings2 size={17} />
+            <Settings2 size={18} />
             <span>설정</span>
           </button>
         </div>
@@ -346,23 +343,9 @@ export default function RestudyApp({
       <div className="main-shell">
         {!focus && (
           <header className="topbar">
-            <div>
-              <span>내 학습 공간</span>
-              <ChevronRight size={13} />
-              <strong>
-                {activeNav === "manage"
-                  ? "콘텐츠 관리"
-                  : navigation.find((n) => n.id === activeNav)?.title}
-              </strong>
-            </div>
-            <span className="topbar-date">
-              <CalendarDays size={14} />
-              {new Date().toLocaleDateString("ko-KR", {
-                month: "long",
-                day: "numeric",
-                weekday: "short",
-              })}
-            </span>
+            <button className="brand-button" aria-label="RE 홈" onClick={() => navigate({ name: "home" })}>
+              <Brand />
+            </button>
             <div className="topbar-more" ref={moreMenu}>
               <button
                 type="button"
@@ -444,170 +427,150 @@ export default function RestudyApp({
             fallback={<div className="loading">학습 화면을 여는 중…</div>}
           >
             {view.name === "home" && (
-              <>
+              <div className="study-home">
                 <div className="page-heading home-heading">
                   <div>
-                    <div className="eyebrow">오늘의 학습</div>
-                    <h1>오늘은 무엇을 공부할까요?</h1>
-                    <p>지난 공부를 돌아보고, 오늘의 학습을 이어 가세요.</p>
+                    <p className="home-date">
+                      <CalendarDays size={15} aria-hidden="true" />
+                      {new Date().toLocaleDateString("ko-KR", {
+                        month: "long",
+                        day: "numeric",
+                        weekday: "long",
+                      })}
+                    </p>
+                    <h1>내 학습 공간</h1>
                   </div>
                   <Button variant="secondary" onClick={() => setUpload(true)}>
                     <Plus size={16} />
-                    파일 추가
+                    자료 추가
                   </Button>
                 </div>
-                <section className="today-card">
-                  <div className="today-icon">
-                    <RotateCcw size={27} strokeWidth={1.6} />
-                  </div>
-                  <div className="today-copy">
-                    <span>오늘의 복습</span>
-                    <h2>
-                      다시 볼 문제 <strong>{due.length}</strong>개
-                    </h2>
-                    <p>
-                      {due.length
-                        ? "한 번 더 풀고, 개념까지 확인해 보세요."
-                        : "등록한 오답의 복습 일정이 여기에 모여요."}
-                    </p>
-                  </div>
-                  <Button
-                    onClick={() =>
-                      due.length
-                        ? solve(due.map((m) => m.questionId))
-                        : setAddMistakes(true)
-                    }
-                  >
-                    {due.length ? "복습 시작" : "오답 등록"}
-                    <ArrowRight size={16} />
-                  </Button>
-                </section>
-                <section className="home-section">
-                  <div className="section-heading">
-                    <h2>최근 자료</h2>
-                    <button
-                      className="text-button"
-                      onClick={() => navigate({ name: "materials" })}
-                    >
-                      모두 보기
-                      <ArrowRight size={14} />
-                    </button>
-                  </div>
-                  <div className="panel">
-                    {recent.length ? (
-                      recent.map((m) => (
-                        <button
-                          className="recent-row"
-                          key={m.id}
+                <div className="home-workspace">
+                  <section className="review-overview">
+                    <div className="review-copy">
+                      <div className="review-label">
+                        <RotateCcw size={16} aria-hidden="true" />
+                        오늘의 복습
+                      </div>
+                      <h2>
+                        {due.length ? (
+                          <>
+                            다시 풀 문제 <span>{due.length}개</span>
+                          </>
+                        ) : (
+                          "오늘 복습할 문제가 없어요"
+                        )}
+                      </h2>
+                      <div className="review-actions">
+                        <Button
                           onClick={() =>
-                            navigate({ name: "material", id: m.id })
+                            due.length
+                              ? solve(due.map((m) => m.questionId))
+                              : navigate({ name: "study" })
                           }
                         >
-                          <span className="file-icon">
-                            <FileText size={23} strokeWidth={1.5} />
-                            <small>
-                              {m.mime === "application/pdf" ? "PDF" : "IMG"}
-                            </small>
-                          </span>
-                          <span className="material-info">
-                            <strong>{m.title}</strong>
-                            <span>
-                              {m.subject}
-                              <i />
-                              {m.pageCount}쪽
-                            </span>
-                          </span>
-                          <MaterialStatus material={m} />
-                          <ChevronRight size={18} />
-                        </button>
-                      ))
-                    ) : (
-                      <Empty
-                        title="공부할 자료를 추가해 보세요"
-                        description="문제집, 교과서, 학습지를 한곳에서 관리하세요."
-                        action={
-                          <Button
-                            variant="secondary"
-                            onClick={() => setUpload(true)}
+                          {due.length ? "복습 시작" : "학습하기"}
+                          <ArrowRight size={16} aria-hidden="true" />
+                        </Button>
+                        <Button variant="ghost" onClick={() => setAddMistakes(true)}>
+                          <Plus size={16} aria-hidden="true" />
+                          오답 등록
+                        </Button>
+                      </div>
+                    </div>
+                  </section>
+                  {(ongoing || study) && (
+                    <section className="resume-section">
+                      <div className="section-heading">
+                        <h2>이어서 하기</h2>
+                      </div>
+                      <div className="panel resume-list">
+                        {ongoing && (
+                          <button
+                            onClick={() => navigate({ name: "solve", id: ongoing.id })}
                           >
-                            <Plus size={15} />
-                            파일 추가
-                          </Button>
-                        }
-                      />
-                    )}
-                  </div>
-                </section>
-                <div className="home-columns">
+                            <BookOpen size={19} aria-hidden="true" />
+                            <span>오답 다시 풀기</span>
+                            <ChevronRight size={16} aria-hidden="true" />
+                          </button>
+                        )}
+                        {study && (
+                          <button
+                            onClick={() =>
+                              navigate({ name: "study-session", id: study.id })
+                            }
+                          >
+                            <GraduationCap size={19} aria-hidden="true" />
+                            <span>{study.label || "개념 학습"}</span>
+                            <ChevronRight size={16} aria-hidden="true" />
+                          </button>
+                        )}
+                      </div>
+                    </section>
+                  )}
                   <section className="home-section">
                     <div className="section-heading">
-                      <h2>이어서 학습하기</h2>
+                      <h2>최근 자료</h2>
+                      <button
+                        className="text-button"
+                        onClick={() => navigate({ name: "materials" })}
+                      >
+                        내 자료 보기
+                        <ArrowRight size={14} />
+                      </button>
                     </div>
-                    <div className="panel continue-panel">
-                      {ongoing || study ? (
-                        <button
-                          className="continue-item"
-                          onClick={() =>
-                            navigate({
-                              name: ongoing ? "solve" : "study-session",
-                              id: ongoing?.id || study?.id,
-                            })
-                          }
-                        >
-                          <span className="continue-icon">
-                            <BookOpen size={21} />
-                          </span>
-                          <span>
-                            <strong>
-                              {ongoing
-                                ? "오답 다시 풀기"
-                                : study?.label || "개념 학습"}
-                            </strong>
-                            <small>이전 학습 이어하기</small>
-                          </span>
-                          <ArrowRight size={17} />
-                        </button>
+                    <div className="panel">
+                      {recent.length ? (
+                        recent.map((m) => (
+                          <button
+                            className="recent-row"
+                            key={m.id}
+                            onClick={() => navigate({ name: "material", id: m.id })}
+                          >
+                            <span className="file-icon">
+                              <FileText size={23} strokeWidth={1.5} />
+                              <small>{m.mime === "application/pdf" ? "PDF" : "IMG"}</small>
+                            </span>
+                            <span className="material-info">
+                              <strong>{m.title}</strong>
+                              <span>
+                                {m.subject}
+                                <i />
+                                {m.pageCount}쪽
+                              </span>
+                            </span>
+                            <MaterialStatus material={m} />
+                            <ChevronRight size={18} />
+                          </button>
+                        ))
                       ) : (
-                        <div className="compact-empty">
-                          <BookOpen size={21} />
-                          <div>
-                            <strong>이어서 할 학습이 없어요</strong>
-                            <p>자료와 범위를 고르고 학습을 시작하세요.</p>
-                          </div>
-                        </div>
+                        <Empty title="공부할 자료를 추가해 보세요" />
                       )}
                     </div>
                   </section>
-                  <section className="home-section">
+                  <section className="workspace-stats-section">
                     <div className="section-heading">
-                      <h2>나의 학습 기록</h2>
+                      <h2>학습 기록</h2>
                     </div>
-                    <div className="panel home-stats">
+                    <dl className="panel workspace-stats">
                       <div>
-                        <strong>{state.materials.length}</strong>
-                        <span>내 자료</span>
+                        <dt>내 자료</dt>
+                        <dd>{state.materials.length}</dd>
                       </div>
                       <div>
-                        <strong>{state.mistakes.length}</strong>
-                        <span>등록한 오답</span>
+                        <dt>등록한 오답</dt>
+                        <dd>{state.mistakes.length}</dd>
                       </div>
                       <div>
-                        <strong>
-                          {
-                            state.studies.filter((s) => s.status === "complete")
-                              .length
-                          }
-                        </strong>
-                        <span>마친 학습</span>
+                        <dt>마친 학습</dt>
+                        <dd>
+                          {state.studies.filter((s) => s.status === "complete").length}
+                        </dd>
                       </div>
-                    </div>
+                    </dl>
                   </section>
                 </div>
-                <div className="home-tip">
-                  <span className="tiny-line" />
-                  복습 간격은 풀이 결과에 맞춰 조정돼요.
-                </div>
-              </>
+              </div>
             )}
             {view.name === "materials" && (
               <Materials
@@ -719,19 +682,6 @@ export default function RestudyApp({
               />
             )}
             {view.name === "study" && (
-              <>
-                <div className="section-heading">
-                  <h2>저장된 문제 은행</h2>
-                  <Button
-                    onClick={() => {
-                      setBankScope({ materialIds: studyIds });
-                      navigate({ name: "bank" });
-                    }}
-                  >
-                    문제 은행 열기
-                    <ArrowRight size={16} />
-                  </Button>
-                </div>
                 <StudySetup
                   state={state}
                   initialIds={studyIds}
@@ -747,7 +697,6 @@ export default function RestudyApp({
                   onMaterial={(id) => navigate({ name: "material", id })}
                   onError={notify}
                 />
-              </>
             )}
             {view.name === "study-session" && view.id && (
               <StudyPlayer
@@ -782,7 +731,7 @@ export default function RestudyApp({
               aria-current={activeNav === n.id ? "page" : undefined}
               onClick={() => navigate({ name: n.id })}
             >
-              <n.icon size={21} />
+              <span className="mobile-nav-icon"><n.icon size={20} strokeWidth={1.8} /></span>
               <span>{n.title}</span>
             </button>
           ))}

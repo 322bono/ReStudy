@@ -4,6 +4,7 @@ import RestudyApp from "./src/App";
 import AppErrorBoundary from './src/components/AppErrorBoundary';
 import "./app/globals.css";
 import "./frontend.css";
+import "./src/styles/study-interface.css";
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <AppErrorBoundary><RestudyApp /></AppErrorBoundary>
