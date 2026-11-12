@@ -1,4 +1,12 @@
 import {adminClient,AppError,context,errorResponse,json,preflight,sha256} from '../_shared/context.ts';
+import {createClient} from 'npm:@supabase/supabase-js@2.118.0';
+
+function passwordAuth(){
+ const url=Deno.env.get('SUPABASE_URL');
+ const key=Deno.env.get('SUPABASE_ANON_KEY')||Deno.env.get('RE_SUPABASE_PUBLISHABLE_KEY');
+ if(!url||!key)throw new AppError('서버 공개 연결 설정이 없습니다.',503);
+ return createClient(url,key,{auth:{persistSession:false,autoRefreshToken:false}}).auth;
+}
 
 Deno.serve(async req=>{
  const early=preflight(req);if(early)return early;
@@ -23,17 +31,17 @@ Deno.serve(async req=>{
   if(body.action==='password'){
    const {user}=await context(req);const {data:alias}=await admin.from('login_aliases').select('email').eq('user_id',user.id).single();
    if(!alias||typeof body.currentPassword!=='string'||typeof body.password!=='string'||body.password.length<12)throw new AppError('현재 비밀번호와 12자 이상의 새 비밀번호를 입력하세요.');
-   const {error}=await admin.auth.signInWithPassword({email:alias.email,password:body.currentPassword});if(error)throw new AppError('현재 비밀번호를 확인해 주세요.');
+   const {error}=await passwordAuth().signInWithPassword({email:alias.email,password:body.currentPassword});if(error)throw new AppError('현재 비밀번호를 확인해 주세요.');
    const {error:updateError}=await admin.auth.admin.updateUserById(user.id,{password:body.password});if(updateError)throw new AppError('비밀번호를 변경하지 못했습니다.');
    await admin.auth.admin.signOut(req.headers.get('authorization')!.replace(/^Bearer\s+/i,''),'global');return json({updated:true,signInAgain:true},200,req);
   }
   if(body.action!=='login')throw new AppError('지원하지 않는 요청입니다.');
   const fingerprint=await sha256((req.headers.get('x-forwarded-for')?.split(',')[0]||'unknown')+'|'+username.slice(0,64));
   const {data:allowed,error:limitError}=await admin.rpc('begin_login_attempt',{p_fingerprint:fingerprint});if(limitError||!allowed)throw new AppError('로그인 시도가 많습니다. 잠시 후 다시 시도하세요.',429);
-  const {data:alias}=await admin.from('login_aliases').select('email').eq('username',username).maybeSingle();
+  const {data:alias}=await admin.from('login_aliases').select('email,user_id').eq('username',username).maybeSingle();
   // Unknown aliases also perform Auth work and return the exact same message.
-  const {data,error}=await admin.auth.signInWithPassword({email:alias?.email||'unavailable@accounts.restudy.invalid',password:String(body.password||'').slice(0,256)});
-  if(error||!alias||!data.session)throw new AppError('아이디 또는 비밀번호를 확인해 주세요.',401);
+  const {data,error}=await passwordAuth().signInWithPassword({email:alias?.email||'unavailable@accounts.restudy.invalid',password:String(body.password||'').slice(0,256)});
+  if(error||!alias||!data.session||data.user.id!==alias.user_id)throw new AppError('아이디 또는 비밀번호를 확인해 주세요.',401);
   const {data:access,error:accessError}=await admin.from('restudy_account_access').select('active').eq('user_id',data.user.id).maybeSingle();
   if(accessError)throw new AppError('계정 권한을 확인하지 못했습니다.',503);
   if(access?.active===false){
