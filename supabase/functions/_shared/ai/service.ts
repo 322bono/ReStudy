@@ -120,39 +120,60 @@ export async function prepareTask(request: JobRequest, ctx: AuthContext): Promis
   return { input: { kind: "generate_questions", sourceIds: [concept.id], count: request.count, difficulty: request.difficulty, types: request.types, prompt: `제공한 개념과 원문 범위에서 정확히 ${request.count}개 확인 문제를 만드세요. 난이도: ${request.difficulty}. 유형: ${request.types!.join(", ")}. source_citations에는 source_id만 쓰세요. 선택지가 있으면 모든 선택지에 설명을 제공하세요. 선택지별로 정답이 하나인지 검토하세요. 원문 자료(JSON 데이터):\n${serialized}` }, sourceMap: { [concept.id]: sources }, source_versions: [version("concepts", concept), ...docs.map((row) => version("documents", row)), ...pageVersions], conceptId: concept.id };
 }
 export async function providerContext(ctx: AuthContext, jobId: string, settings: Settings, master: string, input: TaskInput): Promise<Omit<RouterContext, "rotationIndex">> {
-  const slots = await loadSlots(ctx);
+  const owners: AuthContext[] = [];
+  if(ctx.access?.personalKeys!==false)owners.push(ctx);
+  if(ctx.access?.sharedKeys && !ctx.access.administrator){
+    const manager=checked(await ctx.admin.from('restudy_account_access').select('user_id').eq('administrator',true).eq('active',true).maybeSingle());
+    if(manager)owners.push({...ctx,user:{id:manager.user_id}});
+  }
+  const pools=await Promise.all(owners.map(async owner=>({
+    owner,
+    slots:await loadSlots(owner),
+    health:checked(await ctx.admin.from('ai_key_model_states').select('credential_id,model,data').eq('user_id',owner.user.id)),
+    quotas:checked(await ctx.admin.from('ai_quota_cooldowns').select('provider,quota_group,model,cooldown_until').eq('user_id',owner.user.id)),
+  })));
+  const groups=new Map<string,{userId:string;group:string}>();
+  const slots=pools.flatMap(({owner,slots,health,quotas})=>slots.map(slot=>{
+    const group=slot.data.quotaGroup??'shared';
+    const scope=`${owner.user.id}:${group}`;
+    groups.set(scope,{userId:owner.user.id,group});
+    return {owner,slot,group,scope,health,quotas};
+  }));
   // Legacy keys discover their eligible pool on an explicit AI action only.
   // Upload/OCR never calls this code or contacts a model provider.
-  for(const slot of slots.filter(s=>s.provider==='gemini'&&(!s.data.listed_at||s.data.catalog_version!==catalogVersion)&&s.data.enabled!==false)){
+  for(const {slot,owner} of slots.filter(({slot:s})=>s.provider==='gemini'&&(!s.data.listed_at||s.data.catalog_version!==catalogVersion)&&s.data.enabled!==false)){
     if(!master)continue;
-    try{const key=await decryptKey({ciphertext:slot.ciphertext,iv:slot.iv,key_version:slot.key_version},ctx.user.id,'gemini',master),found=await discoverProviderModels('gemini',key),changes={modelIds:found.models.map(m=>m.id),...(Array.isArray(slot.data.selectedModels)?{}:{selectedModels:found.models.filter(m=>isGenerationModel(m.provider,m.id)).map(m=>m.id)}),catalog_version:catalogVersion,listed_at:found.listedAt};await patchSlot(ctx,slot,changes);slot.data={...slot.data,...changes};}catch{/* Existing key and saved selection remain available; routing reports errors. */}
+    try{const key=await decryptKey({ciphertext:slot.ciphertext,iv:slot.iv,key_version:slot.key_version},owner.user.id,'gemini',master),found=await discoverProviderModels('gemini',key),changes={modelIds:found.models.map(m=>m.id),...(Array.isArray(slot.data.selectedModels)?{}:{selectedModels:found.models.filter(m=>isGenerationModel(m.provider,m.id)).map(m=>m.id)}),catalog_version:catalogVersion,listed_at:found.listedAt};await patchSlot(owner,slot,changes);slot.data={...slot.data,...changes};}catch{/* Existing key and saved selection remain available; routing reports errors. */}
   }
-  const health=checked(await ctx.admin.from('ai_key_model_states').select('credential_id,model,data').eq('user_id',ctx.user.id));
-  const quotas=checked(await ctx.admin.from('ai_quota_cooldowns').select('provider,quota_group,model,cooldown_until').eq('user_id',ctx.user.id));
   const role = input.images?.length ? "vision" : input.kind !== "analyze_problem" ? "generation" : "analysis";
   const choice = settings.modelRoles?.[role]; const candidate = choice && modelFor(choice.provider, choice.model),selected=candidate&&isGenerationModel(candidate.provider,candidate.id)?candidate:undefined;
-  return { mode: 'gemini_only', allowPaid: false, verifyFreeProject:verifyGoogleFreeProject, ...(selected ? { preferredProvider: selected.provider,preferredModel:selected.id } : {}), providers: slots.map(slot=>({...publicSlot(slot),provider:slot.provider,credentialId:slot.id,modelStates:Object.fromEntries(health.filter((h:Json)=>h.credential_id===slot.id).map((h:Json)=>[h.model,h.data])),quotaCooldowns:Object.fromEntries(quotas.filter((q:Json)=>q.provider===slot.provider&&q.quota_group===(slot.data.quotaGroup??'shared')).map((q:Json)=>[q.model,q.cooldown_until]))})) as RouterContext['providers'],
+  return { mode: 'gemini_only', allowPaid: false, verifyFreeProject:verifyGoogleFreeProject, ...(selected ? { preferredProvider: selected.provider,preferredModel:selected.id } : {}), providers: slots.map(({owner,slot,group,scope,health,quotas})=>({...publicSlot(slot),...(owner.user.id===ctx.user.id?{}:{label:'공용 API'}),quotaGroup:scope,provider:slot.provider,credentialId:slot.id,modelStates:Object.fromEntries(health.filter((h:Json)=>h.credential_id===slot.id).map((h:Json)=>[h.model,h.data])),quotaCooldowns:Object.fromEntries(quotas.filter((q:Json)=>q.provider===slot.provider&&q.quota_group===group).map((q:Json)=>[q.model,q.cooldown_until]))})) as RouterContext['providers'],
     getKey: async (provider,credentialId) => {
       if (!master) throw new AiError("encryption_not_configured", 503);
-      const record = checked(await ctx.admin.from("ai_key_slots").select("*").eq("user_id", ctx.user.id).eq("provider", provider).eq('id',credentialId).maybeSingle());
-      if (!record||record.data.enabled===false||record.ciphertext!==slots.find(s=>s.id===credentialId)?.ciphertext) throw new AiError("credential_not_found", 404); return decryptKey(record, ctx.user.id, provider, master);
+      const source=slots.find(({slot})=>slot.id===credentialId&&slot.provider===provider);
+      if(!source)throw new AiError("credential_not_found",404);
+      const record = checked(await ctx.admin.from("ai_key_slots").select("*").eq("user_id", source.owner.user.id).eq("provider", provider).eq('id',credentialId).maybeSingle());
+      if (!record||record.data.enabled===false||record.ciphertext!==source.slot.ciphertext) throw new AiError("credential_not_found", 404); return decryptKey(record, source.owner.user.id, provider, master);
     }, reserveRequest:async(provider,group)=>{
-      const reservation=checked(await ctx.admin.rpc('reserve_ai_provider_request',{p_user_id:ctx.user.id,p_provider:provider,p_group:group}));
+      const scope=groups.get(group);
+      if(!scope)throw new AiError('credential_not_found',404);
+      const reservation=checked(await ctx.admin.rpc('reserve_ai_provider_request',{p_user_id:scope.userId,p_provider:provider,p_group:scope.group}));
       return {granted:reservation?.granted===true,...(reservation?.retry_at?{retryAt:Date.parse(reservation.retry_at)}:{})};
     }, updateProvider: async (provider, changes,credentialId,model) => {
-      const slot=slots.find(s=>s.id===credentialId&&s.provider===provider);if(!slot)throw new AiError('credential_not_found',404);
-      if(changes.quotaCooldown)checked(await ctx.admin.rpc('set_ai_quota_cooldown',{p_user_id:ctx.user.id,p_provider:provider,p_group:changes.quotaCooldown.group,p_model:changes.quotaCooldown.model,p_until:changes.quotaCooldown.until}));
+      const source=slots.find(({slot})=>slot.id===credentialId&&slot.provider===provider);if(!source)throw new AiError('credential_not_found',404);
+      const {owner,slot,group}=source;
+      if(changes.quotaCooldown)checked(await ctx.admin.rpc('set_ai_quota_cooldown',{p_user_id:owner.user.id,p_provider:provider,p_group:group,p_model:changes.quotaCooldown.model,p_until:changes.quotaCooldown.until}));
       const {quotaCooldown:_,...safe}=changes;
-      if(model)checked(await ctx.admin.from('ai_key_model_states').upsert({user_id:ctx.user.id,credential_id:credentialId,model,data:safe},{onConflict:'credential_id,model'}));
+      if(model)checked(await ctx.admin.from('ai_key_model_states').upsert({user_id:owner.user.id,credential_id:credentialId,model,data:safe},{onConflict:'credential_id,model'}));
       // Model failure cools that model; auth failure disables only this slot.
       const {cooldown_until:cooldown,...slotChanges}=safe;
-      await patchSlot(ctx,slot,{...slotChanges,...(safe.status==='auth_error'?{cooldown_until:cooldown}:{})});
+      await patchSlot(owner,slot,{...slotChanges,...(safe.status==='auth_error'?{cooldown_until:cooldown}:{})});
     }, log: async (entry) => { checked(await ctx.admin.from("ai_usage_logs").insert({ user_id: ctx.user.id, job_id: jobId, data: entry })); },
   };
 }
 export function storeFor(ctx: AuthContext): JobStore {
   return {
-    claim: async (id, dailyLimit, maxAttempts) => checked(await ctx.admin.rpc("claim_ai_job", { p_user_id: ctx.user.id, p_job_id: id, p_daily_limit: dailyLimit, p_max_attempts: maxAttempts })),
+    claim: async (id, dailyLimit, maxAttempts) => checked(await ctx.admin.rpc("claim_ai_job", { p_user_id: ctx.user.id, p_job_id: id, p_daily_limit: ctx.access?.sharedKeys && !ctx.access.administrator ? Math.min(20,dailyLimit) : dailyLimit, p_max_attempts: maxAttempts })),
     finish: async (id, token, status, data, availableAt) => {
       const saved = checked(await ctx.admin.rpc("finish_ai_job", { p_user_id: ctx.user.id, p_job_id: id, p_lease_token: token, p_status: status, p_data: data, p_available_at: availableAt }));
       return saved ? { id, status, available_at: availableAt, last_error: data.last_error ?? null,provider_error:data.last_provider_error??null } : null;

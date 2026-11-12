@@ -5,7 +5,8 @@ import { ProviderError } from "./providers.ts";
 import { discoverProviderModels, ModelDiscoveryError } from "./providers-discovery.ts";
 import { providerState, sanitizeSettings } from "./settings.ts";
 import type { Json } from "./schemas.ts";
-export type AuthContext = { user: { id: string }; db: any; admin: any };
+import type { AccessContext } from "../access.ts";
+export type AuthContext = { user: { id: string }; db: any; admin: any } & AccessContext;
 export class AiError extends Error { constructor(public code: string, public status = 400) { super(code); } }
 export function checked(result: { data: any; error: any }): any { if (result.error) throw new AiError("database_error", 500); return result.data; }
 export async function readProfile(ctx: AuthContext): Promise<Json> { return checked(await ctx.admin.from("profiles").select("data").eq("user_id", ctx.user.id).maybeSingle())?.data ?? {}; }
@@ -51,7 +52,7 @@ export async function credentialAction(body: Json, ctx: AuthContext, master: str
     const profile=await readProfile(ctx),settings=sanitizeSettings({...profile.ai_settings,...(body.settings??body)});
     checked(await ctx.admin.from('profiles').update({data:{...profile,ai_settings:settings}}).eq('user_id',ctx.user.id));return{settings};
   }
-  const slots=await loadSlots(ctx);
+  const slots=ctx.access?.personalKeys===false||ctx.access?.ai===false?[]:await loadSlots(ctx);
   if(action==='status'){
     const [profile,jobs,usage]=await Promise.all([readProfile(ctx),ctx.admin.from('ai_jobs').select('id,kind,status,attempts,available_at,created_at,updated_at,data').eq('user_id',ctx.user.id).order('created_at',{ascending:false}).limit(30).then(checked),ctx.admin.from('ai_usage_logs').select('id,job_id,data,created_at').eq('user_id',ctx.user.id).order('created_at',{ascending:false}).limit(50).then(checked)]);
     return{providers: (['nvidia','gemini'] as Provider[]).map(provider=>{const credentials=slots.filter(s=>s.provider===provider).map(slot=>publicSlot(slot));return{...providerState(provider,credentials[0]??{},credentials.length>0),provider,credentials};}),models:availableModels(!!verifyGoogleFreeProject),settings:sanitizeSettings(profile.ai_settings),encryption_configured:!!master,free_project_verification_configured:!!verifyGoogleFreeProject,

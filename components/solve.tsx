@@ -215,6 +215,7 @@ export function Solve({
   id,
   state,
   onBack,
+  onSavedExit,
   onRefresh,
   onError,
   onConcept,
@@ -225,6 +226,7 @@ export function Solve({
   id: string;
   state: AppState;
   onBack: () => void;
+  onSavedExit?: () => void;
   onRefresh: () => Promise<void>;
   onError: (s: string) => void;
   onConcept: (id: string) => void;
@@ -553,7 +555,7 @@ export function Solve({
           맞힌 문제는 시험 전 복습에 보관하고, 틀린 문제는 다시 풀 목록에
           남깁니다.
         </p>
-        <Button onClick={onBack}>
+        <Button onClick={onSavedExit ?? onBack}>
           오답 노트로
           <ArrowRight size={16} />
         </Button>
@@ -564,13 +566,14 @@ export function Solve({
       <div className="workspace-header">
         <IconButton
           label="오답 노트로"
+          disabled={busy}
           onClick={async () => {
             if (saveTimer.current) clearTimeout(saveTimer.current);
             setBusy(true);
             try {
               await drawingSaver.flush();
               refreshProgress();
-              onBack();
+              (onSavedExit ?? onBack)();
             } catch (e) {
               onError((e as Error).message);
             } finally {

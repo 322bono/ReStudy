@@ -12,19 +12,20 @@ import {
   BookOpen,
   GraduationCap,
   ArrowRight,
+  Check,
   Plus,
   FileText,
   ChevronRight,
   Settings2,
   Layers,
   X,
-  RotateCcw,
   CalendarDays,
   MoreHorizontal,
 } from "lucide-react";
 import { api, isDue } from "@/lib/client";
 import type { AppState, StudySession } from "@/lib/types";
-import { Button, Empty, IconButton } from "./ui";
+import type { AccountAccess } from "../src/domain/account-access";
+import { Button, Dialog, Empty, IconButton } from "./ui";
 import { Materials, MaterialStatus, UploadDialog } from "./materials";
 import { Viewer } from "./viewer";
 import { AddMistakes, Mistakes, type MistakeFilters } from "./mistakes";
@@ -80,17 +81,29 @@ const viewFromUrl = (): View => {
 export default function RestudyApp({
   userId,
   onSettings,
+  access,
 }: {
   userId: string;
   onSettings?: () => void;
+  access?: AccountAccess;
 }) {
+  const canMistakes = access?.mistakes !== false;
+  const canStudy = access?.study !== false;
+  const canUseApi = access?.ai !== false;
+  const allowed = (name: string) =>
+    (canMistakes || !["mistakes", "wrong", "solve"].includes(name)) &&
+    (canStudy || !["study", "study-session", "bank"].includes(name));
+  const visibleNavigation = navigation.filter((item) => allowed(item.id));
   const [state, setState] = useState<AppState>(),
-    [view, setView] = useState<View>(viewFromUrl),
+    [requestedView, setView] = useState<View>(viewFromUrl),
     [toast, setToast] = useState(""),
     [upload, setUpload] = useState(false),
     [addMistakes, setAddMistakes] = useState(false),
     [busy, setBusy] = useState(""),
     [studyIds, setStudyIds] = useState<string[]>([]);
+  const view: View = allowed(requestedView.name) ? requestedView : { name: "home" };
+  const [reviewExit, setReviewExit] = useState<{ count?: number; failed?: boolean }>();
+  const reviewRequest = useRef(0);
   const [bankScope, setBankScope] = useState<any>({});
   const [mistakeFilters, setMistakeFilters] = useState<MistakeFilters>({
     subject: "전체", material: "전체", unit: "전체", status: "다시 풀 문제", search: "",
@@ -204,6 +217,10 @@ export default function RestudyApp({
   }, [preparingIds, refresh]);
   const navigate = (next: View) => {
     setMoreOpen(false);
+    if (!allowed(next.name)) {
+      notify("관리자가 이 기능을 허용하지 않았습니다.");
+      return;
+    }
     if (next.name === "bank") bankReturn.current = view;
     setView(next);
     const p = new URLSearchParams();
@@ -217,6 +234,22 @@ export default function RestudyApp({
       p.size ? "#" + p.toString() : location.pathname,
     );
     window.scrollTo({ top: 0 });
+  };
+  const leaveReview = () => {
+    navigate({ name: "mistakes" });
+    setReviewExit({});
+    const request = ++reviewRequest.current;
+    api<{ count: number }>("solve/today").then(({ count }) => {
+      if (reviewRequest.current !== request) return;
+      setReviewExit({ count });
+      setState((current) => current && { ...current, todaySolved: count });
+    }).catch(() => {
+      if (reviewRequest.current === request) setReviewExit({ failed: true });
+    });
+  };
+  const closeReviewExit = () => {
+    reviewRequest.current++;
+    setReviewExit(undefined);
   };
   const open = (id: string, page = 1, manage = false) => {
     returnView.current = view;
@@ -241,11 +274,13 @@ export default function RestudyApp({
   };
   const solve = (ids: string[]) =>
     run("풀이 준비", async () => {
+      if (!canMistakes) throw new Error("관리자가 오답 노트 사용을 허용하지 않았습니다.");
       const s = await api("solve", "POST", { questionIds: ids });
       navigate({ name: "solve", id: s.id });
     });
   const concept = (questionId: string) =>
     run("개념 복습 준비", async () => {
+      if (!canStudy) throw new Error("관리자가 학습 기능 사용을 허용하지 않았습니다.");
       const s = await api<StudySession>("lessons", "POST", { questionId });
       navigate({ name: "study-session", id: s.id });
     });
@@ -310,7 +345,7 @@ export default function RestudyApp({
           <Brand />
         </button>
         <nav aria-label="주 메뉴">
-          {navigation.map((n) => (
+          {visibleNavigation.map((n) => (
             <button
               key={n.id}
               className={activeNav === n.id ? "active" : ""}
@@ -385,6 +420,7 @@ export default function RestudyApp({
           </header>
         )}
         <main id="main-content" className={focus ? "focus-main" : "page-main"}>
+          {view.name !== requestedView.name && <p className="notice">관리자가 이 기능을 허용하지 않았습니다.</p>}
           {wrongTotal > 0 && (
             <section aria-label="오답 분석">
               <div className="selection-bar">
@@ -447,37 +483,30 @@ export default function RestudyApp({
                 </div>
                 <div className="home-workspace">
                   <section className="review-overview">
-                    <div className="review-copy">
-                      <div className="review-label">
-                        <RotateCcw size={16} aria-hidden="true" />
-                        오늘의 복습
-                      </div>
-                      <h2>
-                        {due.length ? (
-                          <>
-                            다시 풀 문제 <span>{due.length}개</span>
-                          </>
-                        ) : (
-                          "오늘 복습할 문제가 없어요"
-                        )}
-                      </h2>
+                    <h2>{canMistakes ? "오늘의 복습" : "오늘의 학습"}</h2>
+                    {canMistakes && (
+                      <dl className="home-review-counts">
+                        <div><dt>다시 풀 문제</dt><dd>{due.length}개</dd></div>
+                        <div><dt>오늘 푼 문제</dt><dd>{state.todaySolved == null ? "–" : `${state.todaySolved}개`}</dd></div>
+                      </dl>
+                    )}
                       <div className="review-actions">
-                        <Button
+                        {(canMistakes && due.length > 0 || canStudy) && <Button
                           onClick={() =>
-                            due.length
+                            canMistakes && due.length
                               ? solve(due.map((m) => m.questionId))
                               : navigate({ name: "study" })
                           }
                         >
-                          {due.length ? "복습 시작" : "학습하기"}
+                          {canMistakes && due.length ? "복습 시작" : "학습하기"}
                           <ArrowRight size={16} aria-hidden="true" />
-                        </Button>
-                        <Button variant="ghost" onClick={() => setAddMistakes(true)}>
+                        </Button>}
+                        {canMistakes && <Button variant="ghost" onClick={() => setAddMistakes(true)}>
                           <Plus size={16} aria-hidden="true" />
                           오답 등록
-                        </Button>
+                        </Button>}
+                        {!canMistakes && !canStudy && <Button onClick={() => navigate({ name: "materials" })}>내 자료 보기</Button>}
                       </div>
-                    </div>
                   </section>
                   {(ongoing || study) && (
                     <section className="resume-section">
@@ -577,10 +606,10 @@ export default function RestudyApp({
                 state={state}
                 onOpen={(id) => navigate({ name: "material", id })}
                 onUpload={() => setUpload(true)}
-                onStudy={(ids) => {
+                onStudy={canStudy ? (ids) => {
                   setStudyIds(ids);
                   navigate({ name: "study" });
-                }}
+                } : undefined}
                 run={run}
               />
             )}
@@ -592,6 +621,8 @@ export default function RestudyApp({
                 manage={!!view.manage}
                 concepts={state.concepts}
                 questions={state.questions}
+                canRegisterWrong={canMistakes}
+                canUseApi={canUseApi}
                 onBack={() => navigate(returnView.current)}
                 onChange={refresh}
                 onError={notify}
@@ -602,6 +633,7 @@ export default function RestudyApp({
               <MaterialWorkspace
                 key={view.id}
                 id={view.id}
+                canUseApi={canUseApi}
                 state={state}
                 onBack={() => navigate({ name: "materials" })}
                 onViewer={(page, manage) => open(view.id!, page, manage)}
@@ -651,6 +683,7 @@ export default function RestudyApp({
                 id={view.id}
                 state={state}
                 onBack={() => navigate({ name: "mistakes" })}
+                onSavedExit={leaveReview}
                 onRefresh={refresh}
                 onError={notify}
                 onConcept={concept}
@@ -666,6 +699,7 @@ export default function RestudyApp({
               <WrongWorkspace
                 key={view.id}
                 id={view.id}
+                canUseApi={canUseApi}
                 analysisPending={activeWrongId === view.id || !!wrongAnalysis?.pendingIds.includes(view.id)}
                 analysisCompleted={wrongResults.some((result) => result.id === view.id && result.status === "completed")}
                 onAnalyze={() => wrongQueue.current?.enqueue([view.id!])}
@@ -724,7 +758,7 @@ export default function RestudyApp({
       </div>
       {!focus && (
         <nav className="mobile-nav" aria-label="주 메뉴">
-          {navigation.map((n) => (
+          {visibleNavigation.map((n) => (
             <button
               key={n.id}
               className={activeNav === n.id ? "active" : ""}
@@ -758,15 +792,25 @@ export default function RestudyApp({
           onDone={refresh}
         />
       )}
-      {addMistakes && (
+      {canMistakes && addMistakes && (
         <AddMistakes
           state={state}
           preferredMaterial={view.name === "material" ? view.id || "" : mistakeFilters.material}
           subject={mistakeFilters.subject}
+          canUseApi={canUseApi}
           onClose={() => setAddMistakes(false)}
           onDone={refresh}
           onRegistered={registeredWrong}
         />
+      )}
+      {reviewExit && (
+        <Dialog title="풀이를 저장했어요" onClose={closeReviewExit}>
+          <div className="review-exit">
+            <span className="review-save-mark"><Check size={27} aria-hidden="true" /></span>
+            <p role="status">오늘 푼 문제 <strong>{reviewExit.count == null ? (reviewExit.failed ? "확인할 수 없음" : "집계 중…") : `${reviewExit.count}개`}</strong></p>
+            <Button onClick={closeReviewExit}>확인</Button>
+          </div>
+        </Dialog>
       )}
     </div>
   );

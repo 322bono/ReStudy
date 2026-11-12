@@ -1,4 +1,4 @@
-import {AppError,sha256} from '../context.ts';
+import {AppError,requireFeature,sha256} from '../context.ts';
 import {row,rows,type Ctx} from '../app/repository.ts';
 import {compileRestudy} from '../../../../src/domain/restudy-compile.ts';
 import {createExternalPrompt,parseRestudy,splitCount,validateRestudyParts,canonicalJson,type StandardJob} from '../../../../src/domain/restudy.ts';
@@ -56,6 +56,7 @@ export async function createJob(ctx:Ctx,body:any){
  const difficultyDistribution=body.difficultyDistribution||{easy:20,medium:50,hard:30};if(Object.keys(difficultyDistribution).some(k=>!['easy','medium','hard'].includes(k))||Object.values(difficultyDistribution).some(v=>typeof v!=='number'||v<0)||Object.values(difficultyDistribution).reduce((a:any,b:any)=>a+b,0)!==100)throw new AppError('난이도 비율의 합은 100%여야 합니다.');
  if(body.questionTypeCounts&&(Object.keys(body.questionTypeCounts).some(k=>!questionTypes.includes(k))||Object.values(body.questionTypeCounts).some(v=>!Number.isInteger(v)||Number(v)<0)||Object.values(body.questionTypeCounts).reduce((a:any,b:any)=>a+b,0)!==questionCount))throw new AppError('유형별 문제 수의 합을 전체 문제 수와 맞추세요.');
  const method=String(body.method||'external');if(!['external','api'].includes(method))throw new AppError('분석 방식을 선택하세요.');
+ if(method==='api')requireFeature(ctx,'ai');
  const purposeCounts=conceptOnly?{concept:0,practice:0,similar:0}:taskType==='initial'?{concept:conceptCount,practice:practiceCount,similar:0}:body.purposeCounts||{concept:0,practice:questionCount,similar:0};
  if(!purposeCounts||typeof purposeCounts!=='object'||Array.isArray(purposeCounts)||Object.keys(purposeCounts).some(k=>!['concept','practice','similar'].includes(k))||Object.values(purposeCounts).some(v=>!Number.isInteger(v)||Number(v)<0)||Object.values(purposeCounts).reduce((a:any,b:any)=>a+b,0)!==questionCount)throw new AppError('개념 퀴즈·연습·유사문제 수의 합을 전체 문제 수와 맞추세요.');
  const targetQuestions:any[]=[];
@@ -113,7 +114,7 @@ export async function commitPart(ctx:Ctx,jobId:string,input:unknown,reviewed=fal
  return {...data,job:await jobView(ctx,jobId),warnings:checked.merged.warnings};
 }
 export async function handleStandard(ctx:Ctx,input:any){const action=input.action||'list';
- if(action==='api_continuation')return apiContinuation(ctx,input.jobId);
+ if(action==='api_continuation'){requireFeature(ctx,'ai');return apiContinuation(ctx,input.jobId);}
  if(action==='create')return createJob(ctx,input);
  if(action==='list'){const jobs=await rows(ctx,'content_jobs',input.documentId?{document_id:input.documentId}:{});return {jobs:jobs.map((j:any)=>({...standardJob(j),status:j.status,createdAt:j.created_at})).sort((a:any,b:any)=>String(b.createdAt??'').localeCompare(String(a.createdAt??'')))};}
  if(action==='get')return jobView(ctx,input.jobId,typeof input.partsVersion==='string'&&/^[a-f0-9]{64}$/.test(input.partsVersion)?input.partsVersion:undefined);

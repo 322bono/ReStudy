@@ -35,6 +35,7 @@ const standard = (action: string, body: any = {}) =>
   edgeCall("content-jobs", { action, ...body });
 export default function MaterialWorkspace({
   id,
+  canUseApi = true,
   state,
   onBack,
   onViewer,
@@ -43,6 +44,7 @@ export default function MaterialWorkspace({
   onRefresh,
 }: {
   id: string;
+  canUseApi?: boolean;
   state: AppState;
   onBack: () => void;
   onViewer: (page?: number, manage?: boolean) => void;
@@ -942,7 +944,7 @@ export default function MaterialWorkspace({
                 : task === "initial"
                   ? "개념 이해를 확인하는 퀴즈와 기본 적용 문제를 준비합니다."
                   : "저장된 개념을 바탕으로 추가 연습문제를 준비합니다."}{" "}
-              외부 AI는 분할 없이 한 JSON으로, API는 자동으로 나누어 저장합니다.
+              외부 AI는 한 JSON으로 가져올 수 있습니다. {canUseApi && "API는 자동으로 나누어 저장합니다."}
             </p>
             <div className="row">
               <Button
@@ -957,13 +959,13 @@ export default function MaterialWorkspace({
               >
                 외부 AI로 한 번에 준비
               </Button>
-              <Button
+              {canUseApi && <Button
                 busy={!!busy}
                 disabled={task === "problem" && !apiProblemReady}
                 onClick={() => act("API 분석", () => create("api"))}
               >
                 API로 준비
-              </Button>
+              </Button>}
             </div>
           </section>
           {!!jobs.length && (
@@ -999,7 +1001,7 @@ export default function MaterialWorkspace({
               </select>
             </label>
           )}
-          {job?.method === "api" && (
+          {canUseApi && job?.method === "api" && (
             <div className="material-result-actions">
               {job.apiStatus?.state !== "completed" && (
                 <Button
@@ -1073,14 +1075,14 @@ export default function MaterialWorkspace({
                   >
                     프롬프트 복사
                   </Button>
-                  <Button
+                  {canUseApi && <Button
                     variant="ghost"
                     busy={!!busy}
                     disabled={!resumeProblemReady}
                     onClick={() => act("API 작업 재개", () => run(job))}
                   >
                     API로 이어서 준비
-                  </Button>
+                  </Button>}
                 </div>
                 <details>
                   <summary>프롬프트 내용 보기</summary>

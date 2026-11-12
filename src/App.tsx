@@ -2,6 +2,8 @@ import { lazy, Suspense, useEffect, useState, type FormEvent } from "react";
 const RestudyApp = lazy(() => import("../components/app"));
 import Login from "./pages/Login";
 const Settings = lazy(() => import("./pages/Settings"));
+const MemberAdmin = lazy(() => import("./pages/MemberAdmin"));
+import type { AccountAccess } from "./domain/account-access";
 import { Button } from "../components/ui";
 import {
   configured,
@@ -10,7 +12,7 @@ import {
   login,
   logout,
 } from "./services/supabase";
-import { clearAssetCache, settingsTransport } from "./services/api";
+import { clearAssetCache, cloudApi, settingsTransport } from "./services/api";
 
 import { clearOwnerCache } from "./services/cache";
 import "./styles/study-content.css";
@@ -102,10 +104,18 @@ function Bootstrap({ onReady }: { onReady: () => void }) {
 }
 export default function App() {
   const [user, setUser] = useState<string | null | undefined>(),
-    [settings, setSettings] = useState(location.hash.startsWith("#settings")),
+    [accountPage, setAccountPage] = useState(location.hash),
     [error, setError] = useState("");
+  const [permission, setPermission] = useState<{ user: string; access?: AccountAccess; error?: string }>();
+  const settings = accountPage === "#settings";
+  const members = accountPage === "#members";
+  const access = permission?.user === user ? permission?.access : undefined;
+  function accountRoute(hash: string) {
+    location.hash = hash;
+    setAccountPage(hash ? `#${hash}` : "");
+  }
   useEffect(()=>{
-    const sync=()=>setSettings(location.hash.startsWith('#settings'));
+    const sync=()=>setAccountPage(location.hash);
     window.addEventListener('hashchange',sync);
     return()=>window.removeEventListener('hashchange',sync);
   },[]);
@@ -136,6 +146,30 @@ export default function App() {
     };
   }, []);
   useEffect(() => {
+    if (!user) return;
+    let current = true;
+    let lastLoad = 0;
+    const load = () => {
+      if (Date.now() - lastLoad < 5000) return;
+      lastLoad = Date.now();
+      cloudApi<AccountAccess>("account/access").then(
+        (access) => { if (current) setPermission({ user, access }); },
+        (error) => {
+          if (current) setPermission((previous) =>
+            previous?.user === user && previous.access && !/사용이 중지된 계정|다시 로그인/.test(error.message)
+              ? previous : { user, error: error.message });
+        },
+      );
+    };
+    load();
+    const visible = () => { if (!document.hidden) load(); };
+    document.addEventListener("visibilitychange", visible);
+    return () => {
+      current = false;
+      document.removeEventListener("visibilitychange", visible);
+    };
+  }, [user]);
+  useEffect(() => {
     if(!user)return;
     let alive=true,timer:ReturnType<typeof setTimeout>|undefined;
     const resume=async()=>{
@@ -156,7 +190,7 @@ export default function App() {
       </main>
     );
   if (location.hash.startsWith("#setup"))
-    return <Bootstrap onReady={() => setSettings(false)} />;
+    return <Bootstrap onReady={() => accountRoute("")} />;
   if (user === undefined)
     return <main className="app-loading">학습 공간을 여는 중…</main>;
   if (!user)
@@ -173,25 +207,37 @@ export default function App() {
     await logout();
     if (user) await clearOwnerCache(user);
     clearAssetCache();
-    setSettings(false);
-    location.hash = "";
+    setPermission(undefined);
+    accountRoute("");
     setUser(null);
   };
+  if (!access) return (
+    <main className="app-loading">
+      {permission?.user === user && permission?.error ? <>
+        <p className="error" role="alert">{permission.error}</p>
+        <Button variant="secondary" onClick={() => void signOut()}>로그아웃</Button>
+      </> : "계정 권한을 불러오는 중…"}
+    </main>
+  );
+  if (members && access.administrator) return (
+    <Suspense fallback={<main className="app-loading">구성원 관리를 여는 중…</main>}>
+      <MemberAdmin onClose={() => accountRoute("settings")} />
+    </Suspense>
+  );
   if (settings)
     return (
       <Suspense fallback={<main className="app-loading">설정을 여는 중…</main>}>
         <Settings
-          onClose={() => {
-            setSettings(false);
-            location.hash = "";
-          }}
+          onClose={() => accountRoute("")}
           onLogout={signOut}
+          access={access}
+          onMemberAdmin={access.administrator ? () => accountRoute("members") : undefined}
           transport={async (action, payload) => {
             const result = await settingsTransport(action, payload);
             if (action === "account.password" && result.signInAgain) {
               await getSupabase().auth.signOut({ scope: "local" });
               setUser(null);
-              setSettings(false);
+              accountRoute("");
             }
             return result;
           }}
@@ -205,10 +251,8 @@ export default function App() {
       <RestudyApp
         key={user}
         userId={user}
-        onSettings={() => {
-          location.hash = "settings";
-          setSettings(true);
-        }}
+        access={access}
+        onSettings={() => accountRoute("settings")}
       />
     </Suspense>
   );

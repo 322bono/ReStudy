@@ -1,4 +1,4 @@
-import {AppError} from '../context.ts';
+import {AppError,requireFeature} from '../context.ts';
 import {gradingContext,material,mistake,publicQuestion,put,row,rows,pageRows,signed,state,value,type Ctx} from './repository.ts';
 import {importContent,validate} from './content.ts';
 import {exportData,restoreData} from './backup.ts';
@@ -44,7 +44,7 @@ async function learningMutation(ctx:Ctx,kind:'study'|'solve',id:string,body:any,
   }else{
    result=answerStudy(current,body,await gradingContext(ctx,current.originQuestionIds??[]));
   }
-  const {data,error}=await ctx.admin.rpc('save_learning_session',{p_user_id:ctx.user.id,p_kind:kind,p_id:id,p_version:current.version||0,p_data:result.session,p_attempt:result.attempt||null,p_mistakes:result.mistakes||[]});
+  const {data,error}=await ctx.admin.rpc('save_learning_session',{p_user_id:ctx.user.id,p_kind:kind,p_id:id,p_version:current.version||0,p_data:result.session,p_attempt:result.attempt||null,p_mistakes:ctx.access?.mistakes===false?[]:result.mistakes||[]});
   if(error)throw new AppError('학습 기록을 저장하지 못했습니다. 다시 시도하세요.',500);
   if(data){
    if(reveal)return {answer:result.answer,explanation:result.explanation,session:publicStudy(data)};
@@ -62,6 +62,7 @@ async function asset(ctx:Ctx,path:string){
  }else if(p[0]==='questions'&&p[2]==='image'){
   let data:any,documentId:string,paths:string[]=[];const sessionId=query.get('session');
   if(sessionId){
+   requireFeature(ctx,'mistakes');
    const index=query.get('snapshot');let snapshot:any;
    if(index!==null){
     if(!/^(?:0|[1-9]\d{0,3})$/.test(index))throw new AppError('이 풀이의 원본 문항이 아닙니다.',403);
@@ -85,11 +86,21 @@ async function asset(ctx:Ctx,path:string){
 }
 export async function handle(ctx:Ctx,input:any):Promise<any>{
  const path=String(input.path||'').replace(/^\//,''),method=String(input.method||'GET').toUpperCase(),b=input.body||{},url=new URL('https://app.invalid/'+path),p=url.pathname.slice(1).split('/'),route=p[0],id=p[1],action=p[2];
+ if(route==='account'&&id==='access'&&method==='GET')return ctx.access;
+ if(['mistakes','solve','lessons'].includes(route)||(route==='questions'&&action==='review'))requireFeature(ctx,'mistakes');
+ if(['study','lessons','bank'].includes(route))requireFeature(ctx,'study');
+ if(route==='data'&&id==='restore'){requireFeature(ctx,'mistakes');requireFeature(ctx,'study');}
+ if(route==='solve'&&id==='today'&&method==='GET'){
+  const {data,error}=await ctx.db.rpc('restudy_solved_today');
+  if(error)throw new AppError('오늘 푼 문제 수를 확인하지 못했습니다.',500);
+  return {count:data};
+ }
  if(route==='asset')return asset(ctx,String(b.path||url.searchParams.get('path')||''));
  if(route==='data'&&method==='POST'){if(id==='export')return exportData(ctx,b);if(id==='restore')return restoreData(ctx,b);}
  if(route==='state'||route==='overview'){
   const overview=route==='overview';
-  const s=await state(ctx,false,overview);return {materials:s.materials,chapters:s.chapters,questions:s.questions.map(publicQuestion),concepts:s.concepts,mistakes:s.mistakes.map(publicMistake),sessions:overview?s.sessions:s.sessions.map(solvePublic),studies:overview?s.studies:s.studies.map(publicStudy),bankStats:s.concepts.map((c:any)=>({conceptId:c.id,count:s.bank.filter((i:any)=>i.active&&i.conceptIds.includes(c.id)).length,modes:[...new Set(s.bank.filter((i:any)=>i.active&&i.conceptIds.includes(c.id)).flatMap((i:any)=>i.modes||[]))]}))};
+  const [s,today]=await Promise.all([state(ctx,false,overview),overview&&ctx.access?.mistakes?ctx.db.rpc('restudy_solved_today'):null]);
+  return {materials:s.materials,chapters:s.chapters,questions:s.questions.map(publicQuestion),concepts:s.concepts,mistakes:s.mistakes.map(publicMistake),sessions:overview?s.sessions:s.sessions.map(solvePublic),studies:overview?s.studies:s.studies.map(publicStudy),todaySolved:today?.data??null,bankStats:s.concepts.map((c:any)=>({conceptId:c.id,count:s.bank.filter((i:any)=>i.active&&i.conceptIds.includes(c.id)).length,modes:[...new Set(s.bank.filter((i:any)=>i.active&&i.conceptIds.includes(c.id)).flatMap((i:any)=>i.modes||[]))]}))};
  }
  if(route==='bank'){
   const s=learnState(await state(ctx,true));
@@ -190,7 +201,7 @@ export async function handle(ctx:Ctx,input:any):Promise<any>{
     added++;
    }
    const missingAnalysis=!q.wrongReview&&!q.analysis&&!q.answer&&!q.explanation;
-   if(option?.analyze&&(missingAnalysis||wrongReviewIssues(q.wrongReview).length))autoAnalyzeQuestionIds.push(q.id);
+   if(ctx.access?.ai!==false&&option?.analyze&&(missingAnalysis||wrongReviewIssues(q.wrongReview).length))autoAnalyzeQuestionIds.push(q.id);
   }
   return {added,ambiguous,missing,unregistered:unique.filter(q=>!q.hasContent).length,questionIds,autoAnalyzeQuestionIds};
  }

@@ -29,6 +29,7 @@ export function AddMistakes({
   preferredMaterial,
   subject,
   selectedQuestionIds,
+  canUseApi = true,
   onClose,
   onDone,
   onRegistered,
@@ -37,6 +38,7 @@ export function AddMistakes({
   preferredMaterial: string;
   subject: string;
   selectedQuestionIds?: string[];
+  canUseApi?: boolean;
   onClose: () => void;
   onDone: () => Promise<void>;
   onRegistered: (ids: string[], autoAnalyzeIds: string[]) => void;
@@ -69,7 +71,7 @@ export function AddMistakes({
     try {
       const reviewOptions = questionIds.map((questionId) => ({
         questionId,
-        analyze: choices[questionId]?.analyze === true,
+        analyze: canUseApi && choices[questionId]?.analyze === true,
         answer: choices[questionId]?.answer?.trim() || undefined,
       }));
       const result = await api("mistakes", "POST", { questionIds, cause, reviewOptions });
@@ -161,7 +163,7 @@ export function AddMistakes({
       ))}
       {questionIds.length > 0 && questionIds.length <= 200 && (
         <div className="mistake-review-options">
-          {questionIds.length > 1 && (
+          {canUseApi && questionIds.length > 1 && (
             <label className="checkbox-label">
               <input
                 type="checkbox"
@@ -186,7 +188,7 @@ export function AddMistakes({
               return (
                 <fieldset key={id}>
                   <legend>{label}</legend>
-                  <label className="checkbox-label">
+                  {canUseApi && <label className="checkbox-label">
                     <input
                       type="checkbox"
                       checked={choices[id]?.analyze === true}
@@ -197,7 +199,7 @@ export function AddMistakes({
                       }}
                     />
                     원본 이미지를 AI로 보내 분석
-                  </label>
+                  </label>}
                   <label>
                     정답 (선택)
                     <input

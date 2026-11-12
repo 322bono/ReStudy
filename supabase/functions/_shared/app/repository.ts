@@ -1,6 +1,7 @@
 import {AppError} from '../context.ts';
 import{preparedBankLinks}from'../../../../src/domain/learning.ts';
-export type Ctx={user:{id:string},db:any,admin:any};
+import type {AccessContext} from '../access.ts';
+export type Ctx={user:{id:string},db:any,admin:any}&AccessContext;
 type Filters = Record<string, string | number | string[]>;
 export async function rows(ctx:Ctx,table:string,filters:Filters={},columns='*'){const all:any[]=[];for(let offset=0;;offset+=1000){let query=ctx.db.from(table).select(columns).eq('user_id',ctx.user.id);for(const [column,value]of Object.entries(filters))query=Array.isArray(value)?query.in(column,value):query.eq(column,value);const {data,error}=await query.range(offset,offset+999);if(error)throw new AppError('저장된 자료를 읽지 못했습니다.',500);all.push(...data);if(data.length<1000)return all;}}
 

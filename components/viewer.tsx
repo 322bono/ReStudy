@@ -34,6 +34,8 @@ export function Viewer({
   concepts = [],
   questions: originalQuestions,
   onRegistered,
+  canRegisterWrong = true,
+  canUseApi = true,
 }: {
   id: string;
   initialPage?: number;
@@ -44,6 +46,8 @@ export function Viewer({
   concepts?: Concept[];
   questions: Question[];
   onRegistered: (ids: string[], autoAnalyzeIds: string[]) => void;
+  canRegisterWrong?: boolean;
+  canUseApi?: boolean;
 }) {
   const [data, setData] = useState<{
       material: Material;
@@ -270,7 +274,7 @@ export function Viewer({
           원본 열기
         </SecureLink>
       </div>
-      {!edit && questions.length > 0 && (
+      {canRegisterWrong && !edit && questions.length > 0 && (
         <div className="viewer-selection">
           {batchMode ? (
             <>
@@ -846,24 +850,25 @@ export function Viewer({
                   </Button>
                 </>
               )}
-              <Button
+              {canRegisterWrong && <Button
                 variant="primary"
                 busy={!!busy}
                 onClick={() => setRegisterIds([q.id])}
               >
                 <Plus size={15} />
                 오답 추가
-              </Button>
+              </Button>}
             </div>
           ) : null}
         </aside>
       </div>
-      {registerIds && (
+      {canRegisterWrong && registerIds && (
         <AddMistakes
           state={{ materials: [data.material], questions }}
           preferredMaterial={id}
           subject={data.material.subject}
           selectedQuestionIds={registerIds}
+          canUseApi={canUseApi}
           onClose={() => setRegisterIds(undefined)}
           onDone={onChange}
           onRegistered={(ids, autoAnalyzeIds) => {

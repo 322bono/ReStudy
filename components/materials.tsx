@@ -191,7 +191,7 @@ export function Materials({
   state: AppState;
   onOpen: (id: string) => void;
   onUpload: () => void;
-  onStudy: (ids: string[]) => void;
+  onStudy?: (ids: string[]) => void;
   run: (name: string, fn: () => Promise<void>) => void;
 }) {
   const [subject, setSubject] = useState("전체"),
@@ -251,7 +251,7 @@ export function Materials({
           <Button variant="ghost" onClick={() => setSelected([])}>
             선택 해제
           </Button>
-          <Button onClick={() => onStudy(selected)}>선택한 자료로 학습</Button>
+          {onStudy && <Button onClick={() => onStudy(selected)}>선택한 자료로 학습</Button>}
         </div>
       )}
       <div className="panel material-list">

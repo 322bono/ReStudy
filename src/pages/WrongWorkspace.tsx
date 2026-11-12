@@ -33,6 +33,7 @@ export type WrongWorkspaceProps = {
   analysisPending: boolean;
   analysisCompleted: boolean;
   onAnalyze: () => void;
+  canUseApi?: boolean;
   state: AppState;
   onBack: () => void;
   onBank: (scope: any) => void;
@@ -100,6 +101,7 @@ export default function WrongWorkspace({
   analysisPending,
   analysisCompleted,
   onAnalyze,
+  canUseApi = true,
   state,
   onBack,
   onBank,
@@ -149,11 +151,11 @@ export default function WrongWorkspace({
     [loadingReview, setLoadingReview] = useState(true);
   const repairRequested = useRef(new Set<string>());
   useEffect(() => {
-    if (savedReview?.requiresReanalysis && savedReview.allowAutomaticAnalysis !== false && !analysisPending && !repairRequested.current.has(id)) {
+    if (canUseApi && savedReview?.requiresReanalysis && savedReview.allowAutomaticAnalysis !== false && !analysisPending && !repairRequested.current.has(id)) {
       repairRequested.current.add(id);
       onAnalyze();
     }
-  }, [id, savedReview?.requiresReanalysis, savedReview?.allowAutomaticAnalysis, analysisPending, onAnalyze]);
+  }, [canUseApi, id, savedReview?.requiresReanalysis, savedReview?.allowAutomaticAnalysis, analysisPending, onAnalyze]);
   async function loadReview() {
     const forId = id;
     const result = await api(`questions/${forId}/review`);
@@ -466,7 +468,7 @@ export default function WrongWorkspace({
             loading={loadingReview}
             onBank={onBank}
           />
-          {!loadingReview && !savedReview?.hasSavedAnalysis && !working && (
+          {canUseApi && !loadingReview && !savedReview?.hasSavedAnalysis && !working && (
               <div className="ww-analysis-start">
                 <Button onClick={onAnalyze}>이 문제 분석하기</Button>
               </div>

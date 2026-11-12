@@ -1,4 +1,4 @@
-import { AppError, context, json, preflight } from "../context.ts";
+import { AppError, context, json, preflight, requireFeature } from "../context.ts";
 import { AiError, credentialAction } from "./credentials.ts";
 import { jobAction } from "./service.ts";
 import {runStandard}from'../standard/ai.ts';
@@ -22,8 +22,19 @@ export async function handleAI(req: Request, kind: "credentials" | "request" | "
     if (!body || typeof body !== "object" || Array.isArray(body)) throw new AiError("invalid_request");
     const master = Deno.env.get("RE_CREDENTIAL_MASTER_KEY") ?? "";
     let result;
-    if(kind==='credentials')result=await credentialAction(body,ctx,master);
-    else if(kind==='analyze'&&body.action==='wrong_review')result=await startWrongReview(ctx,body.problemId,master);
+    if(kind==='credentials'){
+      if ((body.action??'status')!=='status') {
+        requireFeature(ctx,'ai');
+        if(body.action!=='settings')requireFeature(ctx,'personalKeys');
+      }
+      result=await credentialAction(body,ctx,master);
+    }
+    else if(kind==='analyze'&&body.action==='wrong_review'){
+      requireFeature(ctx,'ai');
+      requireFeature(ctx,'mistakes');
+      result=await startWrongReview(ctx,body.problemId,master);
+    }
+    else if(ctx.access.ai===false)requireFeature(ctx,'ai');
     else if(body.action==='run_standard')result=await runStandard(ctx,body.standardJobId,body.part,master);
     else if(['resume','status'].includes(body.action))result=await jobAction(body,ctx,master);
     else throw new AppError('자료 상세에서 restudy.v1 작업을 준비한 뒤 분석을 시작하세요.');

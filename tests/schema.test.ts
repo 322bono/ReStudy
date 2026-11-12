@@ -10,7 +10,7 @@ const owner='10000000-0000-4000-8000-000000000001',other='20000000-0000-4000-800
 async function database(skipSlots=false){
   db=new PGlite();
   await db.exec(`create role anon;create role authenticated;create role service_role bypassrls;
-    create schema auth;grant usage on schema auth to authenticated,service_role;create table auth.users(id uuid primary key,raw_user_meta_data jsonb default '{}');
+    create schema auth;grant usage on schema auth to authenticated,service_role;create table auth.users(id uuid primary key,raw_user_meta_data jsonb default '{}',last_sign_in_at timestamptz);
     create function auth.uid() returns uuid language sql stable as $$ select nullif(current_setting('request.jwt.claim.sub',true),'')::uuid $$;
     create schema storage;create table storage.buckets(id text primary key,name text,public boolean,file_size_limit bigint,allowed_mime_types text[]);
     create table storage.objects(id uuid primary key,bucket_id text,name text);alter table storage.objects enable row level security;
@@ -20,6 +20,35 @@ async function database(skipSlots=false){
   return db;
 }
 afterEach(async()=>{await db?.close()});
+test('member restrictions apply to direct database access and today counts saved unique answers', async () => {
+  const db = await database();
+  const question = crypto.randomUUID();
+  const now = new Date().toISOString();
+  const previous = new Date(Date.now() - 86400000).toISOString();
+  await db.query('insert into restudy_account_access(user_id,mistakes,study) values($1,false,false)', [owner]);
+  await db.query('insert into solve_sessions(user_id,data) values($1,$2),($1,$3),($1,$4),($5,$2)', [
+    owner, { answers: { [question]: { result: 'wrong', at: now } } },
+    { answers: { [question]: { result: 'correct', at: now }, old: { result: 'wrong', at: previous } } },
+    { answers: { unanswered: { result: 'skipped', at: now } } }, other,
+  ]);
+  await db.query('insert into documents(user_id,title,subject,kind) values($1,\'A\',\'B\',\'C\')', [owner]);
+  await db.exec(`set role authenticated; set request.jwt.claim.sub = '${owner}'`);
+  expect((await db.query('select id from solve_sessions')).rows).toEqual([]);
+  expect((await db.query('select id from documents')).rows).toHaveLength(1);
+  await expect(db.query('insert into study_sessions(user_id) values($1)', [owner])).rejects.toThrow(/row-level security/);
+  await expect(db.query('select * from restudy_account_access')).rejects.toThrow(/permission/);
+  await expect(db.query('select * from restudy_member_activity($1,0)', [other])).rejects.toThrow(/permission/);
+  await db.exec('reset role');
+  await db.query('update restudy_account_access set mistakes=true where user_id=$1', [owner]);
+  await db.exec('set role authenticated');
+  expect((await db.query('select restudy_solved_today() as count')).rows).toEqual([{ count: 1 }]);
+  await db.exec('reset role');
+  await db.query('update restudy_account_access set active=false where user_id=$1', [owner]);
+  await db.exec('set role authenticated');
+  expect((await db.query('select id from documents')).rows).toEqual([]);
+  await db.exec('reset role; set role service_role');
+  expect((await db.query('select kind from restudy_member_activity($1,0)', [owner])).rows).toContainEqual({ kind: 'upload' });
+});
 test('archiving selected wrong answers preserves history and survives a stale solve update', async () => {
  const c=await database(),doc=crypto.randomUUID(),otherDoc=crypto.randomUUID(),problem=crypto.randomUUID(),otherProblem=crypto.randomUUID(),mistake=crypto.randomUUID(),otherMistake=crypto.randomUUID(),session=crypto.randomUUID();
  await c.query("insert into documents(id,user_id,title,subject,kind) values($1,$2,'교재','한국사','문제집'),($3,$4,'교재','한국사','문제집')",[doc,owner,otherDoc,other]);

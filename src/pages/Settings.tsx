@@ -88,6 +88,8 @@ export type SettingsProps = {
   transport: (action: string, payload?: unknown) => Promise<any>;
   onClose: () => void;
   onLogout: () => void | Promise<void>;
+  access?: import("../domain/account-access").AccountAccess;
+  onMemberAdmin?: () => void;
 };
 
 const providers: Provider[] = ["nvidia", "gemini"];
@@ -462,13 +464,22 @@ export default function Settings({
   transport,
   onClose,
   onLogout,
+  access,
+  onMemberAdmin,
 }: SettingsProps) {
   const id = useId();
   const tabsRef = useRef<HTMLElement>(null);
   const locked = useRef(false);
   const transportRef = useRef(transport);
   const mounted = useRef(true);
-  const [tab, setTab] = useState<Tab>("connections");
+  const visibleTabs = tabs.filter(({ id }) => {
+    if (id === "connections") return access?.ai !== false && access?.personalKeys !== false;
+    if (id === "activity") return access?.ai !== false;
+    if (id === "data") return access?.mistakes !== false && access?.study !== false;
+    return true;
+  });
+  const [selectedTab, setTab] = useState<Tab>(visibleTabs[0].id);
+  const tab = visibleTabs.some(({ id }) => id === selectedTab) ? selectedTab : visibleTabs[0].id;
   const [settings, setSettings] = useState<SettingsData | null>(null);
   const [draft, setDraft] = useState<Preferences | null>(null);
   const [loading, setLoading] = useState(true);
@@ -560,20 +571,20 @@ export default function Settings({
     setPasswordAgain("");
   }
   function tabKeyDown(event: KeyboardEvent<HTMLElement>) {
-    const current = tabs.findIndex((item) => item.id === tab);
+    const current = visibleTabs.findIndex((item) => item.id === tab);
     const next =
       event.key === "ArrowRight"
-        ? (current + 1) % tabs.length
+        ? (current + 1) % visibleTabs.length
         : event.key === "ArrowLeft"
-          ? (current - 1 + tabs.length) % tabs.length
+          ? (current - 1 + visibleTabs.length) % visibleTabs.length
           : event.key === "Home"
             ? 0
             : event.key === "End"
-              ? tabs.length - 1
+              ? visibleTabs.length - 1
               : -1;
     if (next < 0) return;
     event.preventDefault();
-    selectTab(tabs[next].id);
+    selectTab(visibleTabs[next].id);
     tabsRef.current
       ?.querySelectorAll<HTMLButtonElement>("[role=tab]")
       [next]?.focus();
@@ -665,6 +676,7 @@ export default function Settings({
           </Button>
           <h1 id={`${id}-title`}>설정</h1>
         </div>
+        {onMemberAdmin && <Button variant="secondary" onClick={onMemberAdmin}>구성원 관리</Button>}
         <Button
           variant="secondary"
           size="sm"
@@ -685,7 +697,7 @@ export default function Settings({
         aria-label="설정 메뉴"
         onKeyDown={tabKeyDown}
       >
-        {tabs.map((item) => (
+        {visibleTabs.map((item) => (
           <Button
             key={item.id}
             variant="ghost"
@@ -1321,6 +1333,14 @@ export default function Settings({
           ) : null}
           {tab === "account" ? (
             <>
+              {access && !access.administrator && (
+                <section className="cloud-section">
+                  <h2>계정 권한</h2>
+                  <p>AI {access.ai ? "허용" : "제한"} · 오답 노트 {access.mistakes ? "허용" : "제한"} · 학습 {access.study ? "허용" : "제한"}</p>
+                  {access.ai && access.sharedKeys && <p>관리자 공용 API를 사용할 수 있습니다.</p>}
+                  <p>관리자는 이 계정의 등록 자료, 오답 목록, 학습 활동을 확인할 수 있습니다.</p>
+                </section>
+              )}
               <section className="cloud-section">
                 <div className="cloud-section-title">
                   <h2>비밀번호 변경</h2>

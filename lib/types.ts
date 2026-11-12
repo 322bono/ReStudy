@@ -175,6 +175,7 @@ export type StudySession = {
   notice?: string;
 };
 export type AppState = {
+  todaySolved?: number | null;
   materials: Material[];
   questions: Question[];
   mistakes: Mistake[];

@@ -34,6 +34,12 @@ Deno.serve(async req=>{
   // Unknown aliases also perform Auth work and return the exact same message.
   const {data,error}=await admin.auth.signInWithPassword({email:alias?.email||'unavailable@accounts.restudy.invalid',password:String(body.password||'').slice(0,256)});
   if(error||!alias||!data.session)throw new AppError('아이디 또는 비밀번호를 확인해 주세요.',401);
+  const {data:access,error:accessError}=await admin.from('restudy_account_access').select('active').eq('user_id',data.user.id).maybeSingle();
+  if(accessError)throw new AppError('계정 권한을 확인하지 못했습니다.',503);
+  if(access?.active===false){
+   await admin.auth.admin.signOut(data.session.access_token,'local');
+   throw new AppError('사용이 중지된 계정입니다. 관리자에게 문의해 주세요.',403);
+  }
   return json({session:data.session,user:{id:data.user.id,username}},200,req);
  }catch(error){return errorResponse(error,req)}
 });
